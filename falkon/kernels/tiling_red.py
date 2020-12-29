@@ -71,10 +71,7 @@ def _single_gpu_method(proc_idx, queue, device_id):
 def load_keops_fn(formula, aliases, backend, dtype, optional_flags, rec_multVar_highdim, out, *args):
     if rec_multVar_highdim is not None:
         optional_flags += ['-DMULT_VAR_HIGHDIM=1']
-    #print("Loading formula")
-    #print(optional_flags + include_dirs)
     fn = LoadKeOps(formula, aliases, dtype, 'torch', optional_flags + include_dirs).import_module()
-    #print("Loaded")
     tagCPUGPU, tag1D2D, tagHostDevice = get_tag_backend(backend, args, output=out)
     tags = KeopsTags(tagCPUGPU=tagCPUGPU, tag1D2D=tag1D2D, tagHostDevice=tagHostDevice)
     return fn, tags
@@ -278,8 +275,8 @@ class TilingGenredAutograd(torch.autograd.Function):
                 # For a reduction of the type sum(F*b), with b a variable, and if we require the gradient
                 # with respect to b, the gradient will be of same type sum(F*eta). So we set again rec_multVar option
                 # in this case.
-                if pos==ctx.rec_multVar_highdim:
-                    rec_multVar_highdim = nargs # nargs is the position of variable eta.
+                if pos == ctx.rec_multVar_highdim:
+                    rec_multVar_highdim = nargs  # nargs is the position of variable eta.
                 else:
                     rec_multVar_highdim = None
 
