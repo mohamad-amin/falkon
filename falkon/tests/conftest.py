@@ -5,8 +5,8 @@ import numpy as np
 import pytest
 import torch
 import torch.cuda as tcd
-from falkon.utils.tensor_helpers import move_tensor
 
+from falkon.utils.tensor_helpers import move_tensor
 from falkon.options import BaseOptions, FalkonOptions
 from falkon.utils import decide_cuda
 from falkon.utils.devices import _cpu_used_mem
