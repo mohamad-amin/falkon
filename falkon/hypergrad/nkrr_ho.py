@@ -7,7 +7,7 @@ import torch.nn as nn
 
 import falkon
 from falkon.center_selection import FixedSelector, CenterSelector
-from falkon.hypergrad.leverage_scores import subs_deff_simple
+from falkon.hypergrad.leverage_scores import subs_deff_simple, GaussEffectiveDimension
 from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
 
 
@@ -152,9 +152,8 @@ class FLK_NKRR(nn.Module):
         loss = torch.mean((preds - Y) ** 2)
         pen = torch.exp(-self.penalty)
         if self.regularizer == "deff":
-            # d_eff = subs_deff_simple(k, penalty=pen, X=X, J=self.centers)
-            d_eff = subs_deff_simple(k, penalty=pen, X=self.centers, J=self.centers)
-            # d_eff = subs_deff_simple(k, penalty=pen, X=X, J=X[:self.centers.shape[0]])
+            d_eff = GaussEffectiveDimension.apply(
+                t=100, kernel_args=self.sigma, penalty=pen, X=self.centers)
             reg = d_eff / X.shape[0]
         elif self.regularizer == "tikhonov":
             # This is the normal RKHS norm of the function
