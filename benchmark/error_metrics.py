@@ -5,7 +5,7 @@ import numpy as np
 from benchmark_utils import Dataset
 
 
-def _ensure_numpy(*arrays) -> Generator[np.ndarray]:
+def _ensure_numpy(*arrays) -> Generator[np.ndarray, None, None]:
     for arr in arrays:
         if not isinstance(arr, np.ndarray):
             yield arr.cpu().numpy()
@@ -13,7 +13,7 @@ def _ensure_numpy(*arrays) -> Generator[np.ndarray]:
             yield arr
 
 
-def _ensure_numpy_or_float(*vals) -> Generator[Union[float, np.ndarray]]:
+def _ensure_numpy_or_float(*vals) -> Generator[Union[float, np.ndarray], None, None]:
     for val in vals:
         if (not isinstance(val, np.ndarray) and
                 not isinstance(val, np.float64) and

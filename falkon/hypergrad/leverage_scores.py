@@ -7,6 +7,8 @@ import falkon
 from falkon.la_helpers import potrf, trsm
 
 
+__all__ = ("gauss_effective_dimension",)
+
 def subs_deff_simple(kernel: falkon.kernels.Kernel,
                      penalty: torch.Tensor,
                      X: torch.Tensor,
@@ -75,9 +77,12 @@ def my_cdist(x1, x2):
     return res
 
 
+def gauss_effective_dimension(kernel_args, penalty, X, t, deterministic=False):
+    return GaussEffectiveDimension.apply(kernel_args, penalty, X, t, deterministic)
+
+
 # noinspection PyMethodOverriding
 class GaussEffectiveDimension(torch.autograd.Function):
-    NUM_NONDIFF_ARGS = 1
     NUM_DIFF_ARGS = 3
 
     @staticmethod
@@ -92,11 +97,12 @@ class GaussEffectiveDimension(torch.autograd.Function):
         return trsm(y, L, alpha=1.0, lower=True, transpose=1)
 
     @staticmethod
-    def forward(ctx, t, kernel_args, penalty, X):
+    def forward(ctx, kernel_args, penalty, X, t, deterministic):
         fwd_start = time.time()
         n = X.shape[0]
-        # torch.manual_seed(12)
-        Z = torch.randn(t, n, dtype=X.dtype).T  # n x t
+        if deterministic:
+            torch.manual_seed(12)
+        Z = torch.randn(t, n, dtype=X.dtype, device=X.device).T  # n x t
 
         with torch.autograd.enable_grad():
             # Using naive or ours is equivalent, as long as splitting doesn't occur?
@@ -108,7 +114,12 @@ class GaussEffectiveDimension(torch.autograd.Function):
             _penalty = penalty * n                # Rescaled penalty
             Keye = K + torch.diag_embed(_penalty.expand(n))
             chol_start = time.time()
-            K_chol = potrf(Keye, upper=False, clean=False, overwrite=True, cuda=Keye.is_cuda)
+            if K.is_cuda:
+                from falkon.ooc_ops.ooc_potrf import gpu_cholesky
+                from falkon.options import FalkonOptions
+                K_chol = gpu_cholesky(Keye, upper=False, clean=False, overwrite=True, opt=FalkonOptions())
+            else:
+                K_chol = potrf(Keye, upper=False, clean=False, overwrite=True, cuda=Keye.is_cuda)
             chol_end = time.time()
             KinvZ = GaussEffectiveDimension._cholesky_solve(K_chol, Z)
             trsm_end = time.time()
@@ -143,15 +154,14 @@ class GaussEffectiveDimension(torch.autograd.Function):
         bwd_mid = time.time()
 
         needs_grad = []
-        for i in range(GaussEffectiveDimension.NUM_NONDIFF_ARGS,
-                       GaussEffectiveDimension.NUM_NONDIFF_ARGS + GaussEffectiveDimension.NUM_DIFF_ARGS):
+        for i in range(GaussEffectiveDimension.NUM_DIFF_ARGS):
             if ctx.needs_input_grad[i]:
-                needs_grad.append(ctx.saved_tensors[i - GaussEffectiveDimension.NUM_NONDIFF_ARGS])
+                needs_grad.append(ctx.saved_tensors[i])
         grads = torch.autograd.grad(loss, needs_grad, retain_graph=True)
         # print("HutchTrEst backward took %.2fs + %.2fs" % (bwd_mid - bwd_start, time.time() - bwd_mid))
         result = []
         j = 0
-        for i in range(GaussEffectiveDimension.NUM_NONDIFF_ARGS + GaussEffectiveDimension.NUM_DIFF_ARGS):
+        for i in range(len(ctx.needs_input_grad)):
             if ctx.needs_input_grad[i]:
                 result.append(grads[j])
                 j += 1

@@ -825,12 +825,12 @@ class IctusDataset(BaseDataset):
     @staticmethod
     def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
         mtr = np.mean(Xtr, axis=0, dtype=np.float64, keepdims=True).astype(Xtr.dtype)
-        vtr = np.var(Xtr, axis=0, dtype=np.float64, ddof=1, keepdims=True).astype(Xtr.dtype)
+        vtr = (1.0 / np.std(Xtr, axis=0, dtype=np.float64, ddof=1, keepdims=True)).astype(Xtr.dtype)
 
         Xtr -= mtr
-        Xtr /= vtr
+        Xtr *= vtr
         Xts -= mtr
-        Xts /= vtr
+        Xts *= vtr
 
         return Xtr, Xts, {}
 

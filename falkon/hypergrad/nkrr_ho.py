@@ -7,7 +7,7 @@ import torch.nn as nn
 
 import falkon
 from falkon.center_selection import FixedSelector, CenterSelector
-from falkon.hypergrad.leverage_scores import subs_deff_simple, GaussEffectiveDimension
+from falkon.hypergrad.leverage_scores import subs_deff_simple, gauss_effective_dimension
 from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
 
 
@@ -121,6 +121,7 @@ class NKRR(nn.Module):
 class FLK_NKRR(nn.Module):
     def __init__(self, sigma_init, penalty_init, centers_init, opt, regularizer, opt_centers, tot_n=None):
         super().__init__()
+        falkon.cuda.initialization.init(opt)
         penalty = nn.Parameter(torch.tensor(penalty_init, requires_grad=True))
         self.register_parameter('penalty', penalty)
         sigma = nn.Parameter(torch.tensor(sigma_init, requires_grad=True))
@@ -152,16 +153,16 @@ class FLK_NKRR(nn.Module):
         loss = torch.mean((preds - Y) ** 2)
         pen = torch.exp(-self.penalty)
         if self.regularizer == "deff":
-            d_eff = GaussEffectiveDimension.apply(
-                t=100, kernel_args=self.sigma, penalty=pen, X=self.centers)
-            reg = d_eff / X.shape[0]
+            d_eff = gauss_effective_dimension(self.sigma, pen, self.centers, t=100)
+            reg = d_eff / X.shape[0]**4
+            #print("d_eff: %.3e - Loss: %.3e" % (d_eff, loss + reg))
         elif self.regularizer == "tikhonov":
             # This is the normal RKHS norm of the function
             reg = pen * (self.alpha.T @ (k.mmv(self.centers, self.centers, self.alpha)))
         else:
             raise ValueError("Regularizer %s not implemented" % (self.regularizer))
 
-        return (loss + reg), preds
+        return (loss ), preds
 
     def adapt_alpha(self, X, Y, n_tot=None):
         k = DiffGaussianKernel(self.sigma.detach(), self.opt)
@@ -342,7 +343,7 @@ def flk_nkrr_ho(Xtr, Ytr,
         running_error = 0
         samples_processed = 0
         try:
-            model.adapt_alpha(Xtr.cuda(), Ytr.cuda())
+            #model.adapt_alpha(Xtr.cuda(), Ytr.cuda())
             for i in itertools.count(0):
                 b_tr_x, b_tr_y = next(train_loader)
                 samples_processed += b_tr_x.shape[0]
@@ -354,7 +355,7 @@ def flk_nkrr_ho(Xtr, Ytr,
                 # Change theta
                 opt_hp.step()
                 # Optimize the parameters alpha using Falkon (on training-batch)
-                #model.adapt_alpha(b_tr_x, b_tr_y)
+                model.adapt_alpha(b_tr_x, b_tr_y)
 
                 preds = model.predict(b_tr_x)  # Redo predictions to check adapted model
                 err, err_name = err_fn(b_tr_y.detach().cpu(), preds.detach().cpu())
