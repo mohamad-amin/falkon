@@ -4,6 +4,7 @@ import time
 import numpy as np
 import torch
 import torch.nn as nn
+from falkon.optim import ConjugateGradient
 
 import falkon
 from falkon.center_selection import FixedSelector, CenterSelector
@@ -201,6 +202,136 @@ class FLK_NKRR(nn.Module):
         return model
 
 
+class FLK_HYP_NKRR(nn.Module):
+    def __init__(self, sigma_init, penalty_init, centers_init, opt, regularizer, opt_centers, tot_n=None):
+        super().__init__()
+        falkon.cuda.initialization.init(opt)
+        penalty = nn.Parameter(torch.tensor(penalty_init, requires_grad=True))
+        self.register_parameter('penalty', penalty)
+        sigma = nn.Parameter(torch.tensor(sigma_init, requires_grad=True))
+        self.register_parameter('sigma', sigma)
+
+        centers = nn.Parameter(centers_init.requires_grad_(opt_centers))
+        if opt_centers:
+            self.register_parameter('centers', centers)
+        else:
+            self.register_buffer('centers', centers)
+
+        self.f_alpha = torch.zeros(centers_init.shape[0], 1, requires_grad=False)
+        self.register_buffer('alpha', self.f_alpha)
+        self.f_alpha_pc = torch.zeros(centers_init.shape[0], 1, requires_grad=False)
+        self.register_buffer('alpha_pc', self.f_alpha_pc)
+
+        self.opt = opt
+        self.flk_maxiter = 10
+        self.regularizer = regularizer
+        self.tot_n = tot_n
+        self.model = None
+
+    def forward(self):
+        pass
+
+    def adapt_hps(self, X, Y):
+        k = DiffGaussianKernel(self.sigma, self.opt)
+        hparams = [w for k, w in self.named_parameters()]
+
+        # 1: Derivative of validation loss wrt hps and wrt params. Validation loss here is simply the unregularized MSE on training data
+        preds = self.predict(X)
+        loss = torch.mean((preds - Y) ** 2)
+
+        mse_grad_alpha = k.mmv(self.centers, X, preds - Y) / X.shape[0]
+        mse_grad_hp = torch.autograd.grad(loss, hparams, allow_unused=True)
+
+        # 2: Derivative of training loss wrt params
+        # 2/N * (K_MN(K_NM @ alpha - Y)) + 2*lambda*(K_MM @ alpha)
+        first_diff = (mse_grad_alpha +
+                      torch.exp(-self.penalty) * k.mmv(self.centers, self.centers, self.alpha))
+
+        # 3: inverse-hessian of the training loss wrt params @ val-gradient wrt params
+        vs = self.solve_hessian(mse_grad_alpha)
+
+        # 4: Multiply the result by the derivative of `first_diff` wrt hparams.
+        mixed = torch.autograd.grad(first_diff, hparams, grad_outputs=vs, allow_unused=True)
+
+        # 5: d_eff gradient
+        d_eff = gauss_effective_dimension(self.sigma, torch.exp(-self.penalty), self.centers, t=20)
+        reg = d_eff / X.shape[0]
+        d_eff_grad = torch.autograd.grad(reg, hparams)
+
+        final_grads = []
+        for ghp, mix, deg in zip(mse_grad_hp, mixed, d_eff_grad):
+            if ghp is not None:
+                final_grads.append(ghp - mix + deg)
+            else:
+                final_grads.append(-mix + deg)
+
+        for l, g in zip(hparams, final_grads):
+            if l.grad is None:
+                l.grad = torch.zeros_like(l)
+            if g is not None:
+                l.grad += g
+
+    def solve_hessian(self, vector):
+        if self.model is None:
+            raise RuntimeError("Model must be present when solving for the inverse hessian.")
+        penalty = torch.exp(-self.penalty)
+
+        vector = vector.detach()
+        N = self.Xtr.shape[0]
+
+        cg = ConjugateGradient(self.opt)
+        kernel = self.model.kernel
+        precond = self.model.precond
+
+        B = precond.apply_t(vector / N)
+        def mmv(sol):
+            v = precond.invA(sol)
+            cc = kernel.dmmv(self.Xtr, self.flk.ny_points_, precond.invT(v), None)
+            return precond.invAt(precond.invTt(cc / N) + penalty * v)
+        d = cg.solve(X0=None, B=B, mmv=mmv, max_iter=self.flk_maxiter)
+        c = precond.apply(d)
+
+        return c
+
+    def adapt_alpha(self, X, Y, n_tot=None):
+        k = DiffGaussianKernel(self.sigma.detach(), self.opt)
+        if X.is_cuda:
+            fcls = falkon.InCoreFalkon
+        else:
+            fcls = falkon.Falkon
+
+        model = fcls(k,
+                     torch.exp(-self.penalty).item(),
+                     M=self.centers.shape[0],
+                     center_selection=FixedSelector(self.centers.detach()),
+                     maxiter=self.flk_maxiter,
+                     options=self.opt,
+                     N=self.tot_n)
+        model.fit(X, Y, warm_start=self.alpha_pc)
+
+        self.alpha = model.alpha_.detach()
+        self.alpha_pc = model.beta_.detach()
+        self.model = model
+
+    def predict(self, X):
+        k = DiffGaussianKernel(self.sigma, self.opt)
+        preds = k.mmv(X, self.centers, self.alpha)
+        return preds
+
+    def get_model(self):
+        k = DiffGaussianKernel(self.sigma.detach(), self.opt)
+        # TODO: make this return the correct class
+        model = falkon.InCoreFalkon(k,
+                     torch.exp(-self.penalty).item(),
+                     M=self.centers.shape[0],
+                     center_selection=FixedSelector(self.centers.detach()),
+                     maxiter=self.flk_maxiter,
+                     options=self.opt,
+                     )
+        return model
+
+
+
 def nkrr_ho(Xtr, Ytr,
             Xts, Yts,
             num_epochs: int,
@@ -314,7 +445,7 @@ def flk_nkrr_ho(Xtr, Ytr,
     else:
         raise ValueError("sigma_type %s unrecognized" % (sigma_type))
 
-    model = FLK_NKRR(
+    model = FLK_HYP_NKRR(
         start_sigma,
         penalty_init,
         falkon_centers.select(Xtr, Y=None, M=falkon_M),
@@ -348,14 +479,15 @@ def flk_nkrr_ho(Xtr, Ytr,
                 b_tr_x, b_tr_y = next(train_loader)
                 samples_processed += b_tr_x.shape[0]
 
-                # Calculate gradient for the hyper-parameters (on training-batch)
-                opt_hp.zero_grad()
-                loss, preds = model(b_tr_x, b_tr_y)
-                loss.backward()
-                # Change theta
-                opt_hp.step()
                 # Optimize the parameters alpha using Falkon (on training-batch)
                 model.adapt_alpha(b_tr_x, b_tr_y)
+                # Calculate gradient for the hyper-parameters (on training-batch)
+                opt_hp.zero_grad()
+                # loss, preds = model(b_tr_x, b_tr_y)
+                # loss.backward()
+                model.adapt_hps(b_tr_x, b_tr_y)
+                # Change theta
+                opt_hp.step()
 
                 preds = model.predict(b_tr_x)  # Redo predictions to check adapted model
                 err, err_name = err_fn(b_tr_y.detach().cpu(), preds.detach().cpu())
