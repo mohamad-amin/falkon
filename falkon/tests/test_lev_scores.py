@@ -1,14 +1,14 @@
 import time
 
+import pytest
 import torch
 import numpy as np
-from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
 
+from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
 from falkon.hypergrad.leverage_scores import (
     full_deff, full_deff_simple, subs_deff_simple,
-    GaussEffectiveDimension
+    GaussEffectiveDimension, gauss_effective_dimension,
 )
-
 from falkon.kernels import GaussianKernel
 from falkon.tests.gen_random import gen_random
 
@@ -55,16 +55,21 @@ def test_full_impl():
         # print(torch.autograd.grad(d_eff, s), torch.autograd.grad(f_d_eff, s), torch.autograd.grad(f_d_eff2, s))
 
 
-def test_hutch_grad():
-    X = torch.from_numpy(gen_random(5000, 30, np.float32, F=False)).requires_grad_()
-    s = torch.tensor([5.0] * X.shape[1], dtype=X.dtype).requires_grad_()
-    p = torch.tensor(0.01).to(X.dtype).requires_grad_()
+@pytest.mark.parametrize("device", ["cpu", "cuda:0"])
+@pytest.mark.parametrize("dtype", [np.float64])
+def test_hutch_grad(device, dtype):
+    torch.manual_seed(3)
+    f_order = False
+
+    X = torch.from_numpy(gen_random(100, 3, dtype, F=f_order)).to(device=device).requires_grad_()
+    s = torch.tensor([5.0] * X.shape[1], dtype=X.dtype, device=device).requires_grad_()
+    p = torch.tensor(0.01, dtype=X.dtype, device=device).requires_grad_()
     print()
-    # loss = GaussEffectiveDimension.apply(100, s, p, X)
-    # loss.backward()
+    #loss = GaussEffectiveDimension.apply(5, s, p, X)
+    #loss.backward()
     torch.autograd.gradcheck(
-        lambda si, Xi, pi: GaussEffectiveDimension.apply(100, si, pi, Xi),
-        (s, X, p), eps=1e-6, atol=1e-4)
+        lambda si, Xi, pi: gauss_effective_dimension(si, pi, Xi, t=50, deterministic=True),
+        (s, X, p), eps=1e-4, atol=1e-4)
 
 
 def test_gpytorch_quad_derivative():
