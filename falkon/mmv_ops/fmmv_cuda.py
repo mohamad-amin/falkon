@@ -55,6 +55,12 @@ class ArgsFdmmv:
     max_mem: float
 
 
+def _extract_flat(flat_tn, size, other, offset):
+    struct_tn = extract_same_stride(flat_tn, size=size, other=other, offset=offset)
+    offset += np.prod(struct_tn.shape)
+    return struct_tn, offset
+
+
 def sparse_fmmv(proc_idx, queue, device_id):
     a: ArgsFmmv = queue.get()
 
@@ -155,13 +161,16 @@ def generic_fmmv(proc_idx, queue, device_id):
     # total : n*d + n*(M+T) + d*M + M*T
     avail_mem = max_mem / sizeof_dtype(dtype)
     extra_mem = kernel.extra_mem()
-    n, d = select_dim_over_nd(max_n=ntot, max_d=dtot, coef_nd=1 + extra_mem.get('nd', 0),
+    n, d = select_dim_over_nd(max_n=ntot, max_d=dtot,
+                              coef_nd=1 + extra_mem.get('nd', 0),
                               coef_n=M + T + extra_mem.get('n', 0) + extra_mem.get('nm', 0) * M,
                               coef_d=M + extra_mem.get('d', 0) + extra_mem.get('md', 0) * M,
-                              rest=M * T + extra_mem.get('m', 0), max_mem=avail_mem)
+                              rest=M * T + extra_mem.get('m', 0),
+                              max_mem=avail_mem)
 
     ddev = torch.device('cuda:%d' % int(device_id))
-    with tcd.device(ddev):
+    s1 = tcd.Stream(ddev)
+    with tcd.device(ddev), tcd.stream(s1):
         # First collect necessary memory
         mem_needed = n * M
         if not cuda_inputs:
@@ -170,17 +179,12 @@ def generic_fmmv(proc_idx, queue, device_id):
         flat_gpu_tn = torch.empty(size=(mem_needed,), dtype=dtype, device=ddev)
         # Extract the sub-tensors
         flat_offset = 0
-        ker_gpu = extract_same_stride(flat_gpu_tn, size=(n, M), other=X1, offset=flat_offset)
-        flat_offset += np.prod(ker_gpu.shape)
+        ker_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(n, M), other=X1, offset=flat_offset)
         if not cuda_inputs:
-            X1s_gpu = extract_same_stride(flat_gpu_tn, size=(n, d), other=X1, offset=flat_offset)
-            flat_offset += np.prod(X1s_gpu.shape)
-            X2s_gpu = extract_same_stride(flat_gpu_tn, size=(M, d), other=X2, offset=flat_offset)
-            flat_offset += np.prod(X2s_gpu.shape)
-            mmv_gpu = extract_same_stride(flat_gpu_tn, size=(n, T), other=out, offset=flat_offset)
-            flat_offset += np.prod(mmv_gpu.shape)
-            v_gpu = extract_same_stride(flat_gpu_tn, size=(M, T), other=v, offset=flat_offset)
-            flat_offset += np.prod(v_gpu.shape)
+            X1s_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(n, d), other=X1, offset=flat_offset)
+            X2s_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(M, d), other=X2, offset=flat_offset)
+            mmv_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(n, T), other=out, offset=flat_offset)
+            v_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(M, T), other=v, offset=flat_offset)
             copy_to_device_noorder(M, T, v, 0, 0, v_gpu, 0, 0)
         else:
             v_gpu = v
@@ -209,6 +213,7 @@ def generic_fmmv(proc_idx, queue, device_id):
             # Copy back to host
             if not cuda_inputs:
                 copy_to_host_noorder(ic, T, c_g_mmv, 0, 0, out, i, 0)
+        s1.synchronize()
     return out
 
 
@@ -356,20 +361,14 @@ def generic_fdmmv(proc_idx, queue, device_id):
         flat_gpu_tn = torch.empty(size=(mem_needed,), dtype=dtype, device=ddev)
         # Extract the sub-tensors
         flat_offset = 0
-        ker_gpu = extract_same_stride(flat_gpu_tn, size=(n, M), other=out, offset=flat_offset)
-        flat_offset += np.prod(ker_gpu.shape)
-        w_gpu = extract_same_stride(flat_gpu_tn, size=(n, T), other=out, offset=flat_offset)
-        flat_offset += np.prod(w_gpu.shape)
+        ker_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(n, M), other=out, offset=flat_offset)
+        w_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(n, T), other=out, offset=flat_offset)
         if not cuda_inputs:
-            X1s_gpu = extract_same_stride(flat_gpu_tn, size=(n, d), other=X1, offset=flat_offset)
-            flat_offset += np.prod(X1s_gpu.shape)
-            X2s_gpu = extract_same_stride(flat_gpu_tn, size=(M, d), other=X2, offset=flat_offset)
-            flat_offset += np.prod(X2s_gpu.shape)
-            out_gpu = extract_same_stride(flat_gpu_tn, size=(M, T), other=out, offset=flat_offset)
-            flat_offset += np.prod(out_gpu.shape)
+            X1s_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(n, d), other=X1, offset=flat_offset)
+            X2s_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(M, d), other=X2, offset=flat_offset)
+            out_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(M, T), other=out, offset=flat_offset)
             if v is not None:
-                v_gpu = extract_same_stride(flat_gpu_tn, size=(M, T), other=v, offset=flat_offset)
-                flat_offset += np.prod(v_gpu.shape)
+                v_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(M, T), other=v, offset=flat_offset)
                 copy_to_device_noorder(M, T, v, 0, 0, v_gpu, 0, 0)
         else:
             out_gpu = out
@@ -406,6 +405,7 @@ def generic_fdmmv(proc_idx, queue, device_id):
 
         if not cuda_inputs:
             copy_to_device_noorder(M, T, out_gpu, 0, 0, out, 0, 0, s=s1)
+        s1.synchronize()
     return out
 
 
@@ -434,24 +434,20 @@ def distk_fmmv(proc_idx, queue, device_id):
                                  max_mem=avail_mem)
 
     ddev = torch.device('cuda:%d' % int(device_id))
-    with tcd.device(ddev):
+    s1 = tcd.Stream(ddev)
+    with tcd.device(ddev), tcd.stream(s1):
         mem_needed = n * m
         if not cuda_inputs:
             mem_needed += n * T + n * D + m * D + m * T
         flat_gpu_tn = torch.empty(size=(mem_needed,), dtype=dtype, device=ddev)
 
         flat_offset = 0
-        nm_gpu = extract_same_stride(flat_gpu_tn, size=(n, m), other=X1, offset=flat_offset)
-        flat_offset += np.prod(nm_gpu.shape)
+        nm_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(n, m), other=X1, offset=flat_offset)
         if not cuda_inputs:
-            out_gpu = extract_same_stride(flat_gpu_tn, size=(n, T), other=out, offset=flat_offset)
-            flat_offset += np.prod(out_gpu.shape)
-            X1s_gpu = extract_same_stride(flat_gpu_tn, size=(n, D), other=X1, offset=flat_offset)
-            flat_offset += np.prod(X1s_gpu.shape)
-            X2s_gpu = extract_same_stride(flat_gpu_tn, size=(m, D), other=X2, offset=flat_offset)
-            flat_offset += np.prod(X2s_gpu.shape)
-            vs_gpu = extract_same_stride(flat_gpu_tn, size=(m, T), other=v, offset=flat_offset)
-            flat_offset += np.prod(vs_gpu.shape)
+            out_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(n, T), other=out, offset=flat_offset)
+            X1s_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(n, D), other=X1, offset=flat_offset)
+            X2s_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(m, D), other=X2, offset=flat_offset)
+            vs_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(m, T), other=v, offset=flat_offset)
 
         for i in range(0, N, n):
             nb = min(n, N - i)
@@ -490,6 +486,7 @@ def distk_fmmv(proc_idx, queue, device_id):
             if not cuda_inputs:
                 # send result to CPU
                 copy_to_host_noorder(nb, T, out_gpu, 0, 0, out, i, 0)
+        s1.synchronize()
     return out
 
 
@@ -538,29 +535,22 @@ def distk_fdmmv(proc_idx, queue, device_id):
         flat_offset = 0
         if v is not None:
             if not cuda_inputs:
-                v_gpu = extract_same_stride(flat_gpu_tn, size=(M, T), other=v, offset=flat_offset)
-                flat_offset += np.prod(v_gpu.shape)
+                v_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(M, T), other=v, offset=flat_offset)
                 copy_to_device_noorder(M, T, v, 0, 0, v_gpu, 0, 0)
             else:
                 v_gpu = v
-        K_gpu = extract_same_stride(flat_gpu_tn, size=(n, M), other=X1, offset=flat_offset)
-        flat_offset += np.prod(K_gpu.shape)
-        Kv_gpu = extract_same_stride(flat_gpu_tn, size=(n, T), other=X1, offset=flat_offset)
-        flat_offset += np.prod(Kv_gpu.shape)
+        K_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(n, M), other=X1, offset=flat_offset)
+        Kv_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(n, T), other=X1, offset=flat_offset)
         if out.is_cuda:
             out_gpu = out
         else:
-            out_gpu = extract_same_stride(flat_gpu_tn, size=(M, T), other=out, offset=flat_offset)
-            flat_offset += np.prod(out_gpu.shape)
+            out_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(M, T), other=out, offset=flat_offset)
         out_gpu.fill_(0.0)
         if not cuda_inputs:
-            X1ss_gpu = extract_same_stride(flat_gpu_tn, size=(n, d), other=X1, offset=flat_offset)
-            flat_offset += np.prod(X1ss_gpu.shape)
-            X2s_gpu = extract_same_stride(flat_gpu_tn, size=(M, d), other=X2, offset=flat_offset)
-            flat_offset += np.prod(X2s_gpu.shape)
-        sq1_gpu = extract_same_stride(flat_gpu_tn, size=(n,), other=X1, offset=flat_offset)
-        flat_offset += np.prod(sq1_gpu.shape)
-        sq2_gpu = extract_same_stride(flat_gpu_tn, size=(M,), other=X1, offset=flat_offset)
+            X1ss_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(n, d), other=X1, offset=flat_offset)
+            X2s_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(M, d), other=X2, offset=flat_offset)
+        sq1_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(n,), other=X1, offset=flat_offset)
+        sq2_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(M,), other=X1, offset=flat_offset)
 
         for i in range(0, N, n):
             nb = min(N - i, n)
