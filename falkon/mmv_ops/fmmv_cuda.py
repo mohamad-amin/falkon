@@ -337,12 +337,15 @@ def generic_fdmmv(proc_idx, queue, device_id):
         avail_mem /= 2
     rest_coef = 2 * M * T if v is not None else M * T
     extra_mem = kernel.extra_mem()
-    n, d = select_dim_over_nd(max_n=N, max_d=D, coef_nd=1 + extra_mem.get('nd', 0),
+    n, d = select_dim_over_nd(max_n=N, max_d=D,
+                              coef_nd=1 + extra_mem.get('nd', 0),
                               coef_n=M + T + 1 + extra_mem.get('n', 0) + extra_mem.get('nm', 0) * M,
                               coef_d=M + extra_mem.get('d', 0) + extra_mem.get('md', 0) * M,
-                              rest=rest_coef + M + extra_mem.get('m', 0), max_mem=avail_mem)
+                              rest=rest_coef + M + extra_mem.get('m', 0),
+                              max_mem=avail_mem)
     ddev = torch.device('cuda:%d' % int(device_id))
-    with tcd.device(ddev):
+    s1 = tcd.Stream(ddev)
+    with tcd.device(ddev), tcd.stream(s1):
         # First collect necessary memory
         mem_needed = n * M + n * T
         if not cuda_inputs:
@@ -387,13 +390,13 @@ def generic_fdmmv(proc_idx, queue, device_id):
                     c_g_X1s = X1[i:i + ic, k:k + kc]
                     c_g_X2s = X2[:, k:k + kc]
                 else:
-                    c_g_X1s = copy_to_device_noorder(ic, kc, X1, i, k, X1s_gpu, 0, 0)
-                    c_g_X2s = copy_to_device_noorder(M, kc, X2, 0, k, X2s_gpu, 0, 0)
+                    c_g_X1s = copy_to_device_noorder(ic, kc, X1, i, k, X1s_gpu, 0, 0, s=s1)
+                    c_g_X2s = copy_to_device_noorder(M, kc, X2, 0, k, X2s_gpu, 0, 0, s=s1)
                 kernel._apply(c_g_X1s, c_g_X2s.T, c_g_ker)
             kernel._finalize(c_g_ker, ddd)
 
             if w is not None:
-                c_g_w = copy_to_device_noorder(ic, T, w, i, 0, w_gpu, 0, 0)
+                c_g_w = copy_to_device_noorder(ic, T, w, i, 0, w_gpu, 0, 0, s=s1)
             else:
                 c_g_w = w_gpu.narrow(0, 0, ic)
                 c_g_w.fill_(0.0)
@@ -402,7 +405,7 @@ def generic_fdmmv(proc_idx, queue, device_id):
             out_gpu.addmm_(c_g_ker.T, c_g_w)
 
         if not cuda_inputs:
-            copy_to_device_noorder(M, T, out_gpu, 0, 0, out, 0, 0)
+            copy_to_device_noorder(M, T, out_gpu, 0, 0, out, 0, 0, s=s1)
     return out
 
 
