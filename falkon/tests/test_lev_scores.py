@@ -138,20 +138,20 @@ def test_compare_deff_outputs(dtype):
     f_order = False
     device = "cpu"
 
-    X = torch.from_numpy(gen_random(2000, 3, dtype, F=f_order)).to(device=device)
-    M = X[:100].clone().detach().requires_grad_()
-    s = torch.tensor([5.0] * X.shape[1], dtype=X.dtype, device=device).requires_grad_()
-    p = torch.tensor(0.001, dtype=X.dtype, device=device).requires_grad_()
+    X = torch.from_numpy(gen_random(1000, 100, dtype, F=f_order)).to(device=device)
+    M = X[:40].clone().detach().requires_grad_()
+    s = torch.tensor([10.0] * X.shape[1], dtype=X.dtype, device=device).requires_grad_()
+    p = torch.tensor(1e-2, dtype=X.dtype, device=device).requires_grad_()
     K = GaussianKernel(s)
 
     print()
     print("True formula d_eff", torch.diag(K(X, X) @ torch.pinverse(
         K(X, X) + torch.diag_embed((p*X.shape[0]).expand(X.shape[0])).to(X))).sum().item())
 
-    d_eff = gauss_effective_dimension(s, p, X, t=30, deterministic=True)
+    d_eff = gauss_effective_dimension(s, p, X, t=30, deterministic=False)
     print("d_eff", d_eff.item())
 
-    d_eff_nys = gauss_nys_effective_dimension(s, p, M, X, t=30, deterministic=True)
+    d_eff_nys = gauss_nys_effective_dimension(s, p, M, X, t=30, deterministic=False)
     print("d_eff_nys", d_eff_nys.item())
 
     d_eff_nys_real = torch.diag(
