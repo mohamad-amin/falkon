@@ -185,7 +185,7 @@ def generic_fmmv(proc_idx, queue, device_id):
             X2s_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(M, d), other=X2, offset=flat_offset)
             mmv_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(n, T), other=out, offset=flat_offset)
             v_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(M, T), other=v, offset=flat_offset)
-            copy_to_device_noorder(M, T, v, 0, 0, v_gpu, 0, 0)
+            copy_to_device_noorder(M, T, v, 0, 0, v_gpu, 0, 0, s=s1)
         else:
             v_gpu = v
 
@@ -200,8 +200,8 @@ def generic_fmmv(proc_idx, queue, device_id):
                     c_g_X1s = X1[i:i + ic, k:k + kc]
                     c_g_X2s = X2[:, k:k + kc]
                 else:
-                    c_g_X1s = copy_to_device_noorder(ic, kc, X1, i, k, X1s_gpu, 0, 0)
-                    c_g_X2s = copy_to_device_noorder(M, kc, X2, 0, k, X2s_gpu, 0, 0)
+                    c_g_X1s = copy_to_device_noorder(ic, kc, X1, i, k, X1s_gpu, 0, 0, s=s1)
+                    c_g_X2s = copy_to_device_noorder(M, kc, X2, 0, k, X2s_gpu, 0, 0, s=s1)
                 kernel._apply(c_g_X1s, c_g_X2s.T, c_g_ker)
             kernel._finalize(c_g_ker, ddd)
             # Multiply by the vector v
@@ -212,7 +212,7 @@ def generic_fmmv(proc_idx, queue, device_id):
             torch.mm(c_g_ker, v_gpu, out=c_g_mmv)  # n x T
             # Copy back to host
             if not cuda_inputs:
-                copy_to_host_noorder(ic, T, c_g_mmv, 0, 0, out, i, 0)
+                copy_to_host_noorder(ic, T, c_g_mmv, 0, 0, out, i, 0, s=s1)
         s1.synchronize()
     return out
 
@@ -369,7 +369,7 @@ def generic_fdmmv(proc_idx, queue, device_id):
             out_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(M, T), other=out, offset=flat_offset)
             if v is not None:
                 v_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(M, T), other=v, offset=flat_offset)
-                copy_to_device_noorder(M, T, v, 0, 0, v_gpu, 0, 0)
+                copy_to_device_noorder(M, T, v, 0, 0, v_gpu, 0, 0, s=s1)
         else:
             out_gpu = out
             if v is not None:
@@ -454,7 +454,7 @@ def distk_fmmv(proc_idx, queue, device_id):
             if cuda_inputs:
                 cur_X1s_gpu = X1.narrow(0, i, nb)  # n x D
             else:
-                cur_X1s_gpu = copy_to_device_noorder(nb, D, X1, i, 0, X1s_gpu, 0, 0)
+                cur_X1s_gpu = copy_to_device_noorder(nb, D, X1, i, 0, X1s_gpu, 0, 0, s=s1)
             sq1 = torch.norm(cur_X1s_gpu, p=2, dim=1, keepdim=True).pow_(2)
             if cuda_inputs:
                 cur_out_gpu = out.narrow(0, i, nb)  # n x T
@@ -468,8 +468,8 @@ def distk_fmmv(proc_idx, queue, device_id):
                     cur_X2s_gpu = X2.narrow(0, j, mb)  # m x D
                     cur_vs_gpu = v.narrow(0, j, mb)  # m x T
                 else:
-                    cur_X2s_gpu = copy_to_device_noorder(mb, D, X2, j, 0, X2s_gpu, 0, 0)  # m x D
-                    cur_vs_gpu = copy_to_device_noorder(mb, T, v, j, 0, vs_gpu, 0, 0)  # m x T
+                    cur_X2s_gpu = copy_to_device_noorder(mb, D, X2, j, 0, X2s_gpu, 0, 0, s=s1)  # m x D
+                    cur_vs_gpu = copy_to_device_noorder(mb, T, v, j, 0, vs_gpu, 0, 0, s=s1)  # m x T
                 cur_nm_gpu = nm_gpu[:nb, :mb]  # n x m
 
                 sq2 = torch.norm(cur_X2s_gpu, p=2, dim=1, keepdim=True).pow_(2)
@@ -485,7 +485,7 @@ def distk_fmmv(proc_idx, queue, device_id):
                 cur_out_gpu.addmm_(cur_nm_gpu, cur_vs_gpu)  # n x T
             if not cuda_inputs:
                 # send result to CPU
-                copy_to_host_noorder(nb, T, out_gpu, 0, 0, out, i, 0)
+                copy_to_host_noorder(nb, T, out_gpu, 0, 0, out, i, 0, s=s1)
         s1.synchronize()
     return out
 
