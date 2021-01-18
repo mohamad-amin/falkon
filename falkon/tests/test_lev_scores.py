@@ -3,11 +3,15 @@ import time
 import pytest
 import torch
 import numpy as np
+from falkon.center_selection import FixedSelector
+
+from falkon import Falkon, FalkonOptions
+from falkon.utils import decide_cuda
 
 from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
 from falkon.hypergrad.leverage_scores import (
     full_deff, full_deff_simple, subs_deff_simple,
-    GaussEffectiveDimension, gauss_effective_dimension,
+    GaussEffectiveDimension, gauss_effective_dimension, gauss_nys_effective_dimension,
 )
 from falkon.kernels import GaussianKernel
 from falkon.tests.gen_random import gen_random
@@ -55,7 +59,10 @@ def test_full_impl():
         # print(torch.autograd.grad(d_eff, s), torch.autograd.grad(f_d_eff, s), torch.autograd.grad(f_d_eff2, s))
 
 
-@pytest.mark.parametrize("device", ["cpu", "cuda:0"])
+@pytest.mark.parametrize("device", [
+    "cpu",
+    pytest.param("cuda:0", marks=[pytest.mark.skipif(not decide_cuda(), reason="No GPU found.")])
+])
 @pytest.mark.parametrize("dtype", [np.float64])
 def test_hutch_grad(device, dtype):
     torch.manual_seed(3)
@@ -71,6 +78,89 @@ def test_hutch_grad(device, dtype):
         lambda si, Xi, pi: gauss_effective_dimension(si, pi, Xi, t=50, deterministic=True),
         (s, X, p), eps=1e-4, atol=1e-4)
 
+
+@pytest.mark.parametrize("device", [
+    "cpu",
+    pytest.param("cuda:0", marks=[pytest.mark.skipif(not decide_cuda(), reason="No GPU found.")])
+])
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_hutch_grad_nys(device, dtype):
+    torch.manual_seed(3)
+    f_order = False
+
+    X = torch.from_numpy(gen_random(100, 3, dtype, F=f_order)).to(device=device)
+    M = X[:20].clone().detach().requires_grad_()
+    s = torch.tensor([5.0] * X.shape[1], dtype=X.dtype, device=device).requires_grad_()
+    p = torch.tensor(0.01, dtype=X.dtype, device=device).requires_grad_()
+
+    print()
+    torch.autograd.gradcheck(
+        lambda si, Mi, Xi, pi: gauss_nys_effective_dimension(si, pi, Mi, Xi, t=10, deterministic=True),
+        (s, M, X, p), eps=1e-4, atol=1e-4)
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_nystrom_deff_timings(dtype):
+    torch.manual_seed(3)
+    f_order = False
+    device = "cpu"
+
+    X = torch.from_numpy(gen_random(2000, 3, dtype, F=f_order)).to(device=device)
+    M = X[:100].clone().detach().requires_grad_()
+    s = torch.tensor([5.0] * X.shape[1], dtype=X.dtype, device=device).requires_grad_()
+    p = torch.tensor(0.001, dtype=X.dtype, device=device).requires_grad_()
+
+    t_ful = []
+    t_nys = []
+
+    for i in range(10):
+        t_s = time.time()
+        d_eff = gauss_effective_dimension(s, p, X, t=30, deterministic=True)
+        t_fwd = time.time()
+        d_eff.backward()
+        t_bwd = time.time()
+        t_ful.append((t_fwd - t_s, t_bwd - t_fwd))
+
+        t_s = time.time()
+        d_eff_nys = gauss_nys_effective_dimension(s, p, M, X, t=30, deterministic=True)
+        t_fwd = time.time()
+        d_eff_nys.backward()
+        t_bwd = time.time()
+        t_nys.append((t_fwd - t_s, t_bwd - t_fwd))
+        np.testing.assert_allclose(d_eff.cpu().detach().numpy(), d_eff_nys.cpu().detach().numpy(), rtol=1e-2)
+
+    print("Full timings: %.4fs - %.4fs" % (np.min([t[0] for t in t_ful]), np.min([t[1] for t in t_ful])))
+    print("Nystrom timings: %.4fs - %.4fs" % (np.min([t[0] for t in t_nys]), np.min([t[1] for t in t_nys])))
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_compare_deff_outputs(dtype):
+    torch.manual_seed(3)
+    f_order = False
+    device = "cpu"
+
+    X = torch.from_numpy(gen_random(2000, 3, dtype, F=f_order)).to(device=device)
+    M = X[:100].clone().detach().requires_grad_()
+    s = torch.tensor([5.0] * X.shape[1], dtype=X.dtype, device=device).requires_grad_()
+    p = torch.tensor(0.001, dtype=X.dtype, device=device).requires_grad_()
+    K = GaussianKernel(s)
+
+    print()
+    print("True formula d_eff", torch.diag(K(X, X) @ torch.pinverse(
+        K(X, X) + torch.diag_embed((p*X.shape[0]).expand(X.shape[0])).to(X))).sum().item())
+
+    d_eff = gauss_effective_dimension(s, p, X, t=30, deterministic=True)
+    print("d_eff", d_eff.item())
+
+    d_eff_nys = gauss_nys_effective_dimension(s, p, M, X, t=30, deterministic=True)
+    print("d_eff_nys", d_eff_nys.item())
+
+    d_eff_nys_real = torch.diag(
+        K(X, M) @ torch.pinverse(K(M, X) @ K(X, M) + p * X.shape[0] * K(M, M)) @ K(M, X)).sum()
+    print("d_eff_nys_real", d_eff_nys_real.item())
+
+    d_eff_double_nys = torch.diag(
+        K(X, M) @ torch.pinverse(K(M, M) @ K(M, M) + p * X.shape[0] * K(M, M)) @ K(M, X)).sum()
+    print("d_eff_double_nys", d_eff_double_nys.item())
 
 def test_gpytorch_quad_derivative():
     X = torch.from_numpy(gen_random(1000, 3, np.float32, F=False))

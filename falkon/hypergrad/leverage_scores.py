@@ -1,13 +1,19 @@
 import time
 
 import torch
+from falkon.center_selection import FixedSelector
+
+from falkon import Falkon
+from falkon.models.model_utils import FalkonBase
+
 from falkon.kernels import GaussianKernel
 
 import falkon
+from falkon.options import FalkonOptions
 from falkon.la_helpers import potrf, trsm
 
 
-__all__ = ("gauss_effective_dimension",)
+__all__ = ("gauss_effective_dimension", "gauss_nys_effective_dimension")
 
 def subs_deff_simple(kernel: falkon.kernels.Kernel,
                      penalty: torch.Tensor,
@@ -159,6 +165,77 @@ class GaussEffectiveDimension(torch.autograd.Function):
                 needs_grad.append(ctx.saved_tensors[i])
         grads = torch.autograd.grad(loss, needs_grad, retain_graph=True)
         # print("HutchTrEst backward took %.2fs + %.2fs" % (bwd_mid - bwd_start, time.time() - bwd_mid))
+        result = []
+        j = 0
+        for i in range(len(ctx.needs_input_grad)):
+            if ctx.needs_input_grad[i]:
+                result.append(grads[j])
+                j += 1
+            else:
+                result.append(None)
+        return tuple(result)
+
+
+def gauss_nys_effective_dimension(kernel_args, penalty, M, X, t, deterministic=False):
+    opt = FalkonOptions(keops_active="no")
+    K = GaussianKernel(kernel_args, opt=opt)
+    flk = Falkon(kernel=K, penalty=penalty, M=M.shape[0],
+                 center_selection=FixedSelector(M), maxiter=10, options=opt)
+
+    return GaussNysEffectiveDimension.apply(kernel_args, penalty, M, X, t, deterministic, flk)
+
+
+# noinspection PyMethodOverriding
+class GaussNysEffectiveDimension(torch.autograd.Function):
+    NUM_DIFF_ARGS = 3
+
+    @staticmethod
+    @torch.jit.script
+    def _naive_torch_gaussian_kernel(X1, X2, sigma):
+        pairwise_dists = my_cdist(X1 / sigma, X2 / sigma)
+        return torch.exp(-0.5 * pairwise_dists)
+
+    @staticmethod
+    def forward(ctx, kernel_args, penalty, M, X, t, deterministic, flk: 'FalkonBase'):
+        n = X.shape[0]
+        if deterministic:
+            torch.manual_seed(12)
+        Z = torch.randn(t, n, dtype=X.dtype, device=X.device).T  # n x t
+
+        # TODO: flk already has args, penalty, M
+        with torch.autograd.no_grad():
+            f1 = flk.fit(X, Z).alpha_
+
+        with torch.autograd.enable_grad():
+            f2 = GaussNysEffectiveDimension._naive_torch_gaussian_kernel(M, X, kernel_args) @ Z
+
+            ctx.save_for_backward(kernel_args, penalty, M)
+            ctx.f1 = f1
+            ctx.f2 = f2
+            ctx.X = X
+            return (f1 * f2).sum(0).mean()
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        X, f1, f2 = ctx.X, ctx.f1, ctx.f2
+        n = X.shape[0]
+        kernel_args, penalty, M = ctx.saved_tensors
+
+        with torch.autograd.enable_grad():
+            l1 = (f2 * f1).sum(0).mean()
+            K_nm = GaussNysEffectiveDimension._naive_torch_gaussian_kernel(X, M, kernel_args)
+            K_mm = GaussNysEffectiveDimension._naive_torch_gaussian_kernel(M, M, kernel_args)
+            l2_p1 = K_nm @ f1
+            l2_p2 = K_mm @ f1
+            l2 = (torch.square(l2_p1)).sum(0).mean() + penalty * n * (f1 * l2_p2).sum(0).mean()
+
+            loss = grad_output * (2 * l1 - l2)
+
+        needs_grad = []
+        for i in range(GaussNysEffectiveDimension.NUM_DIFF_ARGS):
+            if ctx.needs_input_grad[i]:
+                needs_grad.append(ctx.saved_tensors[i])
+        grads = torch.autograd.grad(loss, needs_grad, retain_graph=True, allow_unused=True)
         result = []
         j = 0
         for i in range(len(ctx.needs_input_grad)):
