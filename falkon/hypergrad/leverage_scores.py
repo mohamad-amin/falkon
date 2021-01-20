@@ -1,14 +1,14 @@
 import time
 
 import torch
-from falkon.center_selection import FixedSelector
-
-from falkon import Falkon
-from falkon.models.model_utils import FalkonBase
-
-from falkon.kernels import GaussianKernel
 
 import falkon
+from falkon import Falkon, InCoreFalkon
+from falkon.center_selection import FixedSelector
+from falkon.optim import FalkonConjugateGradient
+from falkon.preconditioner import FalkonPreconditioner
+from falkon.models.model_utils import FalkonBase
+from falkon.kernels import GaussianKernel
 from falkon.options import FalkonOptions
 from falkon.la_helpers import potrf, trsm
 
@@ -176,18 +176,21 @@ class GaussEffectiveDimension(torch.autograd.Function):
         return tuple(result)
 
 
-def gauss_nys_effective_dimension(kernel_args, penalty, M, X, t, deterministic=False):
+def gauss_nys_effective_dimension(kernel_args, penalty, M, X, t, deterministic=False, preconditioner=None):
     opt = FalkonOptions(keops_active="no")
     K = GaussianKernel(kernel_args, opt=opt)
-    flk = Falkon(kernel=K, penalty=penalty, M=M.shape[0],
-                 center_selection=FixedSelector(M), maxiter=10, options=opt)
+    if preconditioner is None:
+        preconditioner = FalkonPreconditioner(penalty, K, opt)
+        preconditioner.init(M)
+    optim = FalkonConjugateGradient(K, preconditioner, opt)
 
-    return GaussNysEffectiveDimension.apply(kernel_args, penalty, M, X, t, deterministic, flk)
+    return GaussNysEffectiveDimension.apply(kernel_args, penalty, M, X, t, deterministic, optim, preconditioner)
 
 
 # noinspection PyMethodOverriding
 class GaussNysEffectiveDimension(torch.autograd.Function):
     NUM_DIFF_ARGS = 3
+    MAX_ITER = 10
 
     @staticmethod
     @torch.jit.script
@@ -196,7 +199,7 @@ class GaussNysEffectiveDimension(torch.autograd.Function):
         return torch.exp(-0.5 * pairwise_dists)
 
     @staticmethod
-    def forward(ctx, kernel_args, penalty, M, X, t, deterministic, flk: 'FalkonBase'):
+    def forward(ctx, kernel_args, penalty, M, X, t, deterministic, optim: FalkonConjugateGradient, precond):
         n = X.shape[0]
         if deterministic:
             torch.manual_seed(12)
@@ -204,7 +207,10 @@ class GaussNysEffectiveDimension(torch.autograd.Function):
 
         # TODO: flk already has args, penalty, M
         with torch.autograd.no_grad():
-            f1 = flk.fit(X, Z).alpha_
+            beta = optim.solve(X, M, Z, penalty, initial_solution=None,
+                               max_iter=GaussNysEffectiveDimension.MAX_ITER,
+                               callback=None)
+            f1 = precond.apply(beta)
 
         with torch.autograd.enable_grad():
             f2 = GaussNysEffectiveDimension._naive_torch_gaussian_kernel(M, X, kernel_args) @ Z

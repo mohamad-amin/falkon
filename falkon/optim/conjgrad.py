@@ -75,8 +75,8 @@ class ConjugateGradient(Optimizer):
                 # noinspection PyArgumentList
                 Rsnew = torch.sum(R.pow(2), dim=0)
                 if Rsnew.abs().max().sqrt() < self.params.cg_tolerance:
-                    print("Stopping conjugate gradient descent at "
-                          "iteration %d. Solution has converged." % (i + 1))
+                    #print("Stopping conjugate gradient descent at "
+                    #      "iteration %d. Solution has converged." % (i + 1))
                     break
 
                 P = R + torch.mm(P, torch.diag(Rsnew / (Rsold + m_eps)))
