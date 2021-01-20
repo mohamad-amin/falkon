@@ -1,9 +1,11 @@
 import numpy as np
 import pytest
 import torch
-from falkon.models.incore_falkon import InCoreFalkon
+import multiprocessing
 from sklearn import datasets
 
+from falkon.models.incore_falkon import InCoreFalkon
+from falkon.center_selection import FixedSelector
 from falkon import Falkon, kernels
 from falkon.options import FalkonOptions
 from falkon.utils import decide_cuda
@@ -172,3 +174,68 @@ class TestIncoreFalkon:
         assert cpreds.device == Xc.device
         err = error_fn(cpreds, Yc)[0]
         assert err < 5
+
+
+
+def _runner(X, Y):
+    num_rep = 5
+    kernel = kernels.GaussianKernel(20.0)
+    X, Y = X.cuda(), Y.cuda()
+    opt = FalkonOptions(use_cpu=False, keops_active="no", debug=False, #never_store_kernel=True,
+                        max_gpu_mem=1*2**30, cg_full_gradient_every=10,
+                        min_cuda_iter_size_32=0, min_cuda_iter_size_64=0, min_cuda_pc_size_32=0, min_cuda_pc_size_64=0)
+    out = []
+    barrier.wait()
+    for rep in range(num_rep):
+        center_sel = FixedSelector(X[:2000])
+        flk = InCoreFalkon(
+            kernel=kernel, penalty=1e-6, M=2000, seed=10, options=opt, maxiter=15, center_selection=center_sel)
+        flk.fit(X, Y)
+        for j in range(1):
+            out.append(flk.predict(X))
+    return [o.cpu() for o in out]
+
+def _runner_init(b):
+    global barrier
+    barrier = b
+
+
+@pytest.mark.skipif(not decide_cuda(), reason="No GPU found.")
+class TestStressInCore:
+    def test_multiple_falkons(self):
+        num_processes = 6
+        X, Y = datasets.make_regression(50000, 2048, random_state=11)
+        X = torch.from_numpy(X.astype(np.float32))
+        Y = torch.from_numpy(Y.astype(np.float32).reshape(-1, 1))
+
+        multiprocessing.set_start_method('spawn')
+        barrier = multiprocessing.Barrier(num_processes)
+        with multiprocessing.Pool(num_processes, initializer=_runner_init, initargs=(barrier, )) as pool:
+            proc = []
+            for i in range(num_processes):
+                async_res = pool.apply_async(_runner, (X, Y))
+                proc.append(async_res)
+            results = [p.get() for p in proc]
+        results = [item for sublist in results for item in sublist]
+        print("Gotten %d results" % (len(results)))
+        #assert len(results) == num_processes, "Wrong number of results received"
+
+        # Expected result
+        kernel = kernels.GaussianKernel(20.0)
+        X, Y = X.cuda(), Y.cuda()
+        opt = FalkonOptions(use_cpu=False, keops_active="no", debug=False, #never_store_kernel=True,
+                            max_gpu_mem=1*2**30, cg_full_gradient_every=10)
+        center_sel = FixedSelector(X[:2000])
+        flk = InCoreFalkon(
+            kernel=kernel, penalty=1e-6, M=2000, seed=10, options=opt,
+            maxiter=15, center_selection=center_sel)
+        flk.fit(X, Y)
+        expected = flk.predict(X).cpu()
+        wrong = 0
+        for i in range(len(results)):
+            try:
+                np.testing.assert_allclose(expected.numpy(), results[i].numpy(), rtol=1e-7)
+            except:
+                wrong += 1
+                raise
+        assert wrong == 0, "%d results were not equal" % (wrong)

@@ -170,7 +170,7 @@ def run_nkrr(dataset: Dataset,
              opt_centers: bool,
              ):
     cuda = True
-    batch_size = 2000
+    batch_size = 100_000
     loss_every = 20
     mode = "flk"  # flk, flk_val
 
@@ -189,7 +189,7 @@ def run_nkrr(dataset: Dataset,
     err_fns = get_err_fns(dataset)
 
     # Center selection
-    if 'centers' in metadata:
+    if 'centers' in metadata and False:
         centers = torch.from_numpy(metadata['centers'])
     else:
         selector = UniformSelector(np.random.default_rng(seed))
@@ -286,9 +286,9 @@ def run_exp(dataset: Dataset,
             M: int,
             seed: int):
     cuda = True
-    train_frac = 0.7
+    train_frac = 0.8
     sgd = False
-    batch_size = 32_000
+    batch_size = 25_000
     cg_tol = 1e-4
     warm_start = True
     error_every = 10

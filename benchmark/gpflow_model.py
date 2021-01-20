@@ -110,7 +110,7 @@ class TrainableSGPR():
             kernel=self.kernel,
             inducing_variable=self.Z,
             noise_variance=0.1)
-        self.model.likelihood.variance = gpflow.Parameter(1, transform=tfp.bijectors.Identity())
+        #self.model.likelihood.variance = gpflow.Parameter(1, transform=tfp.bijectors.Identity())
 
         # Setup training parameters
         if not self.train_hyperparams:
@@ -146,9 +146,11 @@ class TrainableSGPR():
                 step_fn()
                 t_elapsed += time.time() - t_s
                 val_err, err_name = self.err_fn(Yval, self.predict(Xval))
+                gpflow.utilities.print_summary(self.model)
                 print(f"Epoch {step + 1} - {t_elapsed:7.2f}s elapsed - "
                       f"validation {err_name} {val_err:7.5f}", flush=True)
                 #print("loss: %7.3f - sigma: %7.2f - variance: %7.2f" % (self.model.training_loss(), self.model.kernel.lengthscales.numpy(), self.model.likelihood.variance.numpy()))
+            print(self.model.inducing_variable.Z.numpy())
 
         print("Final model is ")
         gpflow.utilities.print_summary(self.model)
@@ -331,8 +333,10 @@ class TrainableSVGP():
             outcome = step_fn()
             outcome = int(outcome) + 1
             t_elapsed += time.time() - t_s
-            if step % 700 == 0:
+            if step % 500 == 0:
                 print("Step %d -- Elapsed %.2fs" % (step, t_elapsed), flush=True)
+                gpflow.utilities.print_summary(self.model)
+                print(self.model.inducing_variable.Z.numpy())
             if (step + 1) % self.error_every == 0:
                 preds = self.predict(Xval)
                 val_err, err_name = self.err_fn(Yval, preds)

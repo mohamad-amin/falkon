@@ -8,7 +8,7 @@ from falkon.optim import ConjugateGradient
 
 import falkon
 from falkon.center_selection import FixedSelector, CenterSelector
-from falkon.hypergrad.leverage_scores import subs_deff_simple, gauss_effective_dimension
+from falkon.hypergrad.leverage_scores import subs_deff_simple, gauss_effective_dimension, gauss_nys_effective_dimension
 from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
 
 
@@ -210,6 +210,7 @@ class FLK_HYP_NKRR(nn.Module):
         self.register_parameter('penalty', penalty)
         sigma = nn.Parameter(torch.tensor(sigma_init, requires_grad=True))
         self.register_parameter('sigma', sigma)
+        #self.register_buffer('sigma', sigma)
 
         centers = nn.Parameter(centers_init.requires_grad_(opt_centers))
         if opt_centers:
@@ -232,66 +233,93 @@ class FLK_HYP_NKRR(nn.Module):
         pass
 
     def adapt_hps(self, X, Y):
+        use_hyper = False
+        use_deff = True
         k = DiffGaussianKernel(self.sigma, self.opt)
         hparams = [w for k, w in self.named_parameters()]
 
         # 1: Derivative of validation loss wrt hps and wrt params. Validation loss here is simply the unregularized MSE on training data
         preds = self.predict(X)
-        loss = torch.mean((preds - Y) ** 2)
+        loss = torch.mean((preds - Y) ** 2) + torch.exp(-self.penalty) * (self.alpha.T @ (k.mmv(self.centers, self.centers, self.alpha)))
 
-        mse_grad_alpha = k.mmv(self.centers, X, preds - Y) / X.shape[0]
-        mse_grad_hp = torch.autograd.grad(loss, hparams, allow_unused=True)
+        mse_grad_hp = torch.autograd.grad(loss, hparams, allow_unused=True, retain_graph=True)
+        if use_hyper:
+            mse_grad_alpha = k.mmv(self.centers, X, preds - Y) / X.shape[0]
 
-        # 2: Derivative of training loss wrt params
-        # 2/N * (K_MN(K_NM @ alpha - Y)) + 2*lambda*(K_MM @ alpha)
-        first_diff = (mse_grad_alpha +
-                      torch.exp(-self.penalty) * k.mmv(self.centers, self.centers, self.alpha))
+            # 2: Derivative of training loss wrt params
+            # 2/N * (K_MN(K_NM @ alpha - Y)) + 2*lambda*(K_MM @ alpha)
+            func_norm = k.mmv(self.centers, self.centers, self.alpha)
+            first_diff = mse_grad_alpha + torch.exp(-self.penalty) * func_norm
 
-        # 3: inverse-hessian of the training loss wrt params @ val-gradient wrt params
-        vs = self.solve_hessian(mse_grad_alpha)
+            # 3: inverse-hessian of the training loss wrt params @ val-gradient wrt params
+            vs = self.solve_hessian(X, mse_grad_alpha)
 
-        # 4: Multiply the result by the derivative of `first_diff` wrt hparams.
-        mixed = torch.autograd.grad(first_diff, hparams, grad_outputs=vs, allow_unused=True)
+            # 4: Multiply the result by the derivative of `first_diff` wrt hparams.
+            mixed = torch.autograd.grad(first_diff, hparams, grad_outputs=vs, allow_unused=True)
+        else:
+            mixed = [None] * len(hparams)
 
-        # 5: d_eff gradient
-        d_eff = gauss_effective_dimension(self.sigma, torch.exp(-self.penalty), self.centers, t=20)
-        reg = d_eff / X.shape[0]
-        d_eff_grad = torch.autograd.grad(reg, hparams)
+        if use_deff:
+            # 5: d_eff gradient
+            nys_d_eff = gauss_nys_effective_dimension(self.sigma, torch.exp(-self.penalty), M=self.centers,
+                                                      X=X, t=20, preconditioner=None)#self.model.precond)
+            nys_reg = (2 * nys_d_eff) / X.shape[0]
+            #d_eff = gauss_effective_dimension(self.sigma, torch.exp(-self.penalty), X, t=20)
+            #print("Full d_eff=%.4e - Nystrom d_eff=%.4e" % (d_eff, nys_d_eff))
+            #reg = d_eff / X.shape[0]
+            #d_eff_grad = torch.autograd.grad(reg, hparams, allow_unused=True)
+            nys_d_eff_grad = torch.autograd.grad(nys_reg, hparams, allow_unused=False)
+            #print("lambda grad (full d_eff = %.4e) (nystrom d_eff = %.4e)" % (d_eff_grad[0].item(), nys_d_eff_grad[0].item()))
+        else:
+            d_eff_grad = [None] * len(hparams)
 
         final_grads = []
-        for ghp, mix, deg in zip(mse_grad_hp, mixed, d_eff_grad):
+        for ghp, mix, deg in zip(mse_grad_hp, mixed, nys_d_eff_grad):
+            grad = 0
             if ghp is not None:
-                final_grads.append(ghp - mix + deg)
-            else:
-                final_grads.append(-mix + deg)
+                grad += ghp
+            if mix is not None:
+                grad -= mix
+            if deg is not None:
+                grad += deg
+            final_grads.append(grad)
+        #print("center grads: %6.4e - %6.4e + %6.4e = %6.4e" % (mse_grad_hp[2].sum(), mixed[2].sum(), d_eff_grad[2].sum(), final_grads[2].sum()))
+        #print("d_eff: %6.4e" % (reg))
+        #print("penalty grads: %6.4e + %6.4e = %6.4e" % (mse_grad_hp[0], d_eff_grad[0], final_grads[0]))
+        #print("sigma grads: %6.4e - %6.4e + %6.4e = %6.4e" % (mse_grad_hp[1], mixed[1], d_eff_grad[1], final_grads[1]))
+        #print("sigma = %.3f - grad %.2e" % (self.sigma[0].item(), final_grads[1][0].item()))
+        #print("penalty = %.3f - grad %.2e" % (self.penalty.item(), final_grads[0].item()))
 
         for l, g in zip(hparams, final_grads):
+            if not l.requires_grad:
+                continue
             if l.grad is None:
                 l.grad = torch.zeros_like(l)
             if g is not None:
                 l.grad += g
 
-    def solve_hessian(self, vector):
+    def solve_hessian(self, X, vector):
         if self.model is None:
             raise RuntimeError("Model must be present when solving for the inverse hessian.")
-        penalty = torch.exp(-self.penalty)
+        with torch.no_grad():
+            penalty = torch.exp(-self.penalty)
 
-        vector = vector.detach()
-        N = self.Xtr.shape[0]
+            vector = vector.detach()
+            N = X.shape[0]
 
-        cg = ConjugateGradient(self.opt)
-        kernel = self.model.kernel
-        precond = self.model.precond
+            cg = ConjugateGradient(self.opt)
+            kernel = self.model.kernel
+            precond = self.model.precond
 
-        B = precond.apply_t(vector / N)
-        def mmv(sol):
-            v = precond.invA(sol)
-            cc = kernel.dmmv(self.Xtr, self.flk.ny_points_, precond.invT(v), None)
-            return precond.invAt(precond.invTt(cc / N) + penalty * v)
-        d = cg.solve(X0=None, B=B, mmv=mmv, max_iter=self.flk_maxiter)
-        c = precond.apply(d)
+            B = precond.apply_t(vector)
+            def mmv(sol):
+                v = precond.invA(sol)
+                cc = kernel.dmmv(X, self.model.ny_points_, precond.invT(v), None)
+                return precond.invAt(precond.invTt(cc) + penalty * v)
+            d = cg.solve(X0=None, B=B, mmv=mmv, max_iter=self.flk_maxiter)
+            c = precond.apply(d)
 
-        return c
+            return c
 
     def adapt_alpha(self, X, Y, n_tot=None):
         k = DiffGaussianKernel(self.sigma.detach(), self.opt)
@@ -494,12 +522,13 @@ def flk_nkrr_ho(Xtr, Ytr,
                 running_error += err * preds.shape[0]
                 if i % loss_every == (loss_every - 1):
                     print(f"step {i} - {err_name} {running_error / samples_processed}")
-                    running_error = 0
-                    samples_processed = 0
         except StopIteration:
+            train_error = 1
+            if samples_processed > 0:
+                train_error = running_error / samples_processed
             cum_time = test_predict(model=model, test_loader=test_loader, err_fn=err_fn,
                                     epoch=epoch, time_start=e_start, cum_time=cum_time,
-                                    train_error=running_error / samples_processed)
+                                    train_error=train_error)
     return model.get_model()
 
 
