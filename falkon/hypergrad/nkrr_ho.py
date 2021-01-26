@@ -210,7 +210,6 @@ class FLK_HYP_NKRR(nn.Module):
         self.register_parameter('penalty', penalty)
         sigma = nn.Parameter(torch.tensor(sigma_init, requires_grad=True))
         self.register_parameter('sigma', sigma)
-        #self.register_buffer('sigma', sigma)
 
         centers = nn.Parameter(centers_init.requires_grad_(opt_centers))
         if opt_centers:
@@ -235,6 +234,7 @@ class FLK_HYP_NKRR(nn.Module):
     def adapt_hps(self, X, Y):
         use_hyper = False
         use_deff = True
+        nys_d_eff_c = 2
         k = DiffGaussianKernel(self.sigma, self.opt)
         hparams = [w for k, w in self.named_parameters()]
 
@@ -263,7 +263,7 @@ class FLK_HYP_NKRR(nn.Module):
             # 5: d_eff gradient
             nys_d_eff = gauss_nys_effective_dimension(self.sigma, torch.exp(-self.penalty), M=self.centers,
                                                       X=X, t=20, preconditioner=None)#self.model.precond)
-            nys_reg = (2 * nys_d_eff) / X.shape[0]
+            nys_reg = (nys_d_eff_c * nys_d_eff) / X.shape[0]
             #d_eff = gauss_effective_dimension(self.sigma, torch.exp(-self.penalty), X, t=20)
             #print("Full d_eff=%.4e - Nystrom d_eff=%.4e" % (d_eff, nys_d_eff))
             #reg = d_eff / X.shape[0]
