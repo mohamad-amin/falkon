@@ -12,6 +12,7 @@ from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
 from falkon.hypergrad.leverage_scores import (
     full_deff, full_deff_simple, subs_deff_simple,
     GaussEffectiveDimension, gauss_effective_dimension, gauss_nys_effective_dimension,
+    loss_and_deff,
 )
 from falkon.kernels import GaussianKernel
 from falkon.tests.gen_random import gen_random
@@ -97,6 +98,27 @@ def test_hutch_grad_nys(device, dtype):
     torch.autograd.gradcheck(
         lambda si, Mi, Xi, pi: gauss_nys_effective_dimension(si, pi, Mi, Xi, t=10, deterministic=True),
         (s, M, X, p), eps=1e-4, atol=1e-4)
+
+
+@pytest.mark.parametrize("device", [
+    "cpu",
+    pytest.param("cuda:0", marks=[pytest.mark.skipif(not decide_cuda(), reason="No GPU found.")])
+])
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_lossdeff_grad_nys(device, dtype):
+    torch.manual_seed(3)
+    f_order = False
+
+    X = torch.from_numpy(gen_random(100, 3, dtype, F=f_order)).to(device=device)
+    Y = X.sum(1).reshape(-1, 1)
+    M = X[:20].clone().detach().requires_grad_()
+    s = torch.tensor([5.0] * X.shape[1], dtype=X.dtype, device=device).requires_grad_()
+    p = torch.tensor(0.01, dtype=X.dtype, device=device).requires_grad_()
+
+    print()
+    torch.autograd.gradcheck(
+        lambda si, Mi, Xi, Yi, pi: loss_and_deff(si, pi, Mi, Xi, Yi, t=10, deterministic=True),
+        (s, M, X, Y, p), eps=1e-4, atol=1e-4)
 
 
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])

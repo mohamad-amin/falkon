@@ -360,6 +360,149 @@ class FLK_HYP_NKRR(nn.Module):
 
 
 
+
+class FLK_HYP_NKRR_FIX(nn.Module):
+    def __init__(self, sigma_init, penalty_init, centers_init, opt, regularizer, opt_centers, tot_n=None):
+        super().__init__()
+        falkon.cuda.initialization.init(opt)
+        penalty = nn.Parameter(torch.tensor(penalty_init, requires_grad=True))
+        self.register_parameter('penalty', penalty)
+        sigma = nn.Parameter(torch.tensor(sigma_init, requires_grad=True))
+        self.register_parameter('sigma', sigma)
+
+        centers = nn.Parameter(centers_init.requires_grad_(opt_centers))
+        if opt_centers:
+            self.register_parameter('centers', centers)
+        else:
+            self.register_buffer('centers', centers)
+
+        self.f_alpha = torch.zeros(centers_init.shape[0], 1, requires_grad=False)
+        self.register_buffer('alpha', self.f_alpha)
+        self.f_alpha_pc = torch.zeros(centers_init.shape[0], 1, requires_grad=False)
+        self.register_buffer('alpha_pc', self.f_alpha_pc)
+
+        self.opt = opt
+        self.flk_maxiter = 10
+        self.regularizer = regularizer
+        self.tot_n = tot_n
+        self.model = None
+
+    def forward(self):
+        pass
+
+    def adapt_hps(self, X, Y):
+        use_deff = True
+        nys_d_eff_c = 2
+        k = DiffGaussianKernel(self.sigma, self.opt)
+        hparams = [w for k, w in self.named_parameters()]
+
+        # 1: Derivative of validation loss wrt hps and wrt params. Validation loss here is simply the unregularized MSE on training data
+        preds = self.predict(X)
+        loss = torch.mean((preds - Y) ** 2) + torch.exp(-self.penalty) * (self.alpha.T @ (k.mmv(self.centers, self.centers, self.alpha)))
+
+        mse_grad_hp = torch.autograd.grad(loss, hparams, allow_unused=True, retain_graph=True)
+
+        if use_deff:
+            # 5: d_eff gradient
+            nys_d_eff = gauss_nys_effective_dimension(self.sigma, torch.exp(-self.penalty), M=self.centers,
+                                                      X=X, t=20, preconditioner=None)#self.model.precond)
+            nys_reg = (nys_d_eff_c * nys_d_eff) / X.shape[0]
+            #d_eff = gauss_effective_dimension(self.sigma, torch.exp(-self.penalty), X, t=20)
+            #print("Full d_eff=%.4e - Nystrom d_eff=%.4e" % (d_eff, nys_d_eff))
+            #reg = d_eff / X.shape[0]
+            #d_eff_grad = torch.autograd.grad(reg, hparams, allow_unused=True)
+            nys_d_eff_grad = torch.autograd.grad(nys_reg, hparams, allow_unused=False)
+            #print("lambda grad (full d_eff = %.4e) (nystrom d_eff = %.4e)" % (d_eff_grad[0].item(), nys_d_eff_grad[0].item()))
+        else:
+            d_eff_grad = [None] * len(hparams)
+
+        final_grads = []
+        for ghp, mix, deg in zip(mse_grad_hp, mixed, nys_d_eff_grad):
+            grad = 0
+            if ghp is not None:
+                grad += ghp
+            if mix is not None:
+                grad -= mix
+            if deg is not None:
+                grad += deg
+            final_grads.append(grad)
+        #print("center grads: %6.4e - %6.4e + %6.4e = %6.4e" % (mse_grad_hp[2].sum(), mixed[2].sum(), d_eff_grad[2].sum(), final_grads[2].sum()))
+        #print("d_eff: %6.4e" % (reg))
+        #print("penalty grads: %6.4e + %6.4e = %6.4e" % (mse_grad_hp[0], d_eff_grad[0], final_grads[0]))
+        #print("sigma grads: %6.4e - %6.4e + %6.4e = %6.4e" % (mse_grad_hp[1], mixed[1], d_eff_grad[1], final_grads[1]))
+        #print("sigma = %.3f - grad %.2e" % (self.sigma[0].item(), final_grads[1][0].item()))
+        #print("penalty = %.3f - grad %.2e" % (self.penalty.item(), final_grads[0].item()))
+
+        for l, g in zip(hparams, final_grads):
+            if not l.requires_grad:
+                continue
+            if l.grad is None:
+                l.grad = torch.zeros_like(l)
+            if g is not None:
+                l.grad += g
+
+    def solve_hessian(self, X, vector):
+        if self.model is None:
+            raise RuntimeError("Model must be present when solving for the inverse hessian.")
+        with torch.no_grad():
+            penalty = torch.exp(-self.penalty)
+
+            vector = vector.detach()
+            N = X.shape[0]
+
+            cg = ConjugateGradient(self.opt)
+            kernel = self.model.kernel
+            precond = self.model.precond
+
+            B = precond.apply_t(vector)
+            def mmv(sol):
+                v = precond.invA(sol)
+                cc = kernel.dmmv(X, self.model.ny_points_, precond.invT(v), None)
+                return precond.invAt(precond.invTt(cc) + penalty * v)
+            d = cg.solve(X0=None, B=B, mmv=mmv, max_iter=self.flk_maxiter)
+            c = precond.apply(d)
+
+            return c
+
+    def adapt_alpha(self, X, Y, n_tot=None):
+        k = DiffGaussianKernel(self.sigma.detach(), self.opt)
+        if X.is_cuda:
+            fcls = falkon.InCoreFalkon
+        else:
+            fcls = falkon.Falkon
+
+        model = fcls(k,
+                     torch.exp(-self.penalty).item(),
+                     M=self.centers.shape[0],
+                     center_selection=FixedSelector(self.centers.detach()),
+                     maxiter=self.flk_maxiter,
+                     options=self.opt,
+                     N=self.tot_n)
+        model.fit(X, Y, warm_start=self.alpha_pc)
+
+        self.alpha = model.alpha_.detach()
+        self.alpha_pc = model.beta_.detach()
+        self.model = model
+
+    def predict(self, X):
+        k = DiffGaussianKernel(self.sigma, self.opt)
+        preds = k.mmv(X, self.centers, self.alpha)
+        return preds
+
+    def get_model(self):
+        k = DiffGaussianKernel(self.sigma.detach(), self.opt)
+        # TODO: make this return the correct class
+        model = falkon.InCoreFalkon(k,
+                     torch.exp(-self.penalty).item(),
+                     M=self.centers.shape[0],
+                     center_selection=FixedSelector(self.centers.detach()),
+                     maxiter=self.flk_maxiter,
+                     options=self.opt,
+                     )
+        return model
+
+
+
 def nkrr_ho(Xtr, Ytr,
             Xts, Yts,
             num_epochs: int,
