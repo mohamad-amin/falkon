@@ -464,16 +464,8 @@ class FLK_HYP_NKRR_FIX(nn.Module):
                                    M=self.centers,
                                    X=X, Y=Y, t=20)
         deff_reg = (self.nys_d_eff_c * deff) / X.shape[0]
-        deff_grad, loss_grad = torch.autograd.grad([deff_reg, loss], hparams, allow_unused=False)
+        final_grads = torch.autograd.grad([deff_reg, loss], hparams, allow_unused=False)
 
-        final_grads = []
-        for ghp, deg in zip(loss_grad, deff_grad):
-            grad = 0
-            if ghp is not None:
-                grad += ghp
-            if deg is not None:
-                grad += deg
-            final_grads.append(grad)
         # print("center grads: %6.4e - %6.4e + %6.4e = %6.4e" % (mse_grad_hp[2].sum(), mixed[2].sum(), d_eff_grad[2].sum(), final_grads[2].sum()))
         # print("d_eff: %6.4e" % (reg))
         # print("penalty grads: %6.4e + %6.4e = %6.4e" % (mse_grad_hp[0], d_eff_grad[0], final_grads[0]))
