@@ -5,6 +5,7 @@ import functools
 
 import numpy as np
 import pandas as pd
+from falkon.hypergrad.nkrr_ho import flk_nkrr_ho_fix
 
 from datasets import get_load_fn, equal_split
 from benchmark_utils import *
@@ -172,7 +173,7 @@ def run_nkrr(dataset: Dataset,
     cuda = True
     batch_size = 100_000
     loss_every = 20
-    mode = "flk"  # flk, flk_val
+    mode = "flk_fix"  # flk, flk_val
 
     print("Running Hyperparameter Tuning Experiment.")
     print(f"CUDA: {cuda} -- Batch {batch_size} -- Loss report {loss_every} -- Mode {mode} -- "
@@ -253,6 +254,26 @@ def run_nkrr(dataset: Dataset,
             loss_every=loss_every,
             regularizer=regularizer,
             opt_centers=opt_centers,
+        )
+    elif mode == "flk_fix":
+        best_model = flk_nkrr_ho_fix(
+            Xtr, Ytr, Xts, Yts,
+            num_epochs=num_epochs,
+            sigma_type=sigma_type,
+            sigma_init=sigma_init,
+            penalty_init=penalty_init,
+            falkon_centers=FixedSelector(centers),
+            falkon_M=M,
+            hp_lr=hp_lr,
+            p_lr=0.01,  # Unused
+            batch_size=batch_size,
+            cuda=cuda,
+            err_fn=err_fns[0],
+            opt=falkon_opt,
+            loss_every=loss_every,
+            regularizer=regularizer,
+            opt_centers=opt_centers,
+            deff_factor=2,
         )
 
     if cuda:
