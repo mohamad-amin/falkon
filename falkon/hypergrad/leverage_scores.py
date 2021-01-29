@@ -310,11 +310,11 @@ class LossAndDeff(torch.autograd.Function):
         ctx.alpha_tilde = alpha_tilde
 
         d_eff = (f1[:, :t] * f2[:, :t]).sum(0).mean()
-        loss = (
-            (Y_tilde * Y_tilde).sum(0).mean() -          # Y_tilde^T @ Y_tilde
-            2 * (f2[:, t:] * f1[:, t:]).sum(0).mean() +  # -2 * Y^T @ KNM @ alpha
-            (Y * Y).sum(0).mean()                        # Y^T @ Y
-        )
+        l_t1 = (Y_tilde * Y_tilde).sum(0).mean()            # Y_tilde^T @ Y_tilde
+        l_t2 = - 2 * (f2[:, t:] * f1[:, t:]).sum(0).mean()  # -2 * Y^T @ KNM @ alpha
+        l_t3 = (Y * Y).sum(0).mean()                        # Y^T @ Y
+        print(f"Loss components: 0-order {l_t3.item():.3e} 1-order {l_t2.item():.3e} 2-order {l_t1.item():.3e}")
+        loss = l_t1 + l_t2 + l_t3
         return d_eff, loss
 
     @staticmethod
