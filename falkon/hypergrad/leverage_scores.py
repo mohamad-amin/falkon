@@ -366,3 +366,96 @@ class LossAndDeff(torch.autograd.Function):
                 result.append(None)
         return tuple(result)
 
+
+def regloss_and_deff(kernel_args, penalty, M, X, Y, t, deterministic=False, preconditioner=None):
+    opt = FalkonOptions(keops_active="no")
+    with torch.autograd.no_grad():
+        K = GaussianKernel(kernel_args.detach(), opt=opt)
+        if preconditioner is None:
+            preconditioner = FalkonPreconditioner(penalty.detach(), K, opt)
+            preconditioner.init(M.detach())
+        optim = FalkonConjugateGradient(K, preconditioner, opt)
+
+    return LossAndDeff.apply(kernel_args, penalty, M, X, Y, t, deterministic, optim, preconditioner)
+
+
+# noinspection PyMethodOverriding
+class RegLossAndDeff(torch.autograd.Function):
+    NUM_DIFF_ARGS = 3
+    MAX_ITER = 10
+
+    @staticmethod
+    @torch.jit.script
+    def _naive_torch_gaussian_kernel(X1, X2, sigma):
+        pairwise_dists = my_cdist(X1 / sigma, X2 / sigma)
+        return torch.exp(-0.5 * pairwise_dists)
+
+    @staticmethod
+    def forward(ctx, kernel_args, penalty, M, X, Y, t, deterministic, optim: FalkonConjugateGradient, precond):
+        n = X.shape[0]
+        if deterministic:
+            torch.manual_seed(12)
+        Z = torch.randn(t, n, dtype=X.dtype, device=X.device)  # t x n
+        ZY = torch.cat((Z, Y.T), dim=0).T  # n x t+p
+
+        with torch.autograd.no_grad():
+            beta = optim.solve(X, M, ZY, penalty, initial_solution=None,
+                               max_iter=LossAndDeff.MAX_ITER,
+                               callback=None)
+            f1 = precond.apply(beta)  # => m x t+p
+
+        with torch.autograd.enable_grad():
+            # K_MN @ ZY => m x t+p
+            K_MN = LossAndDeff._naive_torch_gaussian_kernel(M, X, kernel_args)
+            f2 = K_MN @ ZY
+
+        ctx.save_for_backward(kernel_args, penalty, M)
+        ctx.f1 = f1
+        ctx.f2 = f2
+        ctx.X = X
+        ctx.t = t
+
+        d_eff = (f1[:, :t] * f2[:, :t]).sum(0).mean()
+        loss = (Y.T @ Y - (f1[:, t:] * f2[:, t:]).sum(0).mean()) / n
+        return d_eff, loss
+
+    @staticmethod
+    def backward(ctx, out_deff, out_loss):
+        X, f1, f2, t = ctx.X, ctx.f1, ctx.f2, ctx.t
+        n = X.shape[0]
+        kernel_args, penalty, M = ctx.saved_tensors
+
+        with torch.autograd.enable_grad():
+            K_nm = LossAndDeff._naive_torch_gaussian_kernel(X, M, kernel_args)
+            K_mm = penalty * n * LossAndDeff._naive_torch_gaussian_kernel(M, M, kernel_args)
+            l1_dot = (f1 * f2).sum(0)                              # alpha^T @ KNM^T @ Y
+            l1_deff = l1_dot[:t].mean()
+            l1_loss = l1_dot[t:].mean()
+
+            l2_p1 = K_nm @ f1
+            l2_p2 = K_mm @ f1
+            l2_p1_dot = (torch.square(l2_p1)).sum(0)               # alpha^T @ KNM^T @ KNM @ alpha
+            l2_p2_dot = (f1 * l2_p2).sum(0)                        # alpha^T @ (n*l*KMM) @ alpha
+            l2_deff = l2_p1_dot[:t].mean() + l2_p2_dot[:t].mean()  # alpha^T @ H @ alpha
+            l2_loss = l2_p1_dot[t:].mean() + l2_p2_dot[t:].mean()  # alpha^T @ H @ alpha
+
+            deff_bg = out_deff * (2 * l1_deff - l2_deff)
+            loss_bg = out_loss * -(2 * l1_loss - l2_loss) / n
+
+            bg = deff_bg + loss_bg
+
+        needs_grad = []
+        for i in range(LossAndDeff.NUM_DIFF_ARGS):
+            if ctx.needs_input_grad[i]:
+                needs_grad.append(ctx.saved_tensors[i])
+        grads = torch.autograd.grad(bg, needs_grad, retain_graph=True, allow_unused=True)
+        result = []
+        j = 0
+        for i in range(len(ctx.needs_input_grad)):
+            if ctx.needs_input_grad[i]:
+                result.append(grads[j])
+                j += 1
+            else:
+                result.append(None)
+        return tuple(result)
+
