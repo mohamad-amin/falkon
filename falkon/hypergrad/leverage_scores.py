@@ -292,21 +292,38 @@ class LossAndDeff(torch.autograd.Function):
 
         with torch.autograd.enable_grad():
             # K_MN @ ZY => m x t+p
-            f2 = LossAndDeff._naive_torch_gaussian_kernel(M, X, kernel_args) @ ZY
+            K_MN = LossAndDeff._naive_torch_gaussian_kernel(M, X, kernel_args)
+            f2 = K_MN @ ZY
+
+        with torch.autograd.no_grad():
+            Y_tilde = K_MN.T @ f1[:, t:]  # n x p
+            beta = optim.solve(X, M, Y_tilde, penalty, initial_solution=None,
+                               max_iter=LossAndDeff.MAX_ITER,
+                               callback=None)
+            alpha_tilde = precond.apply(beta)  # => m x t+p
 
         ctx.save_for_backward(kernel_args, penalty, M)
         ctx.f1 = f1
         ctx.f2 = f2
         ctx.X = X
         ctx.t = t
-        dot = (f1 * f2).sum(0)  # => t+p
-        d_eff = dot[:t].mean()
-        loss = dot[t:].mean()
+        ctx.Y_tilde = Y_tilde
+        ctx.alpha_tilde = alpha_tilde
+        # dot = (f1 * f2).sum(0)  # => t+p
+        # d_eff = dot[:t].mean()
+        # loss = dot[t:].mean()
+
+        d_eff = (f1[:, :t] * f2[:, :t]).sum(0).mean()
+        loss = (
+            (Y_tilde * Y_tilde).sum(0).mean() -
+            2 * (f2[:, t:] * f1[:, t:]).sum(0).mean() +
+            Y.T @ Y
+        )
         return d_eff, loss
 
     @staticmethod
     def backward(ctx, out_deff, out_loss):
-        X, f1, f2, t = ctx.X, ctx.f1, ctx.f2, ctx.t
+        X, f1, f2, t, Y_tilde, alpha_tilde = ctx.X, ctx.f1, ctx.f2, ctx.t, ctx.Y_tilde, ctx.alpha_tilde
         n = X.shape[0]
         kernel_args, penalty, M = ctx.saved_tensors
 
@@ -315,17 +332,31 @@ class LossAndDeff(torch.autograd.Function):
             K_mm = LossAndDeff._naive_torch_gaussian_kernel(M, M, kernel_args)
             l1_dot = (f1 * f2).sum(0)
             l1_deff = l1_dot[:t].mean()
-            l1_loss = l1_dot[t:].mean()
+            # l1_loss = l1_dot[t:].mean()
 
             l2_p1 = K_nm @ f1
             l2_p2 = K_mm @ f1
             l2_p1_dot = (torch.square(l2_p1)).sum(0)
             l2_p2_dot = (f1 * l2_p2).sum(0)
             l2_deff = l2_p1_dot[:t].mean() + penalty * n * l2_p2_dot[:t].mean()
-            l2_loss = l2_p1_dot[t:].mean() + penalty * n * l2_p2_dot[t:].mean()
+            # l2_loss = l2_p1_dot[t:].mean() + penalty * n * l2_p2_dot[t:].mean()
 
             deff_bg = out_deff * (2 * l1_deff - l2_deff)
-            loss_bg = out_loss * (2 * l1_loss - l2_loss)
+            # loss_bg = out_loss * (2 * l1_loss - l2_loss)
+
+            loss_bg = out_loss * (
+                2 * (
+                    (f2[:, t:] * alpha_tilde).sum(0) +
+                    ((K_nm @ f1[:, t:]) * Y_tilde).sum(0) -
+                    (f1[:, t:] * ((penalty * n * K_mm) @ alpha_tilde)).sum(0) -
+                    ((K_nm @ f1[:, t:]) * (K_nm @ alpha_tilde)).sum(0)
+                ).mean() -
+                2 * (
+                    2 * l1_dot[t:].mean() -
+                    (l2_p1_dot[t:].mean() + penalty * n * l2_p2_dot[t:].mean())
+                )
+            )
+
             bg = deff_bg + loss_bg
 
         needs_grad = []
