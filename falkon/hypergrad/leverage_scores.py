@@ -283,7 +283,6 @@ class LossAndDeff(torch.autograd.Function):
         Z = torch.randn(t, n, dtype=X.dtype, device=X.device)  # t x n
         ZY = torch.cat((Z, Y.T), dim=0).T  # n x t+p
 
-        # TODO: flk already has args, penalty, M
         with torch.autograd.no_grad():
             beta = optim.solve(X, M, ZY, penalty, initial_solution=None,
                                max_iter=LossAndDeff.MAX_ITER,
@@ -296,11 +295,11 @@ class LossAndDeff(torch.autograd.Function):
             f2 = K_MN @ ZY
 
         with torch.autograd.no_grad():
-            Y_tilde = K_MN.T @ f1[:, t:]  # n x p
+            Y_tilde = K_MN.T @ f1[:, t:]       # KNM @ alpha  (n x p)
             beta = optim.solve(X, M, Y_tilde, penalty, initial_solution=None,
                                max_iter=LossAndDeff.MAX_ITER,
-                               callback=None)
-            alpha_tilde = precond.apply(beta)  # => m x t+p
+                               callback=None)  # precond(H^-1 @ KMN @ KNM @ alpha)
+            alpha_tilde = precond.apply(beta)  # => m x t+p  (needed in backward)
 
         ctx.save_for_backward(kernel_args, penalty, M)
         ctx.f1 = f1
@@ -309,15 +308,12 @@ class LossAndDeff(torch.autograd.Function):
         ctx.t = t
         ctx.Y_tilde = Y_tilde
         ctx.alpha_tilde = alpha_tilde
-        # dot = (f1 * f2).sum(0)  # => t+p
-        # d_eff = dot[:t].mean()
-        # loss = dot[t:].mean()
 
         d_eff = (f1[:, :t] * f2[:, :t]).sum(0).mean()
         loss = (
-            (Y_tilde * Y_tilde).sum(0).mean() -
-            2 * (f2[:, t:] * f1[:, t:]).sum(0).mean() +
-            Y.T @ Y
+            (Y_tilde * Y_tilde).sum(0).mean() -          # Y_tilde^T @ Y_tilde
+            2 * (f2[:, t:] * f1[:, t:]).sum(0).mean() +  # -2 * Y^T @ KNM @ alpha
+            (Y * Y).sum(0).mean()                        # Y^T @ Y
         )
         return d_eff, loss
 
@@ -329,34 +325,30 @@ class LossAndDeff(torch.autograd.Function):
 
         with torch.autograd.enable_grad():
             K_nm = LossAndDeff._naive_torch_gaussian_kernel(X, M, kernel_args)
-            K_mm = LossAndDeff._naive_torch_gaussian_kernel(M, M, kernel_args)
-            l1_dot = (f1 * f2).sum(0)
+            K_mm = penalty * n * LossAndDeff._naive_torch_gaussian_kernel(M, M, kernel_args)
+            l1_dot = (f1 * f2).sum(0)                              # alpha^T @ KNM^T @ Y
             l1_deff = l1_dot[:t].mean()
-            # l1_loss = l1_dot[t:].mean()
 
             l2_p1 = K_nm @ f1
             l2_p2 = K_mm @ f1
-            l2_p1_dot = (torch.square(l2_p1)).sum(0)
-            l2_p2_dot = (f1 * l2_p2).sum(0)
-            l2_deff = l2_p1_dot[:t].mean() + penalty * n * l2_p2_dot[:t].mean()
-            # l2_loss = l2_p1_dot[t:].mean() + penalty * n * l2_p2_dot[t:].mean()
+            l2_p1_dot = (torch.square(l2_p1)).sum(0)               # alpha^T @ KNM^T @ KNM @ alpha
+            l2_p2_dot = (f1 * l2_p2).sum(0)                        # alpha^T @ (n*l*KMM) @ alpha
+            l2_deff = l2_p1_dot[:t].mean() + l2_p2_dot[:t].mean()  # alpha^T @ H @ alpha
 
             deff_bg = out_deff * (2 * l1_deff - l2_deff)
-            # loss_bg = out_loss * (2 * l1_loss - l2_loss)
 
             loss_bg = out_loss * (
-                2 * (
-                    (f2[:, t:] * alpha_tilde).sum(0) +
-                    ((K_nm @ f1[:, t:]) * Y_tilde).sum(0) -
-                    (f1[:, t:] * ((penalty * n * K_mm) @ alpha_tilde)).sum(0) -
-                    ((K_nm @ f1[:, t:]) * (K_nm @ alpha_tilde)).sum(0)
+                2 * (  # c-term: grad(alpha^T @ KNM^T @ KNM @ alpha)
+                    (f2[:, t:] * alpha_tilde).sum(0) +             # Y^T @ KNM @ alpha_tilde
+                    (l2_p1[:, t:] * Y_tilde).sum(0) -              # alpha^T @ KNM^T @ Y_tilde
+                    (l2_p2[:, t:] * alpha_tilde).sum(0) -          # alpha^T @ (n*l*KMM) @ alpha_tilde
+                    (l2_p1[:, t:] * (K_nm @ alpha_tilde)).sum(0)   # alpha^T @ KNM.T @ KNM @ alpha_tilde
                 ).mean() -
-                2 * (
-                    2 * l1_dot[t:].mean() -
-                    (l2_p1_dot[t:].mean() + penalty * n * l2_p2_dot[t:].mean())
+                2 * (  # b-term: grad(-2 * Y^T @ KNM @ alpha)
+                    2 * l1_dot[t:].mean() -                        # 2 * Y^T @ KNM @ alpha
+                    (l2_p1_dot[t:].mean() + l2_p2_dot[t:].mean())  # alpha^T @ H @ alpha
                 )
             )
-
             bg = deff_bg + loss_bg
 
         needs_grad = []
