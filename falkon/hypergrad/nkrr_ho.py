@@ -12,9 +12,13 @@ import falkon
 from falkon.center_selection import FixedSelector, CenterSelector
 from falkon.hypergrad.leverage_scores import (
     subs_deff_simple, gauss_effective_dimension,
-    gauss_nys_effective_dimension, loss_and_deff
+    gauss_nys_effective_dimension, loss_and_deff,
+    regloss_and_deff, LossAndDeff, RegLossAndDeff,
+    sgpr_trace,
 )
 from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
+from falkon.kernels import GaussianKernel
+from summary import get_writer
 
 
 class FastTensorDataLoader:
@@ -129,7 +133,7 @@ def test_train_predict(model,
           f"Tr {err_name} = {train_err:6.4f} , "
           f"Ts {err_name} = {test_err:6.4f} -- "
           f"Sigma {model.sigma[0].item():.3f} - Penalty {np.exp(-model.penalty.item()):.2e}")
-    return cum_time
+    return cum_time, train_err, test_err
 
 
 def report_out(idx, total, l):
@@ -337,6 +341,8 @@ class FLK_HYP_NKRR(nn.Module):
         else:
             d_eff_grad = [None] * len(hparams)
 
+        print(f"loss {loss.item():.2e}   deff {nys_reg.item():.2e}")
+
         final_grads = []
         for ghp, mix, deg in zip(mse_grad_hp, mixed, nys_d_eff_grad):
             grad = 0
@@ -425,9 +431,25 @@ class FLK_HYP_NKRR(nn.Module):
         return model
 
 
+
+
+@torch.jit.script
+def my_cdist(x1, x2):
+    x1_norm = torch.norm(x1, p=2, dim=-1, keepdim=True).pow(2)
+    x2_norm = torch.norm(x2, p=2, dim=-1, keepdim=True).pow(2)
+    res = torch.addmm(x2_norm.transpose(-2, -1), x1, x2.transpose(-2, -1), alpha=-2).add_(x1_norm)
+    res = res.clamp_min_(1e-30)
+    return res
+
+
+def rbf_kernel(X1, X2, sigma, kvar):
+    r2 = my_cdist(X1 / sigma, X2 / sigma)
+    return kvar * torch.exp(-0.5 * r2)
+
+
 class FLK_HYP_NKRR_FIX(nn.Module):
-    def __init__(self, sigma_init, penalty_init, centers_init, opt, regularizer, opt_centers,
-                 nys_d_eff_c, tot_n=None):
+    def __init__(self, sigma_init, penalty_init, centers_init, opt, opt_centers,
+                 nys_d_eff_c, loss_type, tot_n=None):
         super().__init__()
         falkon.cuda.initialization.init(opt)
         penalty = nn.Parameter(torch.tensor(penalty_init, requires_grad=True))
@@ -448,63 +470,166 @@ class FLK_HYP_NKRR_FIX(nn.Module):
 
         self.opt = opt
         self.flk_maxiter = 10
-        self.regularizer = regularizer
         self.tot_n = tot_n
         self.model = None
         self.nys_d_eff_c = nys_d_eff_c
+        self.writer = get_writer()
+
+        if loss_type.lower() == "reg":
+            self.loss_fn = regloss_and_deff
+            self.loss_cls = RegLossAndDeff
+        else:
+            self.loss_fn = loss_and_deff
+            self.loss_cls = LossAndDeff
+
 
     def forward(self):
         pass
 
-    def adapt_hps(self, X, Y):
+    def adapt_hps(self, X, Y, step):
         hparams = [w for k, w in self.named_parameters()]
+        n = X.shape[0]
 
-        deff, loss = loss_and_deff(kernel_args=self.sigma,
-                                   penalty=torch.exp(-self.penalty),
-                                   M=self.centers,
-                                   X=X, Y=Y, t=20)
-        deff_reg = (self.nys_d_eff_c * deff) / X.shape[0]
-        final_grads = torch.autograd.grad([deff_reg, loss], hparams, allow_unused=False)
+        if True:
+            deff, datafit, trace = self.loss_fn(kernel_args=self.sigma,
+                                      penalty=self.penalty,
+                                      M=self.centers,
+                                      X=X, Y=Y, t=10,
+                                      deterministic=False)
 
-        # print("center grads: %6.4e - %6.4e + %6.4e = %6.4e" % (mse_grad_hp[2].sum(), mixed[2].sum(), d_eff_grad[2].sum(), final_grads[2].sum()))
-        # print("d_eff: %6.4e" % (reg))
-        # print("penalty grads: %6.4e + %6.4e = %6.4e" % (mse_grad_hp[0], d_eff_grad[0], final_grads[0]))
-        # print("sigma grads: %6.4e - %6.4e + %6.4e = %6.4e" % (mse_grad_hp[1], mixed[1], d_eff_grad[1], final_grads[1]))
-        # print("sigma = %.3f - grad %.2e" % (self.sigma[0].item(), final_grads[1][0].item()))
-        # print("penalty = %.3f - grad %.2e" % (self.penalty.item(), final_grads[0].item()))
+            #kernel = GaussianKernel(self.sigma)
+            #mm_deff = gauss_effective_dimension(self.sigma, torch.exp(-self.penalty), self.centers, t=20)
+            #deff_reg = (C * deff) / X.shape[0]
+            #loss = loss
+            #traces = sgpr_trace(kernel_args=self.sigma, penalty=self.penalty, M=self.centers, X=X, t=20) / X.shape[0]
+            #full_loss = loss + deff + trace
+            #final_grads = torch.autograd.grad(full_loss, hparams, allow_unused=False)
 
-        for l, g in zip(hparams, final_grads):
-            if not l.requires_grad:
-                continue
-            if l.grad is None:
-                l.grad = torch.zeros_like(l)
-            if g is not None:
-                l.grad += g
+
+            #print(f"d eff {deff_reg.item():.2e} (C {C.item():.2e}) - loss {loss.item():.2e}")
+            #return full_loss
+        else:
+            kvar = 1
+            M = self.centers
+            sigma = self.sigma
+            variance = torch.exp(-self.penalty) * X.shape[0]
+            sqrt_var = torch.sqrt(variance)
+            err = Y
+            Kdiag = kvar * X.shape[0]
+
+            kuf = rbf_kernel(M, X, sigma, kvar)
+            kuu = rbf_kernel(M, M, sigma, kvar) + torch.eye(M.shape[0], device=M.device) * 1e-6
+            L = torch.cholesky(kuu)
+
+            A = torch.triangular_solve(kuf, L, upper=False).solution / sqrt_var
+            AAT = A @ A.T
+            B = AAT + torch.eye(AAT.shape[0], device=AAT.device)
+            LB = torch.cholesky(B)
+            AY = A @ Y
+            c = torch.triangular_solve(AY, LB, upper=False).solution / sqrt_var
+
+            C = torch.triangular_solve(A, LB, upper=False).solution
+
+
+            if False: # GP
+                # Complexity
+                deff = -torch.log(torch.diag(LB)).sum()
+                deff += -0.5 * X.shape[0] * torch.log(variance)
+                # Data-fit
+                datafit = -0.5 * torch.square(err).sum() / variance
+                datafit +=  0.5 * torch.square(c).sum()
+                # Traces
+                trace = -0.5 * Kdiag / variance
+                trace +=  0.5 * torch.diag(AAT).sum()
+            elif False:  # NKRR + Trace
+                # Complexity
+                deff = -torch.trace(C.T @ C) / n
+                # Data-fit
+                c = c * sqrt_var # Correct c would be LB^-1 @ A @ Y
+                datafit = - torch.square(err).sum()
+                datafit += torch.square(c).sum()
+                # Traces
+                # Cannot remove variance in either of these!
+                # Keeping or removing `0.5` does not have much effect
+                trace = - Kdiag / (variance)
+                trace +=  torch.diag(AAT).sum()
+                #trace = -0.5 * Kdiag / (variance)
+                #trace +=  0.5 * torch.diag(AAT).sum()
+            else:  # NKRR without reg + trace
+                # Complexity
+                deff = - torch.trace(C.T @ C) * 5
+                # Data-fit
+                middle = (torch.eye(C.shape[1], device=C.device) - C.T @ C)
+                datafit = -torch.square(err.T @ middle).sum()
+                # Traces
+                trace = torch.tensor(0.0, device=C.device).requires_grad_()
+                #trace = - Kdiag / (variance)
+                #trace +=  torch.diag(AAT).sum()
+
+
+        grad_deff = torch.autograd.grad(-deff, hparams, retain_graph=True)
+        grad_loss = torch.autograd.grad(-datafit, hparams, retain_graph=True)
+        grad_trace = torch.autograd.grad(-trace, hparams, retain_graph=False, allow_unused=True)
+        print(f"VALUE d_eff {deff:.5e} - loss {datafit:.5e} - trace {trace:.5e}")
+        print(f"GRADS d_eff {grad_deff[1][0]:.5e} - loss {grad_loss[1][0]:.5e} - trace {grad_trace[1][0]:.5e}")
+        self.writer.add_scalar('optim/d_eff', -deff.item(), step)
+        self.writer.add_scalar('optim/data_fit', -datafit.item(), step)
+        self.writer.add_scalar('optim/trace', -trace.item(), step)
+        self.writer.add_scalar('grads/penalty/d_eff', grad_deff[0].item(), step)
+        self.writer.add_scalar('grads/penalty/data_fit', grad_loss[0].item(), step)
+        self.writer.add_scalar('grads/penalty/trace', grad_trace[0].item(), step)
+        self.writer.add_scalar('grads/sigma/d_eff', grad_deff[1][0].item(), step)
+        self.writer.add_scalar('grads/sigma/data_fit', grad_loss[1][0].item(), step)
+        self.writer.add_scalar('grads/sigma/trace', grad_trace[1][0].item(), step)
+        self.writer.add_scalar('hparams/penalty', torch.exp(-self.penalty).item(), step)
+        self.writer.add_scalar('hparams/sigma', self.sigma[0], step)
+        self.writer.add_scalar('optim/loss', (-deff - datafit - trace), step)
+
+        if True:
+            for l, g1, g2, g3 in zip(hparams, grad_deff, grad_loss, grad_trace):
+                if not l.requires_grad:
+                    continue
+                if l.grad is None:
+                    l.grad = torch.zeros_like(l)
+                if g1 is not None:
+                    l.grad += g1
+                if g2 is not None:
+                    l.grad += g2
+                if g3 is not None:
+                    l.grad += g3
+        return deff + datafit + trace
 
     def adapt_alpha(self, X, Y, n_tot=None):
         k = DiffGaussianKernel(self.sigma.detach(), self.opt)
+
         if X.is_cuda:
             fcls = falkon.InCoreFalkon
         else:
             fcls = falkon.Falkon
 
         model = fcls(k,
-                     torch.exp(-self.penalty).item(),
+                     torch.exp(-self.penalty).item(),  # / X.shape[0],
                      M=self.centers.shape[0],
                      center_selection=FixedSelector(self.centers.detach()),
                      maxiter=self.flk_maxiter,
                      options=self.opt,
                      N=self.tot_n)
-        model.fit(X, Y, warm_start=self.alpha_pc)
+        if False and self.loss_cls == RegLossAndDeff:
+            weights = RegLossAndDeff.last_alpha
+            #model.alpha_ = weights.detach()
+            #model.ny_points_ = self.centers.detach()
+        else:
+            model.fit(X, Y)#, warm_start=self.alpha_pc)
+            self.alpha = model.alpha_.detach()
+            self.alpha_pc = model.beta_.detach()
 
-        self.alpha = model.alpha_.detach()
-        self.alpha_pc = model.beta_.detach()
         self.model = model
 
     def predict(self, X):
-        k = DiffGaussianKernel(self.sigma, self.opt)
-        preds = k.mmv(X, self.centers, self.alpha)
-        return preds
+        return self.model.predict(X)
+        #k = DiffGaussianKernel(self.sigma, self.opt)
+        #preds = k.mmv(X, self.centers, self.alpha)
+        #return preds
 
     def get_model(self):
         k = DiffGaussianKernel(self.sigma.detach(), self.opt)
@@ -593,6 +718,47 @@ def nkrr_ho(Xtr, Ytr,
                          train_error=running_error / samples_processed)
 
 
+
+def predict(penalty, sigma, kvar, M, Xval, Xtr, Ytr):
+    variance = penalty * Xtr.shape[0]
+    sqrt_var = torch.sqrt(variance)
+    err = Ytr
+    kuf = rbf_kernel(M, Xtr, sigma, kvar)
+    kuu = rbf_kernel(M, M, sigma, kvar) + torch.eye(M.shape[0], device=M.device) * 1e-6
+    kus = rbf_kernel(M, Xval, sigma, kvar)
+
+    L = torch.cholesky(kuu)
+    A = torch.triangular_solve(kuf, L, upper=False).solution / sqrt_var
+    AAT = A @ A.T
+    B = AAT + torch.eye(AAT.shape[0], device=AAT.device)
+    LB = torch.cholesky(B)
+    Aerr = A @ Ytr
+    c = torch.triangular_solve(Aerr, LB, upper=False).solution / sqrt_var
+    tmp1 = torch.triangular_solve(kus, L, upper=False).solution
+    tmp2 = torch.triangular_solve(tmp1, LB, upper=False).solution
+    mean = tmp2.T @ c
+    return mean
+
+
+
+def predict2(penalty, sigma, kvar, M, Xval, Xtr, Ytr):
+    variance = penalty * Xtr.shape[0]
+    sqrt_var = torch.sqrt(variance)
+    err = Ytr
+    kuf = rbf_kernel(M, Xtr, sigma, kvar)
+    kuu = rbf_kernel(M, M, sigma, kvar) + torch.eye(M.shape[0], device=M.device) * 1e-6
+    kus = rbf_kernel(M, Xval, sigma, kvar)
+
+
+    H = variance * kuu + kuf @ kuf.T
+    H_chol = torch.cholesky(H)
+    rhs = kuf @ Ytr
+    tmp1 = torch.triangular_solve(rhs, H_chol, upper=False, transpose=False).solution
+    tmp2 = torch.triangular_solve(tmp1, H_chol, upper=False, transpose=True).solution
+
+    return kus.T @ tmp2
+
+
 def flk_nkrr_ho_fix(Xtr, Ytr,
                     Xts, Yts,
                     num_epochs: int,
@@ -608,9 +774,9 @@ def flk_nkrr_ho_fix(Xtr, Ytr,
                     loss_every: int,
                     err_fn,
                     opt,
-                    regularizer: str,
                     opt_centers: bool,
                     deff_factor: int,
+                    loss_type: str,
                     ):
     """
     Algorithm description:
@@ -638,9 +804,9 @@ def flk_nkrr_ho_fix(Xtr, Ytr,
         penalty_init,
         falkon_centers.select(Xtr, Y=None, M=falkon_M),
         opt,
-        regularizer,
         opt_centers,
         nys_d_eff_c=deff_factor,
+        loss_type=loss_type,
     )
     if cuda:
         model = model.cuda()
@@ -655,28 +821,45 @@ def flk_nkrr_ho_fix(Xtr, Ytr,
                                        drop_last=False, cuda=cuda)
 
     cum_time = 0
+    cum_step = 0
+    writer = get_writer()
     for epoch in range(num_epochs):
+        e_start = time.time()
+        if epoch != 0 and (epoch + 1) % loss_every == 0:
+            # Report before epoch to enable RegLoss optimization
+            if cuda:
+                model.adapt_alpha(Xtr.cuda(), Ytr.cuda())
+            else:
+                model.adapt_alpha(Xtr, Ytr)
+            cum_time, train_err, test_err = test_train_predict(
+                model=model, test_loader=test_loader, train_loader=train_loader,
+                err_fn=err_fn, epoch=epoch, time_start=e_start, cum_time=cum_time)
+            with torch.autograd.no_grad():
+                ts_pred = predict(torch.exp(-model.penalty), model.sigma, 1, model.centers, Xts.cuda(), Xtr.cuda(), Ytr.cuda())
+                ts_err, _ = err_fn(Yts, ts_pred.detach())
+            print(f"Epoch {epoch:3} - Loss {loss.item():.3f} Test error {ts_err:.4f} - Penalty {model.penalty.item():.2e} - Sigma {model.sigma[0].item():.2e}")
+            writer.add_scalar('Error/train', train_err, cum_step)
+            writer.add_scalar('Error/test', test_err, cum_step)
         train_loader_it = iter(train_loader)
         model.train()
         e_start = time.time()
-
-        with output(output_type="list", initial_len=1, interval=0) as output_list:
-            try:
+        try:
+            with output(output_type="list", initial_len=1, interval=0) as output_list:
                 for i in itertools.count(0):
                     b_tr_x, b_tr_y = next(train_loader_it)
 
-                    # Optimize the parameters alpha using Falkon (on training-batch)
-                    # model.adapt_alpha(b_tr_x, b_tr_y)
                     # Calculate gradient for the hyper-parameters (on training-batch)
                     opt_hp.zero_grad()
-                    model.adapt_hps(b_tr_x, b_tr_y)
+                    loss = -model.adapt_hps(b_tr_x, b_tr_y, cum_step)
+                    #loss.backward()
+
                     opt_hp.step()
-                    report_out(i, len(train_loader), output_list)
-            except StopIteration:
-                model.adapt_alpha(Xtr, Ytr)
-                cum_time = test_train_predict(
-                    model=model, test_loader=test_loader, train_loader=train_loader,
-                    err_fn=err_fn, epoch=epoch, time_start=e_start, cum_time=cum_time)
+                    #report_out(i, len(train_loader), output_list)
+                    cum_step += 1
+
+        except StopIteration:
+            pass
+        cum_time += time.time() - e_start
     return model.get_model()
 
 

@@ -169,10 +169,12 @@ def run_nkrr(dataset: Dataset,
              seed: int,
              regularizer: str,
              opt_centers: bool,
+             deff_factor: int,
+             loss_type: str,
              ):
     cuda = True
-    batch_size = 100_000
-    loss_every = 20
+    batch_size = 20_000_000
+    loss_every = 1
     mode = "flk_fix"  # flk, flk_val
 
     print("Running Hyperparameter Tuning Experiment.")
@@ -197,7 +199,7 @@ def run_nkrr(dataset: Dataset,
         centers = selector.select(Xtr, None, M)
 
     # Initialize Falkon model
-    falkon_opt = FalkonOptions(use_cpu=False, debug=False, cg_tolerance=1e-3)
+    falkon_opt = FalkonOptions(use_cpu=False, debug=False, cg_tolerance=1e-8, pc_epsilon_32=1e-6)
 
     if mode == "nkrr":
         nkrr_ho(
@@ -271,9 +273,9 @@ def run_nkrr(dataset: Dataset,
             err_fn=err_fns[0],
             opt=falkon_opt,
             loss_every=loss_every,
-            regularizer=regularizer,
             opt_centers=opt_centers,
-            deff_factor=2,
+            deff_factor=deff_factor,
+            loss_type=loss_type,
         )
 
     if cuda:
@@ -464,6 +466,7 @@ def run_exp(dataset: Dataset,
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="FALKON Benchmark Runner")
 
+    p.add_argument('-n', '--name', type=str, required=True)
     p.add_argument('-d', '--dataset', type=Dataset, choices=list(Dataset), required=True,
                    help='Dataset')
     p.add_argument('-s', '--seed', type=int, required=True, help="Random seed")
@@ -493,6 +496,10 @@ if __name__ == "__main__":
                    help="Number of Nystrom centers for Falkon")
     p.add_argument('--regularizer', type=str, default='tikhonov',
                    help="How to regularize the loss in FLK-NKRR")
+    p.add_argument('--deff-factor', default=1,
+                   help="Constant factor multiplying the effective-dimension regularizer")
+    p.add_argument('--loss-type', type=str, default='reg',
+                   help="Loss to use in FLK_FIX NKRR setting. can either be regularized loss or just the squared loss")
 
 
     args = p.parse_args()
@@ -523,6 +530,8 @@ if __name__ == "__main__":
                      seed=args.seed,
                      )
     elif args.nkrr:
+        from summary import get_writer
+        get_writer(args.name)
         run_nkrr(dataset=args.dataset,
                  num_epochs=args.steps,
                  hp_lr=args.lr,
@@ -534,6 +543,8 @@ if __name__ == "__main__":
                  seed=args.seed,
                  regularizer=args.regularizer,
                  opt_centers=args.optimize_centers,
+                 deff_factor=args.deff_factor,
+                 loss_type=args.loss_type,
                  )
     else:
         run_exp(dataset=args.dataset,

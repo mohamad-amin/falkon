@@ -229,6 +229,7 @@ ERROR_METRICS: Dict[Dataset, List[ERROR_FN_TYPE]] = {
     Dataset.SVHN: [mnist_calc_cerr],
     Dataset.CIFAR10: [mnist_calc_cerr],
     Dataset.ICTUS: [binary_cerr],
+    Dataset.SYNTH01NOISE: [rmse],
 }
 TF_ERROR_METRICS: Dict[Dataset, ERROR_FN_TYPE] = {
     Dataset.TIMIT: timit_calc_error_tf,
