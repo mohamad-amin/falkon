@@ -71,18 +71,18 @@ def _single_gpu_method(proc_idx, queue, device_id):
 def load_keops_fn(formula, aliases, backend, dtype, optional_flags, rec_multVar_highdim, out, *args):
     if rec_multVar_highdim is not None:
         optional_flags += ['-DMULT_VAR_HIGHDIM=1']
-    fn = LoadKeOps(formula, aliases, dtype, 'torch', optional_flags + include_dirs).import_module()
+    fn = LoadKeOps(formula, aliases, dtype, 'torch', optional_flags, include_dirs).import_module()
     tagCPUGPU, tag1D2D, tagHostDevice = get_tag_backend(backend, args, output=out)
     tags = KeopsTags(tagCPUGPU=tagCPUGPU, tag1D2D=tag1D2D, tagHostDevice=tagHostDevice)
     return fn, tags
 
-def run_keops_formula(formula, aliases, backend, dtype, device, ranges, optional_flags, rec_multVar_highdim, out, *args):
+def run_keops_formula(formula, aliases, backend, dtype, device, ranges, nx, ny, optional_flags, rec_multVar_highdim, out, *args):
     myconv, tags = load_keops_fn(formula, aliases, backend, dtype, optional_flags, rec_multVar_highdim, out, *args)
     device_id = device.index or -1
     if out is None:
-        out = myconv.genred_pytorch(tags.tagCPUGPU, tags.tag1D2D, tags.tagHostDevice, device_id, ranges, *args)
+        out = myconv.genred_pytorch(tags.tagCPUGPU, tags.tag1D2D, tags.tagHostDevice, device_id, ranges, nx, ny, *args)
     else:
-        myconv.genred_pytorch_out(tags.tagCPUGPU, tags.tag1D2D, tags.tagHostDevice, device_id, ranges, out, *args)
+        myconv.genred_pytorch_out(tags.tagCPUGPU, tags.tag1D2D, tags.tagHostDevice, device_id, ranges, nx, ny, out, *args)
     return out
 
 
@@ -93,6 +93,8 @@ def run_mmv_formula(formula: str,
                     ranges: tuple,
                     optional_flags: List[str],
                     rec_multVar_highdim,
+                    nx,
+                    ny,
                     data_device: torch.device,
                     X1: torch.Tensor,
                     X2: torch.Tensor,
@@ -106,10 +108,10 @@ def run_mmv_formula(formula: str,
 
     # Compile on a small data subset
     device_idx = data_device.index or -1
-    fn = partial(myconv.genred_pytorch_out, tags.tagCPUGPU, tags.tag1D2D, tags.tagHostDevice, device_idx, ranges)
-    small_data_variables = [X1[:100], X2[:10], v[:10]] + other_vars
-    small_data_out = torch.empty((100, v.shape[1]), dtype=X1.dtype, device=data_device)
-    fn(small_data_out, *small_data_variables)
+    fn = partial(myconv.genred_pytorch_out, tags.tagCPUGPU, tags.tag1D2D, tags.tagHostDevice, device_idx, ranges, nx, ny)
+    #small_data_variables = [X1[:100], X2[:10], v[:10]] + other_vars
+    #small_data_out = torch.empty((100, v.shape[1]), dtype=X1.dtype, device=data_device)
+    #fn(small_data_out, *small_data_variables)
 
     if backend.startswith("GPU") and data_device.type == 'cpu':
         # Info about GPUs
@@ -128,8 +130,15 @@ def run_mmv_formula(formula: str,
             bwidth = block_sizes[i + 1] - block_sizes[i]
             if bwidth <= 0:
                 continue
-            fn = partial(myconv.genred_pytorch_out, tags.tagCPUGPU, tags.tag1D2D,
-                         tags.tagHostDevice, gpu_info[i].Id, ranges)
+            fn = partial(myconv.genred_pytorch_out,
+                         tags.tagCPUGPU,
+                         tags.tag1D2D,
+                         tags.tagHostDevice,
+                         gpu_info[i].Id,
+                         ranges,
+                         nx,
+                         ny,
+                         )
             subproc_args.append((ArgsFmmv(
                 X1=X1.narrow(0, block_sizes[i], bwidth),
                 X2=X2,
@@ -151,7 +160,7 @@ class TilingGenredAutograd(torch.autograd.Function):
     """
     This class is the entry point to pytorch auto grad engine.
     """
-    NUM_NON_GRAD_ARGS = 9
+    NUM_NON_GRAD_ARGS = 11
 
     # noinspection PyMethodOverriding
     @staticmethod
@@ -163,6 +172,8 @@ class TilingGenredAutograd(torch.autograd.Function):
                 ranges: Optional[tuple],
                 optional_flags: List[str],
                 rec_multVar_highdim,
+                nx,
+                ny,
                 opt: FalkonOptions,
                 out: Optional[torch.Tensor],
                 X1: torch.Tensor,
@@ -190,6 +201,8 @@ class TilingGenredAutograd(torch.autograd.Function):
                                            ranges=ranges,
                                            optional_flags=optional_flags,
                                            rec_multVar_highdim=rec_multVar_highdim,
+                                           nx=nx,
+                                           ny=ny,
                                            data_device=device,
                                            X1=X1,
                                            X2=X2,
@@ -208,6 +221,8 @@ class TilingGenredAutograd(torch.autograd.Function):
         ctx.myconv = conv_module
         ctx.rec_multVar_highdim = rec_multVar_highdim
         ctx.device = device
+        ctx.nx = nx
+        ctx.ny = ny
 
         # relying on the 'ctx.saved_variables' attribute is necessary
         # if you want to be able to differentiate the output of the backward once again.
@@ -241,6 +256,8 @@ class TilingGenredAutograd(torch.autograd.Function):
         optional_flags = ctx.optional_flags
         device: torch.device = ctx.device
         myconv = ctx.myconv
+        nx = ctx.nx
+        ny = ctx.ny
         args = ctx.saved_tensors[1:]  # Unwrap the saved variables
         nargs = len(args)
         result = ctx.saved_tensors[0].detach()
@@ -283,7 +300,7 @@ class TilingGenredAutograd(torch.autograd.Function):
                 if cat == 2:  # we're referring to a parameter, so we'll have to sum both wrt 'i' and 'j'
                     # WARNING !! : here we rely on the implementation of DiffT in files in folder keops/core/formulas/reductions
                     # if tagI==cat of V is 2, then reduction is done wrt j, so we need to further sum output wrt i
-                    grad = run_keops_formula(formula_g, aliases_g, backend, dtype, device, ranges, optional_flags, rec_multVar_highdim, None, *args_g)
+                    grad = run_keops_formula(formula_g, aliases_g, backend, dtype, device, ranges, nx, ny, optional_flags, rec_multVar_highdim, None, *args_g)
                     # Then, sum 'grad' wrt 'i' :
                     # I think that '.sum''s backward introduces non-contiguous arrays,
                     # and is thus non-compatible with GenredAutograd: grad = grad.sum(0)
@@ -296,7 +313,7 @@ class TilingGenredAutograd(torch.autograd.Function):
                         x < y)
 
                 else:
-                    grad = run_keops_formula(formula_g, aliases_g, backend, dtype, device, ranges, optional_flags, rec_multVar_highdim, None, *args_g)
+                    grad = run_keops_formula(formula_g, aliases_g, backend, dtype, device, ranges, nx, ny, optional_flags, rec_multVar_highdim, None, *args_g)
 
                     # N.B.: 'grad' is always a full [A, .., B, M, D] or [A, .., B, N, D] or [A, .., B, D] tensor,
                     #       whereas 'arg_ind' may have some broadcasted batched dimensions.
@@ -358,10 +375,22 @@ class TilingGenred():
                     'size of input array is too large for Arg type reduction with float16 dtype..')
 
         if self.dtype in ('float16', 'half'):
-            args, ranges, tag_dummy, N = preprocess_half2(args, self.aliases, self.axis, ranges, nx,
-                                                          ny)
-        out = TilingGenredAutograd.apply(self.formula, self.aliases, backend, self.dtype,
-                                         ranges, self.optional_flags, self.rec_multVar_highdim, self.opt, out, *args)
+            args, ranges, tag_dummy, N = preprocess_half2(
+                    args, self.aliases, self.axis, ranges, nx, ny)
+        out = TilingGenredAutograd.apply(
+            self.formula,
+            self.aliases,
+            backend,
+            self.dtype,
+            ranges,
+            self.optional_flags,
+            self.rec_multVar_highdim,
+            nx,
+            ny,
+            self.opt,
+            out,
+            *args
+        )
 
         if self.dtype in ('float16', 'half'):
             out = postprocess_half2(out, tag_dummy, self.reduction_op, N)

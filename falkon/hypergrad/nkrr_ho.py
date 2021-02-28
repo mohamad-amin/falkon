@@ -491,23 +491,12 @@ class FLK_HYP_NKRR_FIX(nn.Module):
         n = X.shape[0]
 
         if True:
+            fwd_start = time.time()
             deff, datafit, trace = self.loss_fn(kernel_args=self.sigma,
                                       penalty=self.penalty,
                                       M=self.centers,
-                                      X=X, Y=Y, t=10,
+                                      X=X, Y=Y, t=20,
                                       deterministic=False)
-
-            #kernel = GaussianKernel(self.sigma)
-            #mm_deff = gauss_effective_dimension(self.sigma, torch.exp(-self.penalty), self.centers, t=20)
-            #deff_reg = (C * deff) / X.shape[0]
-            #loss = loss
-            #traces = sgpr_trace(kernel_args=self.sigma, penalty=self.penalty, M=self.centers, X=X, t=20) / X.shape[0]
-            #full_loss = loss + deff + trace
-            #final_grads = torch.autograd.grad(full_loss, hparams, allow_unused=False)
-
-
-            #print(f"d eff {deff_reg.item():.2e} (C {C.item():.2e}) - loss {loss.item():.2e}")
-            #return full_loss
         else:
             kvar = 1
             M = self.centers
@@ -531,7 +520,7 @@ class FLK_HYP_NKRR_FIX(nn.Module):
             C = torch.triangular_solve(A, LB, upper=False).solution
 
 
-            if False: # GP
+            if True: # GP
                 # Complexity
                 deff = -torch.log(torch.diag(LB)).sum()
                 deff += -0.5 * X.shape[0] * torch.log(variance)
@@ -541,9 +530,10 @@ class FLK_HYP_NKRR_FIX(nn.Module):
                 # Traces
                 trace = -0.5 * Kdiag / variance
                 trace +=  0.5 * torch.diag(AAT).sum()
-            elif False:  # NKRR + Trace
+            elif True:  # NKRR + Trace
+                fwd_start = time.time()
                 # Complexity
-                deff = -torch.trace(C.T @ C) / n
+                deff = -torch.trace(C.T @ C)
                 # Data-fit
                 c = c * sqrt_var # Correct c would be LB^-1 @ A @ Y
                 datafit = - torch.square(err).sum()
@@ -551,10 +541,8 @@ class FLK_HYP_NKRR_FIX(nn.Module):
                 # Traces
                 # Cannot remove variance in either of these!
                 # Keeping or removing `0.5` does not have much effect
-                trace = - Kdiag / (variance)
-                trace +=  torch.diag(AAT).sum()
-                #trace = -0.5 * Kdiag / (variance)
-                #trace +=  0.5 * torch.diag(AAT).sum()
+                trace = - 0.5 * Kdiag / (variance)
+                trace +=  0.5 * torch.diag(AAT).sum()
             else:  # NKRR without reg + trace
                 # Complexity
                 deff = - torch.trace(C.T @ C) * 5
@@ -563,10 +551,12 @@ class FLK_HYP_NKRR_FIX(nn.Module):
                 datafit = -torch.square(err.T @ middle).sum()
                 # Traces
                 trace = torch.tensor(0.0, device=C.device).requires_grad_()
-                #trace = - Kdiag / (variance)
-                #trace +=  torch.diag(AAT).sum()
+                # trace = - Kdiag / (variance)
+                # trace +=  torch.diag(AAT).sum()
+                pass
 
 
+        g_start = time.time()
         grad_deff = torch.autograd.grad(-deff, hparams, retain_graph=True)
         grad_loss = torch.autograd.grad(-datafit, hparams, retain_graph=True)
         grad_trace = torch.autograd.grad(-trace, hparams, retain_graph=False, allow_unused=True)
@@ -600,7 +590,7 @@ class FLK_HYP_NKRR_FIX(nn.Module):
         return deff + datafit + trace
 
     def adapt_alpha(self, X, Y, n_tot=None):
-        k = DiffGaussianKernel(self.sigma.detach(), self.opt)
+        k = GaussianKernel(self.sigma.detach(), self.opt)
 
         if X.is_cuda:
             fcls = falkon.InCoreFalkon
@@ -619,6 +609,7 @@ class FLK_HYP_NKRR_FIX(nn.Module):
             #model.alpha_ = weights.detach()
             #model.ny_points_ = self.centers.detach()
         else:
+            adapt_alpha_start = time.time()
             model.fit(X, Y)#, warm_start=self.alpha_pc)
             self.alpha = model.alpha_.detach()
             self.alpha_pc = model.beta_.detach()
@@ -627,9 +618,6 @@ class FLK_HYP_NKRR_FIX(nn.Module):
 
     def predict(self, X):
         return self.model.predict(X)
-        #k = DiffGaussianKernel(self.sigma, self.opt)
-        #preds = k.mmv(X, self.centers, self.alpha)
-        #return preds
 
     def get_model(self):
         k = DiffGaussianKernel(self.sigma.detach(), self.opt)
@@ -834,10 +822,6 @@ def flk_nkrr_ho_fix(Xtr, Ytr,
             cum_time, train_err, test_err = test_train_predict(
                 model=model, test_loader=test_loader, train_loader=train_loader,
                 err_fn=err_fn, epoch=epoch, time_start=e_start, cum_time=cum_time)
-            with torch.autograd.no_grad():
-                ts_pred = predict(torch.exp(-model.penalty), model.sigma, 1, model.centers, Xts.cuda(), Xtr.cuda(), Ytr.cuda())
-                ts_err, _ = err_fn(Yts, ts_pred.detach())
-            print(f"Epoch {epoch:3} - Loss {loss.item():.3f} Test error {ts_err:.4f} - Penalty {model.penalty.item():.2e} - Sigma {model.sigma[0].item():.2e}")
             writer.add_scalar('Error/train', train_err, cum_step)
             writer.add_scalar('Error/test', test_err, cum_step)
         train_loader_it = iter(train_loader)

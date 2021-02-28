@@ -483,8 +483,12 @@ class SGPRTrace(torch.autograd.Function):
 class RegLossAndDeff(torch.autograd.Function):
     cur_iter = 0
     NUM_DIFF_ARGS = 3
-    MAX_ITER = 30
+    MAX_ITER = 20
     last_alpha = None
+    # naive_kernel : whether to use the full-kernel, or kernel-vector products.
+    # If the naive_kernel is used, then the trace is computed directly (more precise),
+    # otherwise stoch-tr-est is used (but it is very noisy!).
+    naive_kernel = False
 
     @staticmethod
     @torch.jit.script
@@ -502,13 +506,13 @@ class RegLossAndDeff(torch.autograd.Function):
         n = X.shape[0]
         if deterministic:
             torch.manual_seed(12)
-        #Z = torch.randn(t, n, dtype=X.dtype, device=X.device)  # t x n
-        #ZY = torch.cat((Z, Y.T), dim=0).T  # n x t+p
         Z = torch.randn(n, t, dtype=X.dtype, device=X.device)
+        #Z = torch.empty(n, t, dtype=X.dtype, device=X.device).bernoulli_().mul_(2).sub_(1)
         ZY = torch.cat((Z, Y), dim=1)
         _penalty = torch.exp(-penalty)
 
         with torch.autograd.no_grad():
+            # Falkon solutions
             opt = FalkonOptions(
                 #keops_active="no",
                 cg_tolerance=1e-4,  # default is 1e-7
@@ -517,40 +521,58 @@ class RegLossAndDeff(torch.autograd.Function):
                 cg_epsilon_32=1e-7,  # default is 1e-7
             )
             max_iter = 20
-            K = GaussianKernel(kernel_args, opt=opt)  # here which opt doesnt matter
-            precond = FalkonPreconditioner(_penalty, K, opt)  # here which opt doesnt matter
-            precond.init(M)
+            M_ = M.detach()
+            kernel_args_ = kernel_args.detach()
+            K = GaussianKernel(kernel_args_, opt=opt)  # here which opt doesnt matter
+            precond = FalkonPreconditioner(_penalty.item(), K, opt)  # here which opt doesnt matter
+            precond.init(M_)
             optim = FalkonConjugateGradient(K, precond, opt)
             beta = optim.solve(
-                X, M, ZY, _penalty,
+                X, M_, ZY, _penalty.item(),
                 initial_solution=None,
                 max_iter=max_iter,
             )
             sol_full = precond.apply(beta)  # eta, alpha
 
         with torch.autograd.enable_grad():
-            #K_MN = LossAndDeff._naive_torch_gaussian_kernel(M, X, kernel_args)
-            #k_vec_full = K_MN @ ZY  # d, e
-            k_vec_full = kernel.mmv(M, X, ZY)
+            if RegLossAndDeff.naive_kernel:
+                K_MN = LossAndDeff._naive_torch_gaussian_kernel(M, X, kernel_args)
+                k_vec_full = K_MN @ ZY  # d, e
+            else:
+                k_vec_full = kernel.mmv(M, X, ZY)
+                K_MN = None
 
         # Trace terms
         with torch.autograd.enable_grad():
             K_MM = LossAndDeff._naive_torch_gaussian_kernel(M, M, kernel_args)
+            print("K_MM", K_MM.max().item(), K_MM.min().item())
 
-            T = torch.cholesky(K_MM + torch.eye(K_MM.shape[0], device=K_MM.device, dtype=K_MM.dtype) * 1e-6, upper=False)  # T.T @ T = K_MM
-            g = torch.triangular_solve(K_MN, T, transpose=False, upper=False).solution  # g == A  M*N
+        if RegLossAndDeff.naive_kernel:
+            # This is old-version for when trace is calculated directly.
+            with torch.autograd.enable_grad():
+                T = torch.cholesky(K_MM + torch.eye(K_MM.shape[0], device=K_MM.device, dtype=K_MM.dtype) * 1e-6, upper=True)  # T.T @ T = K_MM
+                g = torch.triangular_solve(K_MN, T, transpose=True, upper=True).solution  # g == A  M*N
+        else:
+            # Trace is calculated using hutchinson. Not very accurate!
+            with torch.autograd.no_grad():
+                T = torch.cholesky(K_MM + torch.eye(K_MM.shape[0], device=K_MM.device, dtype=K_MM.dtype) * 1e-6, upper=True)  # T.T @ T = K_MM
+                g1 = torch.triangular_solve(k_vec_full[:, :t], T, upper=True, transpose=True).solution
+                g = torch.triangular_solve(g1, T, upper=True, transpose=False).solution
 
         d_eff = - (k_vec_full[:,:t] * sol_full[:, :t]).sum(0).mean()
         loss = - torch.square(Y).sum()
         loss += (k_vec_full[:, t:] * sol_full[:, t:]).sum(0).mean()
-        trace = - (1 / (_penalty) - torch.square(g).sum() / (_penalty * n))
+        if RegLossAndDeff.naive_kernel:
+            trace = - (1 / (_penalty) - torch.square(g).sum() / (_penalty * n))
+        else:
+            trace = - (1 / (_penalty) - torch.square(g).sum(0).mean() / (_penalty * n))
 
         ctx.save_for_backward(kernel_args, penalty, M)
         ctx.sol_full = sol_full
         ctx.K_MN = K_MN
         ctx.k_vec_full = k_vec_full
         ctx.K_MM = K_MM
-        ctx.T = None
+        ctx.T = T
         ctx.g = g
         ctx.t = t
         ctx.kernel = kernel
@@ -560,20 +582,17 @@ class RegLossAndDeff(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, out_deff, out_loss, out_trace):
-        from summary import get_writer
-        writer = get_writer()
         sol_full, K_MN, k_vec_full, K_MM, T, g, t, kernel, X = ctx.sol_full, ctx.K_MN, ctx.k_vec_full, ctx.K_MM, ctx.T, ctx.g, ctx.t, ctx.kernel, ctx.X
-        n = K_MN.shape[1]
+        n = X.shape[0]
         kernel_args, penalty, M = ctx.saved_tensors
-
-        #with torch.autograd.no_grad():
-        #    h = torch.triangular_solve(g, T, transpose=True, upper=False).solution
 
         with torch.autograd.enable_grad():
             _penalty = torch.exp(-penalty)
 
-            #KNM_sol_full = K_MN.T @ sol_full
-            KNM_sol_full = kernel.mmv(X, M, sol_full)
+            if RegLossAndDeff.naive_kernel:
+                KNM_sol_full = K_MN.T @ sol_full
+            else:
+                KNM_sol_full = kernel.mmv(X, M, sol_full)
             KMM_sol_full = (_penalty * n * K_MM) @ sol_full
 
             deff_bg = -out_deff * (
@@ -584,11 +603,22 @@ class RegLossAndDeff(torch.autograd.Function):
                 2 * (k_vec_full[:, t:] * sol_full[:, t:]).sum(0).mean()
                 - (torch.square(KNM_sol_full[:, t:]).sum(0) + (sol_full[:, t:] * KMM_sol_full[:, t:]).sum(0)).mean()
             )
-            #trace_bg = 1 / _penalty
-            #trace_bg += - (1 / (n * _penalty)) * 2 * (k_vec_full[:, :t] * h).sum(0).mean()
-            #trace_bg += (1 / (n * _penalty)) * (h * (K_MM @ h)).sum(0).mean()
-            #trace_bg = trace_bg * (-out_trace)
-            trace_bg = -out_trace *  (1 / (_penalty) - torch.square(g).sum() / (_penalty * n))
+            if RegLossAndDeff.naive_kernel:
+                # Normal trace with A @ A.T
+                trace_bg = -out_trace *  (
+                    1 / (_penalty) -
+                    torch.square(g).sum() / (_penalty * n)
+                )
+            else:
+                # Trace with stoch trace est
+                trace_bg = -out_trace * (
+                    1 / _penalty -
+                    (
+                        2 * (k_vec_full[:, :t] * g).sum(0).mean()
+                        - torch.square(T @ g).sum(0).mean()
+                    ) / (_penalty * n)
+                )
+
             bg = deff_bg + loss_bg + trace_bg
 
         needs_grad = []
