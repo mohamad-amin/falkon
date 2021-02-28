@@ -97,8 +97,8 @@ def test_predict(model,
 
 
 def test_train_predict(model,
-                       test_loader: FastTensorDataLoader,
-                       train_loader: FastTensorDataLoader,
+                       Xts, Yts,
+                       Xtr, Ytr,
                        err_fn: callable,
                        epoch: int,
                        time_start: float,
@@ -107,28 +107,11 @@ def test_train_predict(model,
     t_elapsed = time.time() - time_start  # Stop the time
     cum_time += t_elapsed
     model.eval()
-    test_loader = iter(test_loader)
-    train_loader = iter(train_loader)
-    test_preds, test_labels = [], []
-    train_preds, train_labels = [], []
-    try:
-        while True:
-            b_ts_x, b_ts_y = next(test_loader)
-            test_preds.append(model.predict(b_ts_x))
-            test_labels.append(b_ts_y)
-    except StopIteration:
-        test_preds = torch.cat(test_preds)
-        test_labels = torch.cat(test_labels)
-        test_err, err_name = err_fn(test_labels.detach().cpu(), test_preds.detach().cpu())
-    try:
-        while True:
-            b_tr_x, b_tr_y = next(train_loader)
-            train_preds.append(model.predict(b_tr_x))
-            train_labels.append(b_tr_y)
-    except StopIteration:
-        train_preds = torch.cat(train_preds)
-        train_labels = torch.cat(train_labels)
-        train_err, err_name = err_fn(train_labels.detach().cpu(), train_preds.detach().cpu())
+
+    test_preds = model.predict(Xts)
+    train_preds = model.predict(Xtr)
+    test_err, err_name = err_fn(Yts.detach().cpu(), test_preds.detach().cpu())
+    train_err, err_name = err_fn(Ytr.detach().cpu(), train_preds.detach().cpu())
     print(f"Epoch {epoch} ({cum_time:5.2f}s) - "
           f"Tr {err_name} = {train_err:6.4f} , "
           f"Ts {err_name} = {test_err:6.4f} -- "
@@ -561,7 +544,8 @@ class FLK_HYP_NKRR_FIX(nn.Module):
         grad_loss = torch.autograd.grad(-datafit, hparams, retain_graph=True)
         grad_trace = torch.autograd.grad(-trace, hparams, retain_graph=False, allow_unused=True)
         print(f"VALUE d_eff {deff:.5e} - loss {datafit:.5e} - trace {trace:.5e}")
-        print(f"GRADS d_eff {grad_deff[1][0]:.5e} - loss {grad_loss[1][0]:.5e} - trace {grad_trace[1][0]:.5e}")
+        # print(f"GRADS(sigma) d_eff {grad_deff[1][0]:.5e} - loss {grad_loss[1][0]:.5e} - trace {grad_trace[1][0]:.5e}")
+        print(f"GRADS(penalty) d_eff {grad_deff[0]:.5e} - loss {grad_loss[0]:.5e} - trace {grad_trace[0]:.5e}")
         self.writer.add_scalar('optim/d_eff', -deff.item(), step)
         self.writer.add_scalar('optim/data_fit', -datafit.item(), step)
         self.writer.add_scalar('optim/trace', -trace.item(), step)
@@ -604,10 +588,10 @@ class FLK_HYP_NKRR_FIX(nn.Module):
                      maxiter=self.flk_maxiter,
                      options=self.opt,
                      N=self.tot_n)
-        if False and self.loss_cls == RegLossAndDeff:
+        if self.loss_cls == RegLossAndDeff and RegLossAndDeff.last_alpha is not None:
             weights = RegLossAndDeff.last_alpha
-            #model.alpha_ = weights.detach()
-            #model.ny_points_ = self.centers.detach()
+            model.alpha_ = weights.detach()
+            model.ny_points_ = self.centers.detach()
         else:
             adapt_alpha_start = time.time()
             model.fit(X, Y)#, warm_start=self.alpha_pc)
@@ -798,52 +782,33 @@ def flk_nkrr_ho_fix(Xtr, Ytr,
     )
     if cuda:
         model = model.cuda()
+        Xtr = Xtr.cuda()
+        Ytr = Ytr.cuda()
+        Xts = Xts.cuda()
+        Yts = Yts.cuda()
 
     opt_hp = torch.optim.Adam([
         {"params": model.parameters(), "lr": hp_lr},
     ])
-
-    train_loader = FastTensorDataLoader(Xtr, Ytr, batch_size=batch_size, shuffle=True,
-                                        drop_last=False, cuda=cuda)
-    test_loader = FastTensorDataLoader(Xts, Yts, batch_size=batch_size, shuffle=False,
-                                       drop_last=False, cuda=cuda)
 
     cum_time = 0
     cum_step = 0
     writer = get_writer()
     for epoch in range(num_epochs):
         e_start = time.time()
+        opt_hp.zero_grad()
+        loss = -model.adapt_hps(Xtr, Ytr, cum_step)
+        # Loss reporting before step() to optimize (avoid second flk)
         if epoch != 0 and (epoch + 1) % loss_every == 0:
-            # Report before epoch to enable RegLoss optimization
-            if cuda:
-                model.adapt_alpha(Xtr.cuda(), Ytr.cuda())
-            else:
-                model.adapt_alpha(Xtr, Ytr)
+            cum_time += time.time() - e_start
+            model.adapt_alpha(Xtr, Ytr)
             cum_time, train_err, test_err = test_train_predict(
-                model=model, test_loader=test_loader, train_loader=train_loader,
+                model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
                 err_fn=err_fn, epoch=epoch, time_start=e_start, cum_time=cum_time)
             writer.add_scalar('Error/train', train_err, cum_step)
             writer.add_scalar('Error/test', test_err, cum_step)
-        train_loader_it = iter(train_loader)
-        model.train()
-        e_start = time.time()
-        try:
-            with output(output_type="list", initial_len=1, interval=0) as output_list:
-                for i in itertools.count(0):
-                    b_tr_x, b_tr_y = next(train_loader_it)
-
-                    # Calculate gradient for the hyper-parameters (on training-batch)
-                    opt_hp.zero_grad()
-                    loss = -model.adapt_hps(b_tr_x, b_tr_y, cum_step)
-                    #loss.backward()
-
-                    opt_hp.step()
-                    #report_out(i, len(train_loader), output_list)
-                    cum_step += 1
-
-        except StopIteration:
-            pass
-        cum_time += time.time() - e_start
+        opt_hp.step()
+        cum_step += 1
     return model.get_model()
 
 

@@ -533,6 +533,7 @@ class RegLossAndDeff(torch.autograd.Function):
                 max_iter=max_iter,
             )
             sol_full = precond.apply(beta)  # eta, alpha
+            RegLossAndDeff.last_alpha = sol_full[:, t:]
 
         with torch.autograd.enable_grad():
             if RegLossAndDeff.naive_kernel:
