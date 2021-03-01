@@ -876,6 +876,57 @@ class SyntheticDataset(BaseDataset):
         return self._dset_name
 
 
+class ChietDataset(BaseDataset):
+    file_name = '/data/DATASETS/weather/CHIET.hdf5'
+    _dset_name = 'CHIET'
+    _num_train = 26227
+    _num_test = 7832
+
+    @staticmethod
+    def read_data(dtype):
+        with h5py.File(ChietDataset.file_name, 'r') as h5py_file:
+            X_train = np.array(h5py_file['X_train'], dtype=as_np_dtype(dtype))
+            Y_train = np.array(h5py_file['Y_train'], dtype=as_np_dtype(dtype))
+            X_test = np.array(h5py_file['X_test'], dtype=as_np_dtype(dtype))
+            Y_test = np.array(h5py_file['Y_test'], dtype=as_np_dtype(dtype))
+        X = np.concatenate([X_train, X_test], axis=0)
+        Y = np.concatenate([Y_train, Y_test], axis=0)
+        return X, Y
+
+    @staticmethod
+    def split_data(X, Y, train_frac: Union[float, None]):
+        if train_frac is None:
+            idx_tr = np.arange(ChietDataset._num_train)
+            idx_ts = np.arange(ChietDataset._num_train, ChietDataset._num_train + ChietDataset._num_test)
+        else:
+            idx_tr, idx_ts = equal_split(X.shape[0], train_frac)
+        return X[idx_tr], Y[idx_tr], X[idx_ts], Y[idx_ts]
+
+    @staticmethod
+    def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        mtr = np.mean(Xtr, axis=0, dtype=np.float64, keepdims=True).astype(Xtr.dtype)
+        std_tr = np.std(Xtr, axis=0, dtype=np.float64, ddof=1, keepdims=True).astype(Xtr.dtype)
+
+        Xtr -= mtr
+        Xtr /= std_tr
+        Xts -= mtr
+        Xts /= std_tr
+
+        return Xtr, Xts, {}
+
+    @staticmethod
+    def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        mtr = np.mean(Ytr, dtype=np.float64).astype(Ytr.dtype)
+        Ytr -= mtr
+        Yts -= mtr
+        Ytr = Ytr.reshape((-1, 1))
+        Yts = Yts.reshape((-1, 1))
+        return Ytr, Yts, {'Y_mean': mtr}
+
+    def dset_name(self):
+        return self._dset_name
+
+
 """ Public API """
 
 __LOADERS = {
@@ -894,6 +945,7 @@ __LOADERS = {
     Dataset.HOHIGGS: SmallHiggsDataset(),
     Dataset.ICTUS: IctusDataset(),
     Dataset.SYNTH01NOISE: SyntheticDataset(),
+    Dataset.CHIET: ChietDataset(),
 }
 
 

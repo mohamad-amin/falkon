@@ -24,16 +24,6 @@ def _ensure_numpy_or_float(*vals) -> Generator[Union[float, np.ndarray], None, N
             yield val
 
 
-def rmse(y_true, y_pred, **kwargs):
-    y_true, y_pred = _ensure_numpy(y_true, y_pred)
-
-    y_true = y_true.reshape((-1,))
-    y_pred = y_pred.reshape((-1,))
-
-    test_mse = np.sqrt(((y_pred - y_true) ** 2).mean())
-    return test_mse, "RMSE"
-
-
 def mse(y_true, y_pred, **kwargs):
     y_true, y_pred = _ensure_numpy(y_true, y_pred)
 
@@ -42,6 +32,12 @@ def mse(y_true, y_pred, **kwargs):
 
     test_mse = ((y_pred - y_true) ** 2).mean()
     return test_mse, "MSE"
+
+
+def rmse(y_true, y_pred, **kwargs):
+    pred_mse = mse(y_true, y_pred, **kwargs)[0]
+    pred_rmse = np.sqrt(pred_mse)
+    return pred_rmse, "RMSE"
 
 
 def rmse_with_std(y_true, y_pred, **kwargs):
@@ -55,6 +51,15 @@ def rmse_with_std(y_true, y_pred, **kwargs):
 
     test_mse = np.sqrt(((y_pred * Y_std - y_true * Y_std) ** 2).mean())
     return test_mse, "RMSE"
+
+
+def nrmse(y_true, y_pred, **kwargs):
+    Y_mean = kwargs['Y_mean']
+    Y_mean = _ensure_numpy_or_float(Y_mean)
+
+    pred_rmse = rmse(y_true, y_pred, **kwargs)[0]
+    pred_nrmse = pred_rmse / Y_mean
+    return pred_nrmse, "NRMSE"
 
 
 def ms_calc_mse(y_true, y_pred, **kwargs):
@@ -230,6 +235,7 @@ ERROR_METRICS: Dict[Dataset, List[ERROR_FN_TYPE]] = {
     Dataset.CIFAR10: [mnist_calc_cerr],
     Dataset.ICTUS: [binary_cerr],
     Dataset.SYNTH01NOISE: [rmse],
+    Dataset.CHIET: [nrmse],
 }
 TF_ERROR_METRICS: Dict[Dataset, ERROR_FN_TYPE] = {
     Dataset.TIMIT: timit_calc_error_tf,

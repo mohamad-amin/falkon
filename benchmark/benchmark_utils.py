@@ -72,6 +72,7 @@ class Dataset(Enum):
     HOHIGGS = 'ho-higgs'
     ICTUS = 'ictus'
     SYNTH01NOISE = 'synth-01noise'
+    CHIET = 'chiet'
 
     def __str__(self):
         return self.value
