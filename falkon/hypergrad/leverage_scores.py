@@ -575,7 +575,7 @@ class RegLossAndDeff(torch.autograd.Function):
                 max_iter=solve_maxiter,
             )
             sol_full = precond.apply(beta)  # eta, alpha
-            RegLossAndDeff.last_alpha = sol_full[:, t:]
+            RegLossAndDeff.last_alpha = sol_full[:, t:].clone()
         ### End Falkon Solve
 
         ### K_MN @ vector
