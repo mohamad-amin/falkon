@@ -21,52 +21,6 @@ from falkon.kernels import GaussianKernel
 from summary import get_writer
 
 
-class FastTensorDataLoader:
-    def __init__(self, *tensors, batch_size, shuffle=False, drop_last=False, cuda=False):
-        assert all(t.shape[0] == tensors[0].shape[0] for t in tensors)
-        self.tensors = tensors
-        self.num_points = self.tensors[0].shape[0]
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        self.drop_last = drop_last
-        self.cuda = cuda
-
-        n_batches, remainder = divmod(self.num_points, self.batch_size)
-        if remainder > 0 and not drop_last:
-            n_batches += 1
-        self.n_batches = n_batches
-
-    def __iter__(self):
-        if self.shuffle:
-            self.indices = torch.randperm(self.num_points)
-        else:
-            self.indices = None
-        self.i = 0
-        return self
-
-    def __next__(self):
-        try:
-            if self.i >= self.n_batches:  # This should handle drop_last correctly
-                raise StopIteration()
-        except AttributeError:
-            raise RuntimeError(
-                "Make sure you make the tensor data-loader an iterator before iterating over it!")
-
-        if self.indices is not None:
-            indices = self.indices[self.i * self.batch_size: (self.i + 1) * self.batch_size]
-            batch = tuple(t[indices] for t in self.tensors)
-        else:
-            batch = tuple(
-                t[self.i * self.batch_size: (self.i + 1) * self.batch_size] for t in self.tensors)
-        if self.cuda:
-            batch = tuple(t.cuda() for t in batch)
-        self.i += 1
-        return batch
-
-    def __len__(self):
-        return self.n_batches
-
-
 def test_predict(model,
                  test_loader: FastTensorDataLoader,
                  err_fn: callable,

@@ -136,7 +136,7 @@ def compute_hypergrad(params: Dict[str, torch.Tensor],
     end_time = time.time()
     if timings:
         print(f"Total time: {end_time - time_s:.2f}s - val-grad {val_time - time_s:.2f}s - "
-                f"param-diff {first_diff_time - val_time:.2f}s - cg-time({cg_iter_completed}) {cg_time - first_diff_time:.2f}s (1 hvp: {hvp_time:.2f}s) - "
+              f"param-diff {first_diff_time - val_time:.2f}s - cg-time({cg_iter_completed}) {cg_time - first_diff_time:.2f}s (1 hvp: {hvp_time:.2f}s) - "
               f"mixed-time {mixed_time - cg_time:.2f}s")
 
     return model.val_loss(params, hparams), final_grads
