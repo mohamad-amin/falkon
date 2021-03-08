@@ -66,7 +66,7 @@ def report_complexity_reg(
         sigma: torch.Tensor,
         step: int,
         verbose_tboard: bool,
-):
+        ):
     writer = get_writer()
     writer.add_scalar('optim/d_eff', -deff.item(), step)
     writer.add_scalar('optim/data_fit', -datafit.item(), step)
@@ -131,31 +131,23 @@ class FakeTorchModelMixin():
     def buffers(self):
         return list(self._named_buffers.values())
 
-    def to(self, device: torch.device):
-        self._named_parameters = {
-            k: v.to(device=device) for k, v in self._named_parameters
-        }
-        self._named_parameters = {
-            k: v.to(device=device) for k, v in self._named_buffers
-        }
-        return self
-
-    def cuda(self):
-        return self.to(torch.device('cuda'))
-
 
 class NystromKRRModelMixin(FakeTorchModelMixin):
-    def __init__(self, penalty, sigma, centers, flk_opt):
+    def __init__(self, penalty, sigma, centers, flk_opt, cuda):
         super().__init__()
-        self.penalty = torch.tensor(penalty)
+        if cuda:
+            device = torch.device('cuda')
+        else:
+            device = torch.device('cpu')
+        self.penalty = torch.tensor(penalty).to(device=device)
         self.register_buffer("penalty", self.penalty)
-        self.sigma = torch.tensor(sigma)
+        self.sigma = torch.tensor(sigma).to(device=device)
         self.register_buffer("sigma", self.sigma)
-        self.centers = torch.tensor(centers)
+        self.centers = torch.tensor(centers).to(device=device)
         self.register_buffer("centers", self.centers)
-        self.f_alpha = torch.zeros(self.centers.shape[0], 1, requires_grad=False)
+        self.f_alpha = torch.zeros(self.centers.shape[0], 1, requires_grad=False, device=device)
         self.register_buffer("alpha", self.f_alpha)
-        self.f_alpha_pc = torch.zeros(self.centers.shape[0], 1, requires_grad=False)
+        self.f_alpha_pc = torch.zeros(self.centers.shape[0], 1, requires_grad=False, device=device)
         self.register_buffer("alpha_pc", self.f_alpha_pc)
 
         self.flk_opt = flk_opt
@@ -199,6 +191,8 @@ class NystromKRRModelMixin(FakeTorchModelMixin):
         )
         return model
 
+    def eval(self):
+        pass
 
 class SimpleFalkonComplexityReg(NystromKRRModelMixin):
     def __init__(
@@ -209,12 +203,14 @@ class SimpleFalkonComplexityReg(NystromKRRModelMixin):
             flk_opt,
             opt_centers,
             verbose_tboard: bool,
+            cuda: bool,
     ):
         super().__init__(
             penalty=penalty_init,
             sigma=sigma_init,
             centers=centers_init,
             flk_opt=flk_opt,
+            cuda=cuda,
         )
         self.register_parameter("penalty", self.penalty.requires_grad_(True))
         self.register_parameter("sigma", self.sigma.requires_grad_(True))
@@ -267,12 +263,14 @@ class FalkonComplexityReg(NystromKRRModelMixin):
             opt_centers,
             verbose_tboard: bool,
             precise_trace: bool,
+            cuda: bool,
     ):
         super().__init__(
             penalty=penalty_init,
             sigma=sigma_init,
             centers=centers_init,
             flk_opt=flk_opt,
+            cuda=cuda,
         )
         falkon.cuda.initialization.init(flk_opt)
         self.register_parameter("penalty", self.penalty.requires_grad_(True))
@@ -345,12 +343,14 @@ class GPComplexityReg(NystromKRRModelMixin):
             opt_centers,
             verbose_tboard: bool,
             flk_opt: FalkonOptions,
+            cuda: bool,
     ):
         super().__init__(
             penalty=penalty_init,
             sigma=sigma_init,
             centers=centers_init,
             flk_opt=flk_opt,
+            cuda=cuda,
         )
         self.register_parameter("penalty", self.penalty.requires_grad_(True))
         self.register_parameter("sigma", self.sigma.requires_grad_(True))
@@ -422,6 +422,7 @@ def train_complexity_reg(
                 opt_centers=opt_centers,
                 flk_opt=falkon_opt,
                 verbose_tboard=verbose,
+                cuda=cuda,
         )
     elif model_type == "deff-simple":
         model = SimpleFalkonComplexityReg(
@@ -431,6 +432,7 @@ def train_complexity_reg(
                 opt_centers=opt_centers,
                 flk_opt=falkon_opt,
                 verbose_tboard=verbose,
+                cuda=cuda,
         )
     elif model_type in {"deff-precise", "deff-fast"}:
         precise_trace = model_type == "deff-precise"
@@ -442,16 +444,13 @@ def train_complexity_reg(
                 flk_opt=falkon_opt,
                 verbose_tboard=verbose,
                 precise_trace=precise_trace,
+                cuda=cuda,
         )
     else:
         raise RuntimeError(f"{model_type} model type not recognized!")
 
     if cuda:
-        model = model.cuda()
-        Xtr = Xtr.cuda()
-        Ytr = Ytr.cuda()
-        Xts = Xts.cuda()
-        Yts = Yts.cuda()
+        Xtr, Ytr, Xts, Yts = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
 
     opt_hp = torch.optim.Adam([
         {"params": model.parameters(), "lr": learning_rate},

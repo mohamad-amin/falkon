@@ -649,7 +649,7 @@ class RegLossAndDeff(torch.autograd.Function):
         with torch.autograd.enable_grad():
             _penalty = torch.exp(-penalty)
 
-            if RegLossAndDeff.naive_kernel:
+            if use_precise_trace:
                 KNM_sol_full = K_MN.T @ sol_full
             else:
                 KNM_sol_full = diff_kernel.mmv(X, M, sol_full)

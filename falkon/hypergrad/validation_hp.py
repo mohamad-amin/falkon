@@ -22,21 +22,19 @@ class FalkonHyperGradient():
             opt_centers: bool,
             flk_opt: FalkonOptions,
             val_loss_type: str,
+            cuda: bool,
     ):
-        self._hparams = []
-        self._params = []
+        if cuda:
+            device = torch.device('cuda')
+        else:
+            device = torch.device('cpu')
 
-        self.penalty = torch.tensor(penalty_init).requires_grad_(True)
-        self._hparams.append(self.penalty)
-        self.sigma = torch.tensor(sigma_init).requires_grad_(True)
-        self._hparams.append(self.sigma)
-        self.centers = torch.tensor(centers_init).requires_grad_(opt_centers)
-        if opt_centers:
-            self._hparams.append(self.centers)
+        self.penalty = torch.tensor(penalty_init, requires_grad=True, device=device)
+        self.sigma = torch.tensor(sigma_init, requires_grad=True, device=device)
+        self.centers = torch.tensor(centers_init, requires_grad=opt_centers, device=device)
 
-        self.f_alpha = torch.zeros(self.centers.shape[0], 1, requires_grad=True)
-        self._params.append(self.f_alpha)
-        self.f_alpha_pc = torch.zeros(self.centers.shape[0], 1, requires_grad=False)
+        self.f_alpha = torch.zeros(self.centers.shape[0], 1, requires_grad=True, device=device)
+        self.f_alpha_pc = torch.zeros(self.centers.shape[0], 1, requires_grad=False, device=device)
 
         self.flk_opt = flk_opt
         self.flk_maxiter = 10
@@ -44,14 +42,15 @@ class FalkonHyperGradient():
         self.model: Union[None, falkon.InCoreFalkon, falkon.Falkon] = None
 
     def params(self) -> List[torch.Tensor]:
-        return self._params
+        return [self.f_alpha]
 
     def hparams(self) -> List[torch.Tensor]:
-        return self._hparams
+        hps = [self.penalty, self.sigma]
+        if self.centers.requires_grad:
+            hps.append(self.centers)
+        return hps
 
     def adapt_hps(self, Xtr, Ytr, Xval, Yval, step):
-        self._params = [p.detach().requires_grad_(True) for p in self._params]
-
         # grad_outer_hparams is the 'direct gradient'.
         grad_outer_params, grad_outer_hparams = self.val_loss_grads(Xval, Yval)
 
@@ -66,18 +65,18 @@ class FalkonHyperGradient():
             first_diff, self.hparams(), grad_outputs=vs, allow_unused=True)
 
         final_grads = []
-        for ohp, g in zip(grad_outer_hparams, hyper_grads):
-            if ohp is not None:
-                final_grads.append(ohp - g)
+        for dg, hg in zip(grad_outer_hparams, hyper_grads):
+            if dg is not None:
+                final_grads.append(dg - hg)
             else:
-                final_grads.append(-g)
+                final_grads.append(-hg)
 
         writer = get_writer()
         writer.add_scalar('hparams/penalty', torch.exp(-self.penalty).item(), step)
         writer.add_scalar('hparams/sigma', self.sigma[0], step)
         writer.add_scalar('grads/penalty/hyper-grad', hyper_grads[0].item(), step)
         writer.add_scalar('grads/sigma/hyper-grad', hyper_grads[1][0].item(), step)
-        writer.add_scalar('grads/sigma/direct-grad', hyper_grads[1][0][0].item(), step)
+        writer.add_scalar('grads/sigma/direct-grad', grad_outer_hparams[1][0].item(), step)
 
         for hp, g in zip(self.hparams(), final_grads):
             if hp.grad is None:
@@ -88,15 +87,15 @@ class FalkonHyperGradient():
     def _val_loss_mse(self, Xval, Yval):
         kernel = DiffGaussianKernel(self.sigma, self.flk_opt)
         preds = kernel.mmv(Xval, self.centers, self.f_alpha)
-        return torch.sum((preds - Yval) ** 2)
+        return torch.mean((preds - Yval) ** 2)
 
     def _val_loss_penalized_mse(self, Xval, Yval):
         kernel = DiffGaussianKernel(self.sigma, self.flk_opt)
         preds = kernel.mmv(Xval, self.centers, self.f_alpha)
-        pen = (Xval.shape[0] * torch.exp(-self.penalty)) * (
+        pen = (torch.exp(-self.penalty)) * (
                 self.f_alpha.T @ kernel.mmv(self.centers, self.centers, self.f_alpha)
         )
-        return torch.sum((preds - Yval) ** 2) + pen
+        return torch.mean((preds - Yval) ** 2) + pen
 
     def val_loss(self, Xval: torch.Tensor, Yval: torch.Tensor):
         if self.val_loss_type == "penalized-mse":
@@ -121,10 +120,10 @@ class FalkonHyperGradient():
         kernel = DiffGaussianKernel(self.sigma, self.flk_opt)
 
         # 2/N * (K_MN(K_NM @ alpha - Y)) + 2*lambda*(K_MM @ alpha)
-        _penalty = torch.exp(-self.penalty) * Xtr.shape[0]
+        _penalty = torch.exp(-self.penalty)
         return (
                 kernel.mmv(self.centers, Xtr,
-                           kernel.mmv(Xtr, self.centers, self.f_alpha) - Ytr) +
+                           kernel.mmv(Xtr, self.centers, self.f_alpha) - Ytr) / Xtr.shape[0] +
                 _penalty * kernel.mmv(self.centers, self.centers, self.f_alpha)
         )
 
@@ -142,7 +141,8 @@ class FalkonHyperGradient():
             precond = self.model.precond
             centers = self.centers.detach()
 
-            B = precond.apply_t(vector / N)
+            # NOTE: Different normalization constant from Falkon.
+            B = precond.apply_t(vector)
 
             def mmv(sol):
                 v = precond.invA(sol)
@@ -170,7 +170,7 @@ class FalkonHyperGradient():
                          maxiter=self.flk_maxiter,
                          options=self.flk_opt)
             model.fit(X, Y, warm_start=self.f_alpha_pc)
-            self.f_alpha = model.alpha_.clone()
+            self.f_alpha = model.alpha_.clone().requires_grad_()
             self.f_alpha_pc = model.beta_.clone()
             self.model = model
 
@@ -191,10 +191,8 @@ class FalkonHyperGradient():
         )
         return model
 
-    def cuda(self):
-        self._params = [p.cuda() for p in self._params]
-        self._hparams = [hp.cuda() for hp in self._hparams]
-        return self
+    def eval(self):
+        pass
 
 
 def train_hypergrad(Xtr, Ytr, Xts, Yts,
@@ -221,13 +219,10 @@ def train_hypergrad(Xtr, Ytr, Xts, Yts,
         opt_centers=opt_centers,
         flk_opt=falkon_opt,
         val_loss_type=val_loss_type,
+        cuda=cuda,
     )
     if cuda:
-        model = model.cuda()
-        Xtr = Xtr.cuda()
-        Ytr = Ytr.cuda()
-        Xts = Xts.cuda()
-        Yts = Yts.cuda()
+        Xtr, Ytr, Xts, Yts = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
 
     outer_opt = torch.optim.Adam(lr=learning_rate, params=model.hparams())
 
