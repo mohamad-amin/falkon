@@ -1,5 +1,6 @@
 import time
 from typing import List, Union
+import functools
 
 import torch
 
@@ -9,7 +10,7 @@ from falkon import FalkonOptions
 from falkon.kernels import GaussianKernel
 from falkon.optim import ConjugateGradient
 from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
-from falkon.hypergrad.common import get_start_sigma, test_train_predict
+from falkon.hypergrad.common import get_start_sigma, test_train_predict, cg
 from falkon.center_selection import FixedSelector, CenterSelector
 
 
@@ -38,6 +39,7 @@ class FalkonHyperGradient():
 
         self.flk_opt = flk_opt
         self.flk_maxiter = 10
+        self.use_hvp = True
         self.val_loss_type = val_loss_type
         self.model: Union[None, falkon.InCoreFalkon, falkon.Falkon] = None
 
@@ -58,7 +60,12 @@ class FalkonHyperGradient():
         first_diff = self.tr_loss_p_grad(Xtr, Ytr)
 
         # Calculate the Hessian multiplied by the outer-gradient wrt alpha
-        vs = self.solve_hessian(Xtr, grad_outer_params)
+        if self.use_hvp:
+            hvp_func = functools.partial(self.hessian_vector_product, Xtr, first_diff)
+            vs = cg(hvp_func, grad_outer_params,
+                    max_iter=self.flk_maxiter, epsilon=self.flk_opt.cg_epsilon_32)
+        else:
+            vs = self.solve_hessian(Xtr, grad_outer_params)
 
         # Multiply the mixed inner gradient by `vs`
         hyper_grads = torch.autograd.grad(
@@ -117,6 +124,7 @@ class FalkonHyperGradient():
 
     def tr_loss_p_grad(self, Xtr, Ytr):
         """Gradients of the training loss with respect to params (alpha)"""
+        # Must be differentiable wrt hyper-params
         kernel = DiffGaussianKernel(self.sigma, self.flk_opt)
 
         # 2/N * (K_MN(K_NM @ alpha - Y)) + 2*lambda*(K_MM @ alpha)
@@ -153,6 +161,18 @@ class FalkonHyperGradient():
             c = precond.apply(d)
 
             return [c]
+
+    def hessian_vector_product(self, Xtr, tr_loss_p_der, vector):
+        vector = vector[0]
+        with torch.autograd.no_grad():
+            k = GaussianKernel(self.sigma.detach(), self.flk_opt)
+            _penalty = torch.exp(-self.penalty)
+            N = Xtr.shape[0]
+
+            out = (k.mmv(self.centers, Xtr, k.mmv(Xtr, self.centers, vector)) / N +
+                    _penalty * k.mmv(self.centers, self.centers, vector))
+            return [out]
+
 
     def adapt_alpha(self, X, Y):
         with torch.autograd.no_grad():
@@ -195,7 +215,7 @@ class FalkonHyperGradient():
         pass
 
 
-def train_hypergrad(Xtr, Ytr, Xts, Yts,
+def train_hypergrad(Xtr, Ytr, Xval, Yval, Xts, Yts,
                     penalty_init: float,
                     sigma_type: str,
                     sigma_init: float,
@@ -223,6 +243,7 @@ def train_hypergrad(Xtr, Ytr, Xts, Yts,
     )
     if cuda:
         Xtr, Ytr, Xts, Yts = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
+        Xval, Yval = Xval.cuda(), Yval.cuda()
 
     outer_opt = torch.optim.Adam(lr=learning_rate, params=model.hparams())
 
@@ -235,18 +256,17 @@ def train_hypergrad(Xtr, Ytr, Xts, Yts,
         # Run inner opt (falkon) to obtain the preconditioner
         model.adapt_alpha(Xtr, Ytr)
         # Run outer opt (Adam) to fill-in the .grad field of hps
-        model.adapt_hps(Xtr, Ytr, Xts, Yts, cum_step)
+        model.adapt_hps(Xtr, Ytr, Xval, Yval, cum_step)
         # Loss reporting before step() (so that our original model stays valid!)
         if epoch != 0 and (epoch + 1) % loss_every == 0:
-            cum_time, train_err, test_err = test_train_predict(model,
-                                                               Xts, Yts,
-                                                               Xtr, Ytr,
-                                                               err_fn,
-                                                               epoch,
-                                                               e_start,
-                                                               cum_time)
+            cum_time, train_err, test_err, val_err = test_train_predict(
+                    model, Xts=Xts, Yts=Yts, Xtr=Xtr, Ytr=Ytr,
+                    err_fn=err_fn, epoch=epoch, time_start=e_start,
+                    cum_time=cum_time, Xval=Xval, Yval=Yval
+            )
             writer.add_scalar('Error/train', train_err, cum_step)
             writer.add_scalar('Error/test', test_err, cum_step)
+            writer.add_scalar('Error/validation', val_err, cum_step)
         # Update hp values
         outer_opt.step()
         cum_step += 1

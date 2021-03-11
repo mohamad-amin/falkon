@@ -111,6 +111,8 @@ def test_train_predict(model,
                        epoch: int,
                        time_start: float,
                        cum_time: float,
+                       Xval: Optional[torch.Tensor]=None,
+                       Yval: Optional[torch.Tensor]=None,
                        ):
     t_elapsed = time.time() - time_start  # Stop the time
     cum_time += t_elapsed
@@ -120,11 +122,18 @@ def test_train_predict(model,
     train_preds = model.predict(Xtr)
     test_err, err_name = err_fn(Yts.detach().cpu(), test_preds.detach().cpu())
     train_err, err_name = err_fn(Ytr.detach().cpu(), train_preds.detach().cpu())
-    print(f"Epoch {epoch} ({cum_time:5.2f}s) - "
-          f"Tr {err_name} = {train_err:6.4f} , "
-          f"Ts {err_name} = {test_err:6.4f} -- "
-          f"Sigma {model.sigma[0].item():.3f} - Penalty {np.exp(-model.penalty.item()):.2e}")
-    return cum_time, train_err, test_err
+    out_str = (f"Epoch {epoch} ({cum_time:5.2f}s) - "
+               f"Sigma {model.sigma[0].item():.3f} - Penalty {np.exp(-model.penalty.item()):.2e} - "
+               f"Tr  {err_name} = {train_err:6.4f} - "
+               f"Ts  {err_name} = {test_err:6.4f}")
+    ret = [cum_time, train_err, test_err]
+    if Xval is not None and Yval is not None:
+        val_preds = model.predict(Xval)
+        val_err, err_name = err_fn(Yval.detach().cpu(), val_preds.detach().cpu())
+        out_str += f" - Val {err_name} = {val_err:6.4f}"
+        ret.append(val_err)
+    print(out_str, flush=True)
+    return ret
 
 
 def get_start_sigma(sigma_init: float, sigma_type: str, d: int = None) -> torch.Tensor:
@@ -137,3 +146,52 @@ def get_start_sigma(sigma_init: float, sigma_type: str, d: int = None) -> torch.
     else:
         raise ValueError("sigma_type %s unrecognized" % (sigma_type))
     return start_sigma
+
+def cg(Ax, b, x0=None, max_iter=100, epsilon=1.0e-5):
+    """ Conjugate Gradient
+      Args:
+        Ax: function, takes list of tensors as input
+        b: list of tensors
+      Returns:
+        x_star: list of tensors
+    """
+    app_times = []
+    if x0 is None:
+        x_last = [torch.zeros_like(bb) for bb in b]
+        r_last = [torch.zeros_like(bb).copy_(bb) for bb in b]
+    else:
+        x_last = x0
+        mmvs = Ax(x0)
+        r_last = [bb - mmmvs for (bb, mmmvs) in zip(b, mmvs)]
+    p_last = [torch.zeros_like(rr).copy_(rr) for rr in r_last]
+    for ii in range(max_iter):
+        t_s = time.time()
+        Ap = Ax(p_last)
+        app_times.append(time.time() - t_s)
+        Ap_vec = cat_list_to_tensor(Ap)
+        p_last_vec = cat_list_to_tensor(p_last)
+        r_last_vec = cat_list_to_tensor(r_last)
+        rTr = torch.sum(r_last_vec * r_last_vec)
+        pAp = torch.sum(p_last_vec * Ap_vec)
+        alpha = rTr / pAp
+
+        x = [xx + alpha * pp for xx, pp in zip(x_last, p_last)]
+        r = [rr - alpha * pp for rr, pp in zip(r_last, Ap)]
+        r_vec = cat_list_to_tensor(r)
+
+        if float(torch.norm(r_vec)) < epsilon:
+            break
+
+        beta = torch.sum(r_vec * r_vec) / rTr
+        p = [rr + beta * pp for rr, pp in zip(r, p_last)]
+
+        x_last = x
+        p_last = p
+        r_last = r
+
+    return x_last#, ii, min(app_times)
+
+
+def cat_list_to_tensor(list_tx):
+    return torch.cat([xx.view([-1]) for xx in list_tx])
+

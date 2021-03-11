@@ -11,6 +11,7 @@ from error_metrics import get_err_fns
 from falkon import FalkonOptions
 from falkon.center_selection import UniformSelector, FixedSelector
 from falkon.hypergrad import validation_hp, complexity_reg
+from summary import get_writer
 
 
 def retrain_and_test(model, Xtr, Ytr, Xts, Yts, err_fns, metadata, cuda):
@@ -24,6 +25,7 @@ def retrain_and_test(model, Xtr, Ytr, Xts, Yts, err_fns, metadata, cuda):
     model.fit(Xtr, Ytr)
     train_pred = model.predict(Xtr).cpu()
     test_pred = model.predict(Xts).cpu()
+    writer = get_writer()
     print("Best model settings:")
     print("Penalty: %.5e - Sigma: %s" % (model.penalty, model.kernel.sigma))
     print("Test (unseen) errors after retraining on the full train dataset")
@@ -31,6 +33,7 @@ def retrain_and_test(model, Xtr, Ytr, Xts, Yts, err_fns, metadata, cuda):
         train_err, err = efn(Ytr.cpu(), train_pred, **metadata)
         test_err, err = efn(Yts.cpu(), test_pred, **metadata)
         print(f"Train {err}: {train_err:.5f} -- Test {err}: {test_err:.5f}")
+        writer.add_scalar(f"RetrainError/test-{err}", test_err, 5)
 
 
 def run_validation_hp_opt_hgrad(
@@ -61,7 +64,7 @@ def run_validation_hp_opt_hgrad(
     Xtr_, Ytr_ = Xtr[idx_tr], Ytr[idx_tr]
 
     # Center selection
-    if 'centers' in metadata:
+    if False and 'centers' in metadata:
         centers = torch.from_numpy(metadata['centers'])
         print("Ignoring `num_centers` argument since dataset metadata "
               "contains centers. Picked %d centers" % (centers.shape[0]))
@@ -81,7 +84,7 @@ def run_validation_hp_opt_hgrad(
 
     # Run the training
     best_model = validation_hp.train_hypergrad(
-        Xtr_, Ytr_, Xval, Yval,
+        Xtr_, Ytr_, Xval, Yval, Xts, Yts,
         penalty_init=penalty_init,
         sigma_type=sigma_type,
         sigma_init=sigma_init,
@@ -121,7 +124,7 @@ def run_complexity_reg_hp_opt(
     err_fns = get_err_fns(dataset)
 
     # Center selection
-    if 'centers' in metadata:
+    if False and 'centers' in metadata:
         centers = torch.from_numpy(metadata['centers'])
         print("Ignoring `num_centers` argument since dataset metadata "
               "contains centers. Picked %d centers" % (centers.shape[0]))
@@ -195,7 +198,6 @@ if __name__ == "__main__":
     print("-------------------------------------------")
     np.random.seed(args.seed)
 
-    from summary import get_writer
     get_writer(args.name)
 
     if args.exp == "creg":
