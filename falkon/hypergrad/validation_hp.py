@@ -22,6 +22,7 @@ class FalkonHyperGradient():
             centers_init: torch.Tensor,
             opt_centers: bool,
             flk_opt: FalkonOptions,
+            flk_maxiter: int,
             val_loss_type: str,
             cuda: bool,
     ):
@@ -38,7 +39,7 @@ class FalkonHyperGradient():
         self.f_alpha_pc = torch.zeros(self.centers.shape[0], 1, requires_grad=False, device=device)
 
         self.flk_opt = flk_opt
-        self.flk_maxiter = 10
+        self.flk_maxiter = flk_maxiter
         self.use_hvp = True
         self.val_loss_type = val_loss_type
         self.model: Union[None, falkon.InCoreFalkon, falkon.Falkon] = None
@@ -229,6 +230,7 @@ def train_hypergrad(Xtr, Ytr, Xval, Yval, Xts, Yts,
                     loss_every: int,
                     err_fn,
                     falkon_opt,
+                    falkon_maxiter,
                     ):
     start_sigma = get_start_sigma(sigma_init, sigma_type, Xtr.shape[1])
 
@@ -238,6 +240,7 @@ def train_hypergrad(Xtr, Ytr, Xval, Yval, Xts, Yts,
         centers_init=falkon_centers.select(Xtr, Y=None, M=num_centers),
         opt_centers=opt_centers,
         flk_opt=falkon_opt,
+        flk_maxiter=falkon_maxiter,
         val_loss_type=val_loss_type,
         cuda=cuda,
     )

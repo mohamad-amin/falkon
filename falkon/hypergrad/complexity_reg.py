@@ -133,7 +133,7 @@ class FakeTorchModelMixin():
 
 
 class NystromKRRModelMixin(FakeTorchModelMixin):
-    def __init__(self, penalty, sigma, centers, flk_opt, cuda):
+    def __init__(self, penalty, sigma, centers, flk_opt, flk_maxiter, cuda):
         super().__init__()
         if cuda:
             device = torch.device('cuda')
@@ -151,7 +151,7 @@ class NystromKRRModelMixin(FakeTorchModelMixin):
         self.register_buffer("alpha_pc", self.f_alpha_pc)
 
         self.flk_opt = flk_opt
-        self.flk_maxiter = 10
+        self.flk_maxiter = flk_maxiter
 
         self.model = None
 
@@ -194,6 +194,7 @@ class NystromKRRModelMixin(FakeTorchModelMixin):
     def eval(self):
         pass
 
+
 class SimpleFalkonComplexityReg(NystromKRRModelMixin):
     def __init__(
             self,
@@ -201,6 +202,7 @@ class SimpleFalkonComplexityReg(NystromKRRModelMixin):
             sigma_init,
             centers_init,
             flk_opt,
+            flk_maxiter,
             opt_centers,
             verbose_tboard: bool,
             cuda: bool,
@@ -210,6 +212,7 @@ class SimpleFalkonComplexityReg(NystromKRRModelMixin):
             sigma=sigma_init,
             centers=centers_init,
             flk_opt=flk_opt,
+            flk_maxiter=flk_maxiter,
             cuda=cuda,
         )
         self.register_parameter("penalty", self.penalty.requires_grad_(True))
@@ -260,6 +263,7 @@ class FalkonComplexityReg(NystromKRRModelMixin):
             sigma_init,
             centers_init,
             flk_opt,
+            flk_maxiter,
             opt_centers,
             verbose_tboard: bool,
             precise_trace: bool,
@@ -270,6 +274,7 @@ class FalkonComplexityReg(NystromKRRModelMixin):
             sigma=sigma_init,
             centers=centers_init,
             flk_opt=flk_opt,
+            flk_maxiter=flk_maxiter,
             cuda=cuda,
         )
         falkon.cuda.initialization.init(flk_opt)
@@ -343,6 +348,7 @@ class GPComplexityReg(NystromKRRModelMixin):
             opt_centers,
             verbose_tboard: bool,
             flk_opt: FalkonOptions,
+            flk_maxiter,
             cuda: bool,
     ):
         super().__init__(
@@ -350,6 +356,7 @@ class GPComplexityReg(NystromKRRModelMixin):
             sigma=sigma_init,
             centers=centers_init,
             flk_opt=flk_opt,
+            flk_maxiter=flk_maxiter,
             cuda=cuda,
         )
         self.register_parameter("penalty", self.penalty.requires_grad_(True))
@@ -404,6 +411,7 @@ def train_complexity_reg(
                     loss_every: int,
                     err_fn,
                     falkon_opt,
+                    falkon_maxiter: int,
                     model_type: str,
                     ):
     print("Starting Falkon-NKRR-HO - FIXED VERSION - optimization.")
@@ -421,6 +429,7 @@ def train_complexity_reg(
                 centers_init=falkon_centers.select(Xtr, Y=None, M=num_centers),
                 opt_centers=opt_centers,
                 flk_opt=falkon_opt,
+                flk_maxiter=falkon_maxiter,
                 verbose_tboard=verbose,
                 cuda=cuda,
         )
@@ -431,6 +440,7 @@ def train_complexity_reg(
                 centers_init=falkon_centers.select(Xtr, Y=None, M=num_centers),
                 opt_centers=opt_centers,
                 flk_opt=falkon_opt,
+                flk_maxiter=falkon_maxiter,
                 verbose_tboard=verbose,
                 cuda=cuda,
         )
@@ -442,6 +452,7 @@ def train_complexity_reg(
                 centers_init=falkon_centers.select(Xtr, Y=None, M=num_centers),
                 opt_centers=opt_centers,
                 flk_opt=falkon_opt,
+                flk_maxiter=falkon_maxiter,
                 verbose_tboard=verbose,
                 precise_trace=precise_trace,
                 cuda=cuda,

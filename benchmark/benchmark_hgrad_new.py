@@ -47,6 +47,7 @@ def run_validation_hp_opt_hgrad(
         learning_rate: float,
         val_loss_type: str,
         train_frac: float,
+        falkon_maxiter: int,
         cuda: bool,
         seed: int,
 ):
@@ -98,6 +99,7 @@ def run_validation_hp_opt_hgrad(
         loss_every=loss_every,
         err_fn=functools.partial(err_fns[0], **metadata),
         falkon_opt=falkon_opt,
+        falkon_maxiter=falkon_maxiter,
     )
 
     # Retrain with the full training data and test!
@@ -114,6 +116,7 @@ def run_complexity_reg_hp_opt(
         num_epochs: int,
         learning_rate: float,
         model_type: str,
+        falkon_maxiter: int,
         cuda: bool,
         seed: int,
 ):
@@ -158,6 +161,7 @@ def run_complexity_reg_hp_opt(
         loss_every=loss_every,
         err_fn=functools.partial(err_fns[0], **metadata),
         falkon_opt=falkon_opt,
+        falkon_maxiter=falkon_maxiter,
     )
 
     # Retrain with the full training data and test!
@@ -184,6 +188,8 @@ if __name__ == "__main__":
                    help="Whether to optimize Nystrom centers")
     p.add_argument('--num-centers', type=int, default=1000, required=False,
                    help="Number of Nystrom centers for Falkon")
+    p.add_argument('--flk-maxiter', type=int, required=True,
+                   help="Number of falkon iterations")
     p.add_argument('--val-loss', type=str, default="")
     p.add_argument('--train-frac', type=float, default=0,
                    help="Fraction of training data in the training-validation split. Only necessary "
@@ -207,7 +213,8 @@ if __name__ == "__main__":
             dataset=args.dataset, penalty_init=args.penalty_init, sigma_type=args.sigma_type,
             sigma_init=args.sigma_init, opt_centers=args.optimize_centers, num_centers=args.num_centers,
             num_epochs=args.epochs, learning_rate=args.lr, model_type=args.creg_type, cuda=args.cuda,
-            seed=args.seed)
+            seed=args.seed, falkon_maxiter=args.flk_maxiter,
+        )
     elif args.exp == "hgrad":
         if args.val_loss == "":
             raise ValueError("val-loss type must be specified (either 'mse' or 'penalized-mse').")
@@ -217,4 +224,5 @@ if __name__ == "__main__":
             dataset=args.dataset, penalty_init=args.penalty_init, sigma_type=args.sigma_type,
             sigma_init=args.sigma_init, opt_centers=args.optimize_centers, num_centers=args.num_centers,
             num_epochs=args.epochs, learning_rate=args.lr, val_loss_type=args.val_loss,
-            train_frac=args.train_frac, cuda=args.cuda, seed=args.seed)
+            train_frac=args.train_frac, cuda=args.cuda, seed=args.seed, falkon_maxiter=args.flk_maxiter,
+        )
