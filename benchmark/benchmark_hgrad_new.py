@@ -14,12 +14,12 @@ from falkon.hypergrad import validation_hp, complexity_reg
 from summary import get_writer
 
 
-def retrain_and_test(model, Xtr, Ytr, Xts, Yts, err_fns, metadata, cuda):
+def retrain_and_test(model, Xtr, Ytr, Xts, Yts, err_fns, metadata, cuda, maxiter):
     # Retrain with the full training data and test!
     print("Retraining on the full train dataset.")
     if cuda:
         Xtr, Ytr, Xts, Yts = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
-    model.maxiter = 20
+    model.maxiter = maxiter
     model.error_fn = functools.partial(err_fns[0], **metadata)
     model.error_every = 1
     model.fit(Xtr, Ytr)
@@ -103,7 +103,7 @@ def run_validation_hp_opt_hgrad(
     )
 
     # Retrain with the full training data and test!
-    retrain_and_test(best_model, Xtr, Ytr, Xts, Yts, err_fns, metadata, cuda)
+    retrain_and_test(best_model, Xtr, Ytr, Xts, Yts, err_fns, metadata, cuda, max(20, falkon_maxiter))
 
 
 def run_complexity_reg_hp_opt(
@@ -165,7 +165,7 @@ def run_complexity_reg_hp_opt(
     )
 
     # Retrain with the full training data and test!
-    retrain_and_test(best_model, Xtr, Ytr, Xts, Yts, err_fns, metadata, cuda)
+    retrain_and_test(best_model, Xtr, Ytr, Xts, Yts, err_fns, metadata, cuda, max(20, falkon_maxiter))
 
 
 if __name__ == "__main__":
