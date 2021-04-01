@@ -304,6 +304,33 @@ class TestTrsm:
         np.testing.assert_allclose(sol_vec, out.cpu().numpy(), rtol=self.rtol[dtype])
 
 
+class TestVecMulTriangSimple:
+    @pytest.fixture
+    def mat(self):
+        arr = np.array([[1, 1, 1],
+                        [2, 2, 4],
+                        [6, 6, 8]], dtype=np.float32, order='F')
+        return torch.from_numpy(arr).cuda()
+
+    @pytest.fixture
+    def vec(self):
+        arr = np.array([0, 1, 0.5], dtype=np.float32)
+        return torch.from_numpy(arr).cuda()
+
+    def test(self, mat, vec):
+        out = vec_mul_triang(mat, vec, True, 1)
+        print("INPUT")
+        print(mat.stride())
+        print(mat)
+        print("VEC")
+        print(vec)
+        print("EXPECTED")
+        print(vec_mul_triang(mat.cpu(), vec.cpu(), True, 1))
+        print("ACTUAL")
+        print(out)
+
+
+
 class TestVecMulTriang:
     @pytest.fixture
     def mat(self):

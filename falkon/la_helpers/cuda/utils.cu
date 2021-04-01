@@ -50,6 +50,50 @@ __global__ void copy_simple_kernel_upper(scalar_t *data, const size_t size)
 }
 
 
+__device__ int2 tri_index_lower(const int linear_index) {
+    const int row = (int)((-1 + sqrt((double)(8*linear_index + 1))) / 2.0);
+    return make_int2(
+        linear_index - row * (row + 1) / 2,
+        row
+    );
+}
+
+__device__ int2 tri_index_upper(const int linear_index) {
+    const int row = (int)((-1 + sqrt((double)(8*linear_index + 1))) / 2.0);
+    return make_int2(
+        row,
+        linear_index - row * (row + 1) / 2
+    );
+}
+
+template <typename scalar_t>
+__global__ void vec_mul_triang_kernel_v1(scalar_t* __restrict__ mat, const scalar_t* __restrict__ vec, const int mat_stride) {
+    const int2 tile_pos = tri_index_upper(blockIdx.x);
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
+
+    // Init. shared mem
+    __shared__ scalar_t v_seg[blockDim.x];
+    __shared__ scalar_t m_tile[blockDim.x][blockDim.y];
+
+    // Copy global to shared mem
+    for (int i = 0; i < blockDim.y; i++) {
+        m_tile[tx][i] = mat[(tile_pos.x + i) * mat_stride + tile_pos.y + tx]
+    }
+    v_seg[tx] = vec[tile_pos.x + tx]
+
+    // Calc
+    for (int i = 0; i < blockDim.y; i++) {
+        m_tile[tx][i] *= v_seg[tx]
+    }
+
+    // Copy back (careful about tri-indices)
+    for (int i = 0; i < blockDim.y; i++) {
+        mat[(tile_pos.x + i) * mat_stride + tile_pos.y + tx] = m_tile[tx][i]
+    }
+}
+
+
 template <typename scalar_t>
 __global__ void mul_upper_diag(scalar_t *data, const size_t size, const scalar_t mul)
 {
@@ -193,6 +237,35 @@ int ceildiv(int dividend, int divisor) {
     if (dividend % divisor != 0)
         res++;
     return res;
+}
+
+
+torch::Tensor cuda_vec_mul_triang(torch::Tensor &A, torch::Tensor &v, bool upper, int side) {
+    if (!A.is_cuda()) {
+        AT_ERROR("Input A must be a CUDA tensor.");
+    }
+    if (!v.is_cuda()) {
+        AT_ERROR("Input v must be a CUDA tensor.");
+    }
+    if (device_of(v) != device_of(A)) {
+        AT_ERROR("Inputs A, v must be on the same CUDA device.");
+    }
+
+    const int block_size = 32;
+    const auto nx = A.size(0);
+    const auto scalar_type = A.scalar_type();
+
+    const int grid_height = ceildiv(nx, block_size);
+    const dim3 dimGrid(grid_height * (grid_height + 1) / 2, 1);
+    const dim3 dimBlock(block_size, block_size);
+
+    AT_DISPATCH_FLOATING_TYPES(scalar_type, "dispatch_vec_mul_triang", [&] {
+        at::cuda::CUDAStream stream = at::cuda::getCurrentCUDAStream();
+        at::DeviceGuard g(A.device());
+        vec_mul_triang_kernel_v1<scalar_t><<<dimGrid, dimBlock, 0, stream.stream()>>>(
+            A.data_ptr<scalar_t>(), v.data_ptr<scalar_t>(), A.stride(0));
+    });
+    return A;
 }
 
 

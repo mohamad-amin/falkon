@@ -148,7 +148,8 @@ def vec_mul_triang(mat: arr_type, multipliers: arr_type, upper: bool, side: int)
     out_torch_convert = False
     if isinstance(mat, torch.Tensor):
         if mat.is_cuda:
-            raise NotImplementedError("'vec_mul_triang' is only implemented for CPU tensors")
+            from falkon.la_helpers.cuda_la_helpers import cuda_vec_mul_triang
+            return cuda_vec_mul_triang(mat, multipliers, upper, side)
         else:
             out_torch_convert = True
             mat = mat.numpy()

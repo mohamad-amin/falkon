@@ -65,3 +65,6 @@ torch::Tensor cuda_mul_triang(torch::Tensor &A,
  */
 torch::Tensor cuda_transpose(torch::Tensor &input,
                              torch::Tensor &output);
+
+
+torch::Tensor cuda_vec_mul_triang(torch::Tensor &A, torch::Tensor &v, bool upper, int side);
