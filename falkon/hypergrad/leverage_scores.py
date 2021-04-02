@@ -1,21 +1,16 @@
-import time
-import math
-
 import torch
-from falkon.hypergrad.common import full_rbf_kernel
 
 import falkon
-from falkon import Falkon, InCoreFalkon, FalkonOptions
-from falkon.center_selection import FixedSelector
-from falkon.optim import FalkonConjugateGradient
-from falkon.preconditioner import FalkonPreconditioner
-from falkon.models.model_utils import FalkonBase
+from falkon import FalkonOptions
+from falkon.hypergrad.common import full_rbf_kernel
 from falkon.kernels import GaussianKernel
 from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
 from falkon.la_helpers import potrf, trsm
-
+from falkon.optim import FalkonConjugateGradient
+from falkon.preconditioner import FalkonPreconditioner
 
 __all__ = ("gauss_effective_dimension", "gauss_nys_effective_dimension")
+
 
 def subs_deff_simple(kernel: falkon.kernels.Kernel,
                      penalty: torch.Tensor,
@@ -241,233 +236,6 @@ class GaussNysEffectiveDimension(torch.autograd.Function):
         return tuple(result)
 
 
-def loss_and_deff(kernel_args, penalty, M, X, Y, t, deterministic=False, preconditioner=None):
-    opt = FalkonOptions(keops_active="no")
-    K = GaussianKernel(kernel_args.detach(), opt=opt)
-    if preconditioner is None:
-        preconditioner = FalkonPreconditioner(penalty.detach(), K, opt)
-        preconditioner.init(M.detach())
-    optim = FalkonConjugateGradient(K, preconditioner, opt)
-
-    return LossAndDeff.apply(kernel_args, penalty, M, X, Y, t, deterministic, optim, preconditioner)
-
-
-# noinspection PyMethodOverriding
-class LossAndDeff(torch.autograd.Function):
-    NUM_DIFF_ARGS = 3
-    MAX_ITER = 10
-
-    @staticmethod
-    @torch.jit.script
-    def _naive_torch_gaussian_kernel(X1, X2, sigma):
-        pairwise_dists = my_cdist(X1 / sigma, X2 / sigma)
-        return torch.exp(-0.5 * pairwise_dists)
-
-    @staticmethod
-    def forward(ctx, kernel_args, penalty, M, X, Y, t, deterministic, optim: FalkonConjugateGradient, precond):
-        n = X.shape[0]
-        if deterministic:
-            torch.manual_seed(12)
-        Z = torch.randn(t, n, dtype=X.dtype, device=X.device)  # t x n
-        ZY = torch.cat((Z, Y.T), dim=0).T  # n x t+p
-
-        with torch.autograd.no_grad():
-            beta = optim.solve(X.detach(), M.detach(), ZY.detach(), penalty.detach(), initial_solution=None,
-                               max_iter=LossAndDeff.MAX_ITER,
-                               callback=None)
-            sol_full = precond.apply(beta)  # alpha, eta
-
-        with torch.autograd.enable_grad():
-            # K_MN @ ZY => m x t+p
-            K_MN = LossAndDeff._naive_torch_gaussian_kernel(M, X, kernel_args)
-            k_vec_full = K_MN @ ZY  # d, e
-
-        # Trace terms
-        with torch.autograd.enable_grad():
-            K_MM = LossAndDeff._naive_torch_gaussian_kernel(M, M, kernel_args)
-
-        with torch.autograd.no_grad():
-            T = torch.cholesky(K_MM, upper=True)  # T.T @ T = K_MM
-            g = torch.triangular_solve(k_vec_full[:, :t], T, transpose=True, upper=True).solution
-
-
-        # TODO: Useful?
-        with torch.autograd.no_grad():
-            Y_tilde = K_MN.T @ f1#[:, t:]       # KNM @ alpha  (n x p)
-            beta = optim.solve(X.detach(), M.detach(), Y_tilde, penalty.detach(), initial_solution=None,
-                               max_iter=LossAndDeff.MAX_ITER,
-                               callback=None)  # precond(H^-1 @ KMN @ KNM @ alpha)
-            alpha_tilde = precond.apply(beta)  # => m x t+p  (needed in backward)
-
-        ctx.save_for_backward(kernel_args, penalty, M)
-        ctx.f1 = f1
-        ctx.f2 = f2
-        ctx.X = X
-        ctx.t = t
-        ctx.Y_tilde = Y_tilde
-        ctx.alpha_tilde = alpha_tilde
-
-        d_eff = (k_vec_full[:,:t] * sol_full[:, :t]).sum(0).mean()
-
-        d_eff = 2 * (f1[:, :t] * f2[:, :t]).sum(0).mean()
-        #d_eff = (
-        #    2 * (f1[:, :t] * f2[:, :t]).sum(0).mean() -            # normal_deff
-        #        (Y_tilde[:, :t] * Y_tilde[:, :t]).sum(0).mean()  # full_deff
-        #)
-        l_t1 = (Y_tilde[:, t:] * Y_tilde[:, t:]).sum(0).mean()            # Y_tilde^T @ Y_tilde
-        l_t2 = - 2 * (f2[:, t:] * f1[:, t:]).sum(0).mean()  # -2 * Y^T @ KNM @ alpha
-        l_t3 = (Y * Y).sum(0).mean()                        # Y^T @ Y
-        loss = l_t1 + l_t2 + l_t3
-        print(f"loss {loss / n:.2f} - denom {(n - d_eff)**2 / n**2:.2f} - deff {d_eff:.2f}")
-        out = (loss / n) / ((n - d_eff)**2 / n**2)
-        return out
-
-    @staticmethod
-    def backward(ctx, out):#_deff, out_loss):
-        X, f1, f2, t, Y_tilde, alpha_tilde = ctx.X, ctx.f1, ctx.f2, ctx.t, ctx.Y_tilde, ctx.alpha_tilde
-        n = X.shape[0]
-        kernel_args, penalty, M = ctx.saved_tensors
-
-        with torch.autograd.enable_grad():
-            K_nm = LossAndDeff._naive_torch_gaussian_kernel(X, M, kernel_args)
-            K_mm = penalty * n * LossAndDeff._naive_torch_gaussian_kernel(M, M, kernel_args)
-            l1_dot = (f1 * f2).sum(0)                              # alpha^T @ KNM^T @ Y
-            l1_deff = l1_dot[:t].mean()
-
-            l2_p1 = K_nm @ f1
-            l2_p2 = K_mm @ f1
-            l2_p1_dot = (torch.square(l2_p1)).sum(0)               # alpha^T @ KNM^T @ KNM @ alpha
-            l2_p2_dot = (f1 * l2_p2).sum(0)                        # alpha^T @ (n*l*KMM) @ alpha
-            l2_deff = l2_p1_dot[:t].mean() + l2_p2_dot[:t].mean()  # alpha^T @ H @ alpha
-
-            #deff_bg = out_deff * (
-            #    2 * (2 * l1_deff - l2_deff) -
-            #    2 * (
-            #        (f2[:, :t] * alpha_tilde[:, :t]).sum(0) +
-            #        (l2_p1[:, :t] * Y_tilde[:, :t]).sum(0) -
-            #        (l2_p2[:, :t] * alpha_tilde[:, :t]).sum(0) -
-            #        (l2_p1[:, :t] * (K_nm @ alpha_tilde[:, :t])).sum(0)
-            #    ).mean()
-            #)
-            deff_bg = 2 * l1_deff - l2_deff
-
-            loss_bg = (
-                2 * (  # c-term: grad(alpha^T @ KNM^T @ KNM @ alpha)
-                    (f2[:, t:] * alpha_tilde[:, t:]).sum(0) +             # Y^T @ KNM @ alpha_tilde
-                    (l2_p1[:, t:] * Y_tilde[:, t:]).sum(0) -              # alpha^T @ KNM^T @ Y_tilde
-                    (l2_p2[:, t:] * alpha_tilde[:, t:]).sum(0) -          # alpha^T @ (n*l*KMM) @ alpha_tilde
-                    (l2_p1[:, t:] * (K_nm @ alpha_tilde[:, t:])).sum(0)   # alpha^T @ KNM.T @ KNM @ alpha_tilde
-                ).mean() -
-                2 * (  # b-term: grad(-2 * Y^T @ KNM @ alpha)
-                    2 * l1_dot[t:].mean() -                        # 2 * Y^T @ KNM @ alpha
-                    (l2_p1_dot[t:].mean() + l2_p2_dot[t:].mean())  # alpha^T @ H @ alpha
-                )
-            )
-            bg = (loss_bg / n) / ((n - deff_bg)**2 / n**2)
-            #bg = deff_bg + loss_bg
-
-        needs_grad = []
-        for i in range(LossAndDeff.NUM_DIFF_ARGS):
-            if ctx.needs_input_grad[i]:
-                needs_grad.append(ctx.saved_tensors[i])
-        grads = torch.autograd.grad(bg, needs_grad, retain_graph=True, allow_unused=True)
-        result = []
-        j = 0
-        for i in range(len(ctx.needs_input_grad)):
-            if ctx.needs_input_grad[i]:
-                result.append(grads[j])
-                j += 1
-            else:
-                result.append(None)
-        return tuple(result)
-
-
-def sgpr_trace(kernel_args, penalty, M, X, t, deterministic=False):
-    return SGPRTrace.apply(kernel_args, penalty, M, X, t, deterministic)
-
-
-# noinspection PyMethodOverriding
-class SGPRTrace(torch.autograd.Function):
-    NUM_DIFF_ARGS = 3
-
-    @staticmethod
-    def _cholesky_solve(L, b):
-        y = trsm(b, L, alpha=1.0, lower=True, transpose=0)
-        return trsm(y, L, alpha=1.0, lower=True, transpose=1)
-
-    @staticmethod
-    def forward(ctx, kernel_args, penalty, M, X, t, deterministic):
-        n = X.shape[0]
-        if n <= 30_000:
-            keops = "no"
-        else:
-            keops = "force"
-        kernel = DiffGaussianKernel(kernel_args, opt=FalkonOptions(keops_active=keops))
-        if deterministic:
-            torch.manual_seed(12)
-
-        Z = torch.randn(n, t, dtype=X.dtype, device=X.device)
-
-        with torch.autograd.enable_grad():
-            KMN_Z = kernel.mmv(M, X, Z)
-            # Note that KNN_Z needs to be differentiable wrt kernel_args!
-            KNN_Z = kernel.mmv(X, X, Z)  # TODO: This seems super expensive, can probably specialize taking the diagonal of the kernel easily.
-
-            mul_const = 1 / (torch.exp(-penalty))
-
-        # Solve beta = K_MM^{-1} @ K_NM.T @ Z
-        with torch.autograd.no_grad():
-            K_MM = kernel(M, M)
-            if K_MM.is_cuda:
-                from falkon.ooc_ops.ooc_potrf import gpu_cholesky
-                K_chol = gpu_cholesky(K_MM, upper=True, clean=False, overwrite=True, opt=FalkonOptions()).T
-            else:
-                K_chol = potrf(K_MM, upper=False, clean=False, overwrite=True, cuda=Keye.is_cuda)
-            #KMN_Z_F = torch.empty(KMN_Z.shape[1], KMN_Z.shape[0], device=KMN_Z.device, dtype=KMN_Z.dtype)
-            #KMN_Z_F.copy_(KMN_Z.T)
-            beta = SGPRTrace._cholesky_solve(K_chol, KMN_Z)
-
-        with torch.autograd.enable_grad():
-            tr_1 = (Z * KNN_Z).sum(0).mean()
-            tr_2 = (KMN_Z * beta).sum(0).mean()
-
-        ctx.save_for_backward(kernel_args, penalty, M)
-        ctx.beta = beta
-        ctx.fwd_1 = tr_1
-        ctx.fwd_2 = tr_2
-        ctx.kernel = kernel
-        ctx.mul_const = mul_const
-
-        return mul_const * (tr_1 - tr_2)
-
-    @staticmethod
-    def backward(ctx, grad_out):
-        beta, fwd_1, fwd_2, mul_const, kernel = ctx.beta, ctx.fwd_1, ctx.fwd_2, ctx.mul_const, ctx.kernel
-        kernel_args, penalty, M = ctx.saved_tensors
-
-        with torch.autograd.enable_grad():
-            loss_1 = fwd_1
-            loss_2 = - 2 * fwd_2
-            loss_3 = (beta * kernel.mmv(M, M, beta)).sum(0).mean()
-            loss = grad_out * mul_const * (loss_1 + loss_2 + loss_3)
-
-        needs_grad = []
-        for i in range(SGPRTrace.NUM_DIFF_ARGS):
-            if ctx.needs_input_grad[i]:
-                needs_grad.append(ctx.saved_tensors[i])
-        grads = torch.autograd.grad(loss, needs_grad)
-
-        result = []
-        j = 0
-        for i in range(len(ctx.needs_input_grad)):
-            if ctx.needs_input_grad[i]:
-                result.append(grads[j])
-                j += 1
-            else:
-                result.append(None)
-        return tuple(result)
-
-
 def regloss_and_deff(
             kernel_args: torch.Tensor,
             penalty: torch.Tensor,
@@ -581,6 +349,8 @@ class RegLossAndDeff(torch.autograd.Function):
         ### K_MN @ vector
         with torch.autograd.enable_grad():
             if use_precise_trace:
+                # NOTE: K_MN can be a very large matrix.
+                # We need to store all of it to enable the triangular-solve operation.
                 K_MN = full_rbf_kernel(M, X, kernel_args)
                 k_vec_full = K_MN @ ZY  # d, e
             else:
@@ -682,7 +452,7 @@ class RegLossAndDeff(torch.autograd.Function):
             bg = deff_bg + loss_bg + trace_bg
 
         needs_grad = []
-        for i in range(LossAndDeff.NUM_DIFF_ARGS):
+        for i in range(RegLossAndDeff.NUM_DIFF_ARGS):
             if ctx.needs_input_grad[i]:
                 needs_grad.append(ctx.saved_tensors[i])
         grads = torch.autograd.grad(bg, needs_grad, retain_graph=True)
