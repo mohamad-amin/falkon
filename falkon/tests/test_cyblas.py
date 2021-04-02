@@ -305,32 +305,44 @@ class TestTrsm:
 
 
 class TestVecMulTriangSimple:
+    mat_size = 4
+
     @pytest.fixture
     def mat(self):
-        arr = np.array([[1, 1, 1],
-                        [2, 2, 4],
-                        [6, 6, 8]], dtype=np.float32, order='F')
-        return torch.from_numpy(arr).cuda()
+        return torch.from_numpy(np.array([[1, 1, 1],
+               [2, 2, 4],
+               [6, 6, 8]], dtype=np.float32, order='F'))
+        return torch.from_numpy(gen_random(TestVecMulTriangSimple.mat_size, TestVecMulTriangSimple.mat_size, np.float32, F=True, seed=91))
 
     @pytest.fixture
     def vec(self):
-        arr = np.array([0, 1, 0.5], dtype=np.float32)
-        return torch.from_numpy(arr).cuda()
+        return torch.from_numpy(np.array([0, 1, 0.5], dtype=np.float32))
+        return torch.from_numpy(gen_random(TestVecMulTriangSimple.mat_size, 1, np.float32, F=True, seed=91).reshape(-1))
 
     def test(self, mat, vec):
-        out = vec_mul_triang(mat, vec, True, 1)
-        print("INPUT")
-        print(mat.stride())
-        print(mat)
-        print("VEC")
-        print(vec)
-        print("EXPECTED")
-        print(vec_mul_triang(mat.cpu(), vec.cpu(), True, 1))
-        print("ACTUAL")
-        print(out)
+        mat_cuda = mat.cuda()
+        vec_cuda = vec.cuda()
+        num_rep = 1
+
+        cpu_times = []
+        for i in range(num_rep):
+            t_s = time.time()
+            out_cpu = vec_mul_triang(mat, vec, True, 1)
+            cpu_times.append(time.time() - t_s)
+
+        gpu_times = []
+        for i in range(num_rep):
+            t_s = time.time()
+            out_cuda = vec_mul_triang(mat_cuda, vec_cuda, True, 1)
+            torch.cuda.synchronize()
+            gpu_times.append(time.time() - t_s)
+
+        print("mat size %d - t_cpu: %.4fs -- t_cuda: %.4fs" % (TestVecMulTriangSimple.mat_size, np.min(cpu_times), np.min(gpu_times)))
+        np.testing.assert_allclose(out_cpu, out_cuda.cpu().numpy())
 
 
 
+@pytest.mark.parametrize("device", ["cpu", "cuda:0"])
 class TestVecMulTriang:
     @pytest.fixture
     def mat(self):
@@ -343,35 +355,37 @@ class TestVecMulTriang:
         return np.array([0, 1, 0.5], dtype=np.float32)
 
     @pytest.mark.parametrize("order", ["F", "C"])
-    def test_lower(self, mat, vec, order):
-        mat = fix_mat(mat, order=order, dtype=mat.dtype, numpy=True, copy=True)
-
-        out = vec_mul_triang(mat.copy(order="K"), upper=False, side=0, multipliers=vec)
+    def test_lower(self, mat, vec, order, device):
+        vec = fix_mat(vec, order=order, dtype=mat.dtype, numpy=False, device=device)
+        mat2 = fix_mat(mat, order=order, dtype=mat.dtype, numpy=False, device=device, copy=True)
+        out = vec_mul_triang(mat2, upper=False, side=0, multipliers=vec).cpu().numpy()
         exp = np.array([[0, 1, 1], [2, 2, 4], [3, 3, 4]], dtype=np.float32)
         np.testing.assert_allclose(exp, out)
         assert out.flags["%s_CONTIGUOUS" % order] is True, "Output is not %s-contiguous" % (order)
 
-        out = vec_mul_triang(mat.copy(order="K"), upper=False, side=1, multipliers=vec)
+        mat2 = fix_mat(mat, order=order, dtype=mat.dtype, numpy=False, device=device, copy=True)
+        out = vec_mul_triang(mat2, upper=False, side=1, multipliers=vec).cpu().numpy()
         exp = np.array([[0, 1, 1], [0, 2, 4], [0, 6, 4]], dtype=np.float32)
         np.testing.assert_allclose(exp, out)
         assert out.flags["%s_CONTIGUOUS" % order] is True, "Output is not %s-contiguous" % (order)
 
     @pytest.mark.parametrize("order", ["F", "C"])
-    def test_upper(self, mat, vec, order):
-        mat = fix_mat(mat, order=order, dtype=mat.dtype, numpy=True, copy=True)
-
-        out = vec_mul_triang(mat.copy(order="K"), upper=True, side=0, multipliers=vec)
+    def test_upper(self, mat, vec, order, device):
+        vec = fix_mat(vec, order=order, dtype=mat.dtype, numpy=False, device=device)
+        mat2 = fix_mat(mat, order=order, dtype=mat.dtype, numpy=False, device=device, copy=True)
+        out = vec_mul_triang(mat2, upper=True, side=0, multipliers=vec).cpu().numpy()
         exp = np.array([[0, 0, 0], [2, 2, 4], [6, 6, 4]], dtype=np.float32)
         np.testing.assert_allclose(exp, out)
         assert out.flags["%s_CONTIGUOUS" % order] is True, "Output is not %s-contiguous" % (order)
 
-        out = vec_mul_triang(mat.copy(order="K"), upper=True, side=1, multipliers=vec)
+        mat2 = fix_mat(mat, order=order, dtype=mat.dtype, numpy=False, device=device, copy=True)
+        out = vec_mul_triang(mat2, upper=True, side=1, multipliers=vec).cpu().numpy()
         exp = np.array([[0, 1, 0.5], [2, 2, 2], [6, 6, 4]], dtype=np.float32)
         np.testing.assert_allclose(exp, out)
         assert out.flags["%s_CONTIGUOUS" % order] is True, "Output is not %s-contiguous" % (order)
 
     @pytest.mark.benchmark
-    def test_large(self):
+    def test_large(self, device):
         t = 30_000
         mat = gen_random(t, t, np.float64, F=False, seed=123)
         vec = gen_random(t, 1, np.float64, F=False, seed=124).reshape((-1,))

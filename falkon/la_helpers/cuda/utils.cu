@@ -12,6 +12,7 @@
 #define NB 64
 #define TILE_DIM 32
 #define BLOCK_ROWS 8
+#define VEC_MUL_TRIANG_BLOCK_DIM 32
 
 
 /*
@@ -66,32 +67,98 @@ __device__ int2 tri_index_upper(const int linear_index) {
     );
 }
 
+/* upper = 1, side = 1 (from top) */
 template <typename scalar_t>
-__global__ void vec_mul_triang_kernel_v1(scalar_t* __restrict__ mat, const scalar_t* __restrict__ vec, const int mat_stride) {
+__global__ void vec_mul_triang_kernel_v1(scalar_t* __restrict__ mat, const scalar_t* __restrict__ vec, const int mat_stride, const int mat_size) {
     const int2 tile_pos = tri_index_upper(blockIdx.x);
     const int tx = threadIdx.x;
     const int ty = threadIdx.y;
 
-    // Init. shared mem
-    __shared__ scalar_t v_seg[blockDim.x];
-    __shared__ scalar_t m_tile[blockDim.x][blockDim.y];
-
-    // Copy global to shared mem
-    for (int i = 0; i < blockDim.y; i++) {
-        m_tile[tx][i] = mat[(tile_pos.x + i) * mat_stride + tile_pos.y + tx]
+    // Check if thread is out of bounds
+    const int gx = tile_pos.x * VEC_MUL_TRIANG_BLOCK_DIM + ty;
+    const int gy = tile_pos.y * VEC_MUL_TRIANG_BLOCK_DIM + tx;
+    if (gy > gx || gx >= mat_size || gy >= mat_size) {
+        return;
     }
-    v_seg[tx] = vec[tile_pos.x + tx]
 
+    // Copy global to register mem
+    scalar_t val = mat[gx * mat_stride + gy];
+    scalar_t mul = vec[gx];
     // Calc
-    for (int i = 0; i < blockDim.y; i++) {
-        m_tile[tx][i] *= v_seg[tx]
+    val *= mul;
+    // Copy back
+    mat[gx * mat_stride + gy] = val;
+}
+
+/* upper = 1, side = 0 (from left) */
+template <typename scalar_t>
+__global__ void vec_mul_triang_kernel_v2(scalar_t* __restrict__ mat, const scalar_t* __restrict__ vec, const int mat_stride, const int mat_size) {
+    const int2 tile_pos = tri_index_upper(blockIdx.x);
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
+
+    // Check if thread is out of bounds
+    const int gx = tile_pos.x * VEC_MUL_TRIANG_BLOCK_DIM + ty;
+    const int gy = tile_pos.y * VEC_MUL_TRIANG_BLOCK_DIM + tx;
+    if (gy > gx || gx >= mat_size || gy >= mat_size) {
+        return;
     }
 
-    // Copy back (careful about tri-indices)
-    for (int i = 0; i < blockDim.y; i++) {
-        mat[(tile_pos.x + i) * mat_stride + tile_pos.y + tx] = m_tile[tx][i]
-    }
+    // Copy global to register mem
+    scalar_t val = mat[gx * mat_stride + gy];
+    scalar_t mul = vec[gy];
+    // Calc
+    val *= mul;
+    // Copy back
+    mat[gx * mat_stride + gy] = val;
 }
+
+/* upper = 0, side = 1 (from top) */
+template <typename scalar_t>
+__global__ void vec_mul_triang_kernel_v3(scalar_t* __restrict__ mat, const scalar_t* __restrict__ vec, const int mat_stride, const int mat_size) {
+    const int2 tile_pos = tri_index_lower(blockIdx.x);
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
+
+    // Check if thread is out of bounds
+    const int gx = tile_pos.x * VEC_MUL_TRIANG_BLOCK_DIM + ty;
+    const int gy = tile_pos.y * VEC_MUL_TRIANG_BLOCK_DIM + tx;
+    if (gy < gx || gx >= mat_size || gy >= mat_size) {
+        return;
+    }
+
+    // Copy global to register mem
+    scalar_t val = mat[gx * mat_stride + gy];
+    scalar_t mul = vec[gx];
+    // Calc
+    val *= mul;
+    // Copy back
+    mat[gx * mat_stride + gy] = val;
+}
+
+/* upper = 0, side = 0 (from left) */
+template <typename scalar_t>
+__global__ void vec_mul_triang_kernel_v4(scalar_t* __restrict__ mat, const scalar_t* __restrict__ vec, const int mat_stride, const int mat_size) {
+    const int2 tile_pos = tri_index_lower(blockIdx.x);
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
+
+    // Check if thread is out of bounds
+    const int gx = tile_pos.x * VEC_MUL_TRIANG_BLOCK_DIM + ty;
+    const int gy = tile_pos.y * VEC_MUL_TRIANG_BLOCK_DIM + tx;
+    if (gy < gx || gx >= mat_size || gy >= mat_size) {
+        return;
+    }
+
+    // Copy global to register mem
+    scalar_t val = mat[gx * mat_stride + gy];
+    scalar_t mul = vec[gy];
+    // Calc
+    val *= mul;
+    // Copy back
+    mat[gx * mat_stride + gy] = val;
+}
+
 
 
 template <typename scalar_t>
@@ -241,29 +308,53 @@ int ceildiv(int dividend, int divisor) {
 
 
 torch::Tensor cuda_vec_mul_triang(torch::Tensor &A, torch::Tensor &v, bool upper, int side) {
-    if (!A.is_cuda()) {
+    if (!A.is_cuda())
         AT_ERROR("Input A must be a CUDA tensor.");
-    }
-    if (!v.is_cuda()) {
+    if (!v.is_cuda())
         AT_ERROR("Input v must be a CUDA tensor.");
-    }
-    if (device_of(v) != device_of(A)) {
+    if (device_of(v) != device_of(A))
         AT_ERROR("Inputs A, v must be on the same CUDA device.");
+    if (A.size(0) != A.size(1))
+        AT_ERROR("Input A must be square.");
+    if (A.size(0) != v.size(0))
+        AT_ERROR("Input v must be of the same dimension as matrix A.");
+
+    int mat_stride = A.stride(1);
+    const auto mat_size = A.size(0);
+    const auto scalar_type = A.scalar_type();
+    // Check matrix contiguity
+    bool fortran_contig = false;
+    if (A.stride(0) == 1)
+        fortran_contig = true;
+    // Flip operation if C-contiguous
+    bool bside = (bool)side;
+    bool bupper = upper;
+    if (!fortran_contig) {
+        bupper = !upper;
+        bside = !bside;
+        mat_stride = A.stride(0);
     }
 
-    const int block_size = 32;
-    const auto nx = A.size(0);
-    const auto scalar_type = A.scalar_type();
-
-    const int grid_height = ceildiv(nx, block_size);
+    const int grid_height = ceildiv(mat_size, VEC_MUL_TRIANG_BLOCK_DIM);
     const dim3 dimGrid(grid_height * (grid_height + 1) / 2, 1);
-    const dim3 dimBlock(block_size, block_size);
+    const dim3 dimBlock(VEC_MUL_TRIANG_BLOCK_DIM, VEC_MUL_TRIANG_BLOCK_DIM);
 
     AT_DISPATCH_FLOATING_TYPES(scalar_type, "dispatch_vec_mul_triang", [&] {
         at::cuda::CUDAStream stream = at::cuda::getCurrentCUDAStream();
         at::DeviceGuard g(A.device());
-        vec_mul_triang_kernel_v1<scalar_t><<<dimGrid, dimBlock, 0, stream.stream()>>>(
-            A.data_ptr<scalar_t>(), v.data_ptr<scalar_t>(), A.stride(0));
+        // Choose correct kernel
+        if (bupper && bside)
+            vec_mul_triang_kernel_v1<scalar_t><<<dimGrid, dimBlock, 0, stream.stream()>>>(
+                A.data_ptr<scalar_t>(), v.data_ptr<scalar_t>(), mat_stride, mat_size);
+        else if (bupper && !bside)
+            vec_mul_triang_kernel_v2<scalar_t><<<dimGrid, dimBlock, 0, stream.stream()>>>(
+                A.data_ptr<scalar_t>(), v.data_ptr<scalar_t>(), mat_stride, mat_size);
+        else if (!bupper && bside)
+            vec_mul_triang_kernel_v3<scalar_t><<<dimGrid, dimBlock, 0, stream.stream()>>>(
+                A.data_ptr<scalar_t>(), v.data_ptr<scalar_t>(), mat_stride, mat_size);
+        else if (!bupper && !bside)
+            vec_mul_triang_kernel_v4<scalar_t><<<dimGrid, dimBlock, 0, stream.stream()>>>(
+                A.data_ptr<scalar_t>(), v.data_ptr<scalar_t>(), mat_stride, mat_size);
     });
     return A;
 }
