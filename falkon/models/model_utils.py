@@ -91,7 +91,7 @@ class FalkonBase(base.BaseEstimator, ABC):
             err_name = "error"
             if isinstance(err, tuple) and len(err) == 2:
                 err, err_name = err
-            print("Iteration %3d - Elapsed %.1fs - %s %s: %.4f" %
+            print("Iteration %3d - Elapsed %.1fs - %s %s: %.8f" %
                   (it, self.fit_times_[-1], err_str, err_name, err), flush=True)
 
         return val_cback

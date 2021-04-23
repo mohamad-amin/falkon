@@ -16,6 +16,7 @@ from falkon.hypergrad.leverage_scores import (
     regloss_and_deff, LossAndDeff, RegLossAndDeff,
     sgpr_trace,
 )
+from falkon.hypergrad.common import FastTensorDataLoader
 from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
 from falkon.kernels import GaussianKernel
 from summary import get_writer

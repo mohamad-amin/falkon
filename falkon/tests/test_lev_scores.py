@@ -12,7 +12,7 @@ from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
 from falkon.hypergrad.leverage_scores import (
     full_deff, full_deff_simple, subs_deff_simple,
     GaussEffectiveDimension, gauss_effective_dimension, gauss_nys_effective_dimension,
-    loss_and_deff,
+    loss_and_deff, regloss_and_deff,
 )
 from falkon.kernels import GaussianKernel
 from falkon.tests.gen_random import gen_random
@@ -109,7 +109,7 @@ def test_lossdeff_grad_nys(device, dtype):
     torch.manual_seed(3)
     f_order = False
 
-    X = torch.from_numpy(gen_random(100, 3, dtype, F=f_order)).to(device=device)
+    X = torch.from_numpy(gen_random(50, 3, dtype, F=f_order)).to(device=device)
     Y = X.sum(1).reshape(-1, 1)
     M = X[:20].clone().detach().requires_grad_()
     s = torch.tensor([5.0] * X.shape[1], dtype=X.dtype, device=device).requires_grad_()
@@ -117,8 +117,8 @@ def test_lossdeff_grad_nys(device, dtype):
 
     print()
     torch.autograd.gradcheck(
-        lambda si, Mi, Xi, Yi, pi: loss_and_deff(si, pi, Mi, Xi, Yi, t=10, deterministic=True),
-        (s, M, X, Y, p), eps=1e-4, atol=1e-4)
+        lambda si, Mi, Xi, Yi, pi: regloss_and_deff(si, pi, Mi, Xi, Yi, t=10, deterministic=True),
+        (s, M, X, Y, p), eps=1e-6, atol=1e-7)
 
 
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])

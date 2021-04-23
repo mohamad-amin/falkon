@@ -70,25 +70,29 @@ def report_complexity_reg(
     writer = get_writer()
     writer.add_scalar('optim/d_eff', -deff.item(), step)
     writer.add_scalar('optim/data_fit', -datafit.item(), step)
-    writer.add_scalar('optim/trace', -trace.item(), step)
+    if trace.requires_grad:
+        writer.add_scalar('optim/trace', -trace.item(), step)
+        print(f"VALUE        d_eff {deff:.5e} - loss {datafit:.5e} - trace {trace:.5e}")
     writer.add_scalar('optim/loss', (-deff - datafit - trace).item(), step)
     writer.add_scalar('hparams/penalty', torch.exp(-penalty).item(), step)
     writer.add_scalar('hparams/sigma', sigma[0], step)
-    print(f"VALUE        d_eff {deff:.5e} - loss {datafit:.5e} - trace {trace:.5e}")
 
     if verbose_tboard:
         grad_deff = torch.autograd.grad(-deff, hparams, retain_graph=True)
         grad_loss = torch.autograd.grad(-datafit, hparams, retain_graph=True)
-        grad_trace = torch.autograd.grad(-trace, hparams, retain_graph=False, allow_unused=True)
-        # print(f"GRADS(sigma) d_eff {grad_deff[1][0]:.5e} - loss {grad_loss[1][0]:.5e} - trace {grad_trace[1][0]:.5e}")
-        print(
-            f"GRADS(penalty)   d_eff {grad_deff[0]:.5e} - loss {grad_loss[0]:.5e} - trace {grad_trace[0]:.5e}")
+        if trace.requires_grad:
+            grad_trace = torch.autograd.grad(-trace, hparams, retain_graph=False, allow_unused=True)
+            # print(f"GRADS(sigma) d_eff {grad_deff[1][0]:.5e} - loss {grad_loss[1][0]:.5e} - trace {grad_trace[1][0]:.5e}")
+            print(
+                f"GRADS(penalty)   d_eff {grad_deff[0]:.5e} - loss {grad_loss[0]:.5e} - trace {grad_trace[0]:.5e}")
+            writer.add_scalar('grads/penalty/trace', grad_trace[0].item(), step)
+            writer.add_scalar('grads/sigma/trace', grad_trace[1][0].item(), step)
+        else:
+            grad_trace = [None] * len(grad_deff)
         writer.add_scalar('grads/penalty/d_eff', grad_deff[0].item(), step)
         writer.add_scalar('grads/penalty/data_fit', grad_loss[0].item(), step)
-        writer.add_scalar('grads/penalty/trace', grad_trace[0].item(), step)
         writer.add_scalar('grads/sigma/d_eff', grad_deff[1][0].item(), step)
         writer.add_scalar('grads/sigma/data_fit', grad_loss[1][0].item(), step)
-        writer.add_scalar('grads/sigma/trace', grad_trace[1][0].item(), step)
     else:
         grad = torch.autograd.grad(-deff - datafit - trace, hparams, retain_graph=False)
         writer.add_scalar('grads/penalty/sum', grad[0].item(), step)
@@ -133,7 +137,7 @@ class FakeTorchModelMixin():
 
 
 class NystromKRRModelMixin(FakeTorchModelMixin):
-    def __init__(self, penalty, sigma, centers, flk_opt, flk_maxiter, cuda):
+    def __init__(self, penalty, sigma, centers, flk_opt, flk_maxiter, cuda, T=1):
         super().__init__()
         if cuda:
             device = torch.device('cuda')
@@ -145,9 +149,9 @@ class NystromKRRModelMixin(FakeTorchModelMixin):
         self.register_buffer("sigma", self.sigma)
         self.centers = torch.tensor(centers).to(device=device)
         self.register_buffer("centers", self.centers)
-        self.f_alpha = torch.zeros(self.centers.shape[0], 1, requires_grad=False, device=device)
+        self.f_alpha = torch.zeros(self.centers.shape[0], T, requires_grad=False, device=device)
         self.register_buffer("alpha", self.f_alpha)
-        self.f_alpha_pc = torch.zeros(self.centers.shape[0], 1, requires_grad=False, device=device)
+        self.f_alpha_pc = torch.zeros(self.centers.shape[0], T, requires_grad=False, device=device)
         self.register_buffer("alpha_pc", self.f_alpha_pc)
 
         self.flk_opt = flk_opt
@@ -206,6 +210,7 @@ class SimpleFalkonComplexityReg(NystromKRRModelMixin):
             opt_centers,
             verbose_tboard: bool,
             cuda: bool,
+            T: int,
     ):
         super().__init__(
             penalty=penalty_init,
@@ -214,6 +219,7 @@ class SimpleFalkonComplexityReg(NystromKRRModelMixin):
             flk_opt=flk_opt,
             flk_maxiter=flk_maxiter,
             cuda=cuda,
+            T=T,
         )
         self.register_parameter("penalty", self.penalty.requires_grad_(True))
         self.register_parameter("sigma", self.sigma.requires_grad_(True))
@@ -240,8 +246,11 @@ class SimpleFalkonComplexityReg(NystromKRRModelMixin):
         # Traces
         # Cannot remove variance in either of these!
         # Keeping or removing `0.5` does not have much effect
-        trace = - 0.5 * Kdiag / (variance)
-        trace += 0.5 * torch.diag(AAT).sum()
+        if False:
+            trace = - 0.5 * Kdiag / (variance)
+            trace += 0.5 * torch.diag(AAT).sum()
+        else:
+            trace = torch.tensor(0.0)
 
         report_complexity_reg(
             deff=deff,
@@ -268,6 +277,7 @@ class FalkonComplexityReg(NystromKRRModelMixin):
             verbose_tboard: bool,
             precise_trace: bool,
             cuda: bool,
+            T: int,
     ):
         super().__init__(
             penalty=penalty_init,
@@ -276,6 +286,7 @@ class FalkonComplexityReg(NystromKRRModelMixin):
             flk_opt=flk_opt,
             flk_maxiter=flk_maxiter,
             cuda=cuda,
+            T=T,
         )
         falkon.cuda.initialization.init(flk_opt)
         self.register_parameter("penalty", self.penalty.requires_grad_(True))
@@ -292,7 +303,7 @@ class FalkonComplexityReg(NystromKRRModelMixin):
             kernel_args=self.sigma,
             penalty=self.penalty,
             M=self.centers,
-            X=X, Y=Y, t=20,
+            X=X, Y=Y, t=200,
             deterministic=False,
             solve_options=self.flk_opt,
             use_precise_trace=self.precise_trace,
@@ -350,6 +361,7 @@ class GPComplexityReg(NystromKRRModelMixin):
             flk_opt: FalkonOptions,
             flk_maxiter,
             cuda: bool,
+            T: int,
     ):
         super().__init__(
             penalty=penalty_init,
@@ -358,6 +370,7 @@ class GPComplexityReg(NystromKRRModelMixin):
             flk_opt=flk_opt,
             flk_maxiter=flk_maxiter,
             cuda=cuda,
+            T=T,
         )
         self.register_parameter("penalty", self.penalty.requires_grad_(True))
         self.register_parameter("sigma", self.sigma.requires_grad_(True))
@@ -432,6 +445,7 @@ def train_complexity_reg(
                 flk_maxiter=falkon_maxiter,
                 verbose_tboard=verbose,
                 cuda=cuda,
+                T=Ytr.shape[1],
         )
     elif model_type == "deff-simple":
         model = SimpleFalkonComplexityReg(
@@ -443,6 +457,7 @@ def train_complexity_reg(
                 flk_maxiter=falkon_maxiter,
                 verbose_tboard=verbose,
                 cuda=cuda,
+                T=Ytr.shape[1],
         )
     elif model_type in {"deff-precise", "deff-fast"}:
         precise_trace = model_type == "deff-precise"
@@ -456,6 +471,7 @@ def train_complexity_reg(
                 verbose_tboard=verbose,
                 precise_trace=precise_trace,
                 cuda=cuda,
+                T=Ytr.shape[1],
         )
     else:
         raise RuntimeError(f"{model_type} model type not recognized!")
@@ -484,4 +500,5 @@ def train_complexity_reg(
             writer.add_scalar('Error/test', test_err, cum_step)
         opt_hp.step()
         cum_step += 1
+
     return model.get_model()

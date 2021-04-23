@@ -10,7 +10,7 @@ from falkon import FalkonOptions
 from falkon.kernels import GaussianKernel
 from falkon.optim import ConjugateGradient
 from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
-from falkon.hypergrad.common import get_start_sigma, test_train_predict, cg
+from falkon.hypergrad.common import get_start_sigma, test_train_predict, cg, full_rbf_kernel
 from falkon.center_selection import FixedSelector, CenterSelector
 
 
@@ -93,15 +93,19 @@ class FalkonHyperGradient():
                 hp.grad += g
 
     def _val_loss_mse(self, Xval, Yval):
-        kernel = DiffGaussianKernel(self.sigma, self.flk_opt)
-        preds = kernel.mmv(Xval, self.centers, self.f_alpha)
+        #kernel = DiffGaussianKernel(self.sigma, self.flk_opt)
+        #preds = kernel.mmv(Xval, self.centers, self.f_alpha)
+        preds = full_rbf_kernel(Xval, self.centers, self.sigma) @ self.f_alpha
         return torch.mean((preds - Yval) ** 2)
 
     def _val_loss_penalized_mse(self, Xval, Yval):
-        kernel = DiffGaussianKernel(self.sigma, self.flk_opt)
-        preds = kernel.mmv(Xval, self.centers, self.f_alpha)
+        #kernel = DiffGaussianKernel(self.sigma, self.flk_opt)
+        #preds = kernel.mmv(Xval, self.centers, self.f_alpha)
+        preds = full_rbf_kernel(Xval, self.centers, self.sigma) @ self.f_alpha
+        k_mm = full_rbf_kernel(self.centers, self.centers, self.sigma)
         pen = (torch.exp(-self.penalty)) * (
-                self.f_alpha.T @ kernel.mmv(self.centers, self.centers, self.f_alpha)
+                self.f_alpha.T @ k_mm @ self.f_alpha
+                #self.f_alpha.T @ kernel.mmv(self.centers, self.centers, self.f_alpha)
         )
         return torch.mean((preds - Yval) ** 2) + pen
 
@@ -126,15 +130,18 @@ class FalkonHyperGradient():
     def tr_loss_p_grad(self, Xtr, Ytr):
         """Gradients of the training loss with respect to params (alpha)"""
         # Must be differentiable wrt hyper-params
-        kernel = DiffGaussianKernel(self.sigma, self.flk_opt)
+        #kernel = DiffGaussianKernel(self.sigma, self.flk_opt)
+        k_mm = full_rbf_kernel(self.centers, self.centers, self.sigma)
+        k_nm = full_rbf_kernel(Xtr, self.centers, self.sigma)
 
         # 2/N * (K_MN(K_NM @ alpha - Y)) + 2*lambda*(K_MM @ alpha)
         _penalty = torch.exp(-self.penalty)
-        return (
-                kernel.mmv(self.centers, Xtr,
-                           kernel.mmv(Xtr, self.centers, self.f_alpha) - Ytr) / Xtr.shape[0] +
-                _penalty * kernel.mmv(self.centers, self.centers, self.f_alpha)
-        )
+        return (k_nm.T @ (k_nm @ self.f_alpha - Ytr) / Xtr.shape[0] + _penalty * k_mm @ self.f_alpha)
+        #return (
+        #        kernel.mmv(self.centers, Xtr,
+        #                   kernel.mmv(Xtr, self.centers, self.f_alpha) - Ytr) / Xtr.shape[0] +
+        #        _penalty * kernel.mmv(self.centers, self.centers, self.f_alpha)
+        #)
 
     def solve_hessian(self, Xtr, vector):
         if self.model is None:

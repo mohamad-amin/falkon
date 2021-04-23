@@ -199,7 +199,8 @@ def run_nkrr(dataset: Dataset,
         centers = selector.select(Xtr, None, M)
 
     # Initialize Falkon model
-    falkon_opt = FalkonOptions(use_cpu=False, debug=False, cg_tolerance=1e-8, pc_epsilon_32=1e-6)
+    falkon_opt = FalkonOptions(use_cpu=False, debug=False, cg_tolerance=1e-8, pc_epsilon_32=1e-6,
+                               min_cuda_pc_size_32=100, min_cuda_iter_size_32=100, never_store_kernel=True)
 
     if mode == "nkrr":
         nkrr_ho(

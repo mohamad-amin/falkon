@@ -44,7 +44,7 @@ def rmse_with_std(y_true, y_pred, **kwargs):
     Y_std = kwargs['Y_std']
 
     y_true, y_pred = _ensure_numpy(y_true, y_pred)
-    Y_std = _ensure_numpy_or_float(Y_std)
+    Y_std, = _ensure_numpy_or_float(Y_std)
 
     y_true = y_true.reshape((-1,))
     y_pred = y_pred.reshape((-1,))
@@ -55,7 +55,7 @@ def rmse_with_std(y_true, y_pred, **kwargs):
 
 def nrmse(y_true, y_pred, **kwargs):
     Y_mean = kwargs['Y_mean']
-    Y_mean = _ensure_numpy_or_float(Y_mean)
+    Y_mean, = _ensure_numpy_or_float(Y_mean)
 
     pred_rmse = rmse(y_true, y_pred, **kwargs)[0]
     pred_nrmse = pred_rmse / Y_mean
@@ -66,7 +66,7 @@ def ms_calc_mse(y_true, y_pred, **kwargs):
     Y_std = kwargs['Y_std']
 
     y_true, y_pred = _ensure_numpy(y_true, y_pred)
-    Y_std = _ensure_numpy_or_float(Y_std)
+    Y_std, = _ensure_numpy_or_float(Y_std)
 
     y_true = y_true.reshape((-1,))
     y_pred = y_pred.reshape((-1,))
@@ -80,8 +80,7 @@ def ms_calc_relerr(y_true, y_pred, **kwargs):
     Y_mean = kwargs['Y_mean']
 
     y_true, y_pred = _ensure_numpy(y_true, y_pred)
-    Y_std = _ensure_numpy_or_float(Y_std)
-    Y_mean = _ensure_numpy_or_float(Y_mean)
+    Y_std, Y_mean = _ensure_numpy_or_float(Y_std, Y_mean)
 
     y_true = y_true.reshape((-1,))
     y_pred = y_pred.reshape((-1,))
