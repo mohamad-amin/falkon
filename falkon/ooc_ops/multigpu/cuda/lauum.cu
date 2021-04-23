@@ -60,17 +60,17 @@ void upper_cuda_lauum_ker(const scalar_t* __restrict__ in,
 
     for (int tile_i = tile_pos.x; tile_i < grid_size; tile_i++) {
         const int i = tile_i * BLOCK_SIZE + ty; 
-	const int i_pos = i * in_stride;
+	    const int i_pos = i * in_stride;
 
         // Copy item input[row, i] and input[col, i].T to shared memory
         A_tile[ty * BLOCK_SIZE + tx] = 0;
         B_tile[tx * (BLOCK_SIZE + 1) + ty] = 0;
-	if (i < size && A_row <= i) {
-	    A_tile[ty * BLOCK_SIZE + tx] = in[A_row + i_pos];
-	}
-	if (i < size && B_row <= i) {
-            B_tile[tx * (BLOCK_SIZE + 1) + ty] = in[B_row + i_pos];
-	}
+        if (i < size && A_row <= i) {
+            A_tile[ty * BLOCK_SIZE + tx] = in[A_row + i_pos];
+        }
+        if (i < size && B_row <= i) {
+                B_tile[tx * (BLOCK_SIZE + 1) + ty] = in[B_row + i_pos];
+        }
         __syncthreads();
 
 	#ifdef DEBUG
