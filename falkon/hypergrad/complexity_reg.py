@@ -4,7 +4,10 @@ from typing import List
 import torch
 
 import falkon
-import falkon.cuda.initialization
+try:
+    import falkon.cuda.initialization
+except:
+    pass  # No GPU
 from falkon import FalkonOptions
 from falkon.center_selection import FixedSelector, CenterSelector
 from falkon.hypergrad.common import full_rbf_kernel, test_train_predict, get_start_sigma
@@ -95,8 +98,8 @@ def report_complexity_reg(
         writer.add_scalar('grads/sigma/data_fit', grad_loss[1][0].item(), step)
     else:
         grad = torch.autograd.grad(-deff - datafit - trace, hparams, retain_graph=False)
-        writer.add_scalar('grads/penalty/sum', grad[0].item(), step)
-        writer.add_scalar('grads/sigma/sum', grad[1][0].item(), step)
+        # writer.add_scalar('grads/penalty/sum', grad[0].item(), step)
+        # writer.add_scalar('grads/sigma/sum', grad[1][0].item(), step)
         grad_deff = grad
         grad_loss = [None] * len(grad)
         grad_trace = [None] * len(grad)
@@ -357,6 +360,8 @@ class GPComplexityReg(NystromKRRModelMixin):
             penalty_init,
             centers_init,
             opt_centers,
+            opt_sigma,
+            opt_penalty,
             verbose_tboard: bool,
             flk_opt: FalkonOptions,
             flk_maxiter,
@@ -372,8 +377,14 @@ class GPComplexityReg(NystromKRRModelMixin):
             cuda=cuda,
             T=T,
         )
-        self.register_parameter("penalty", self.penalty.requires_grad_(True))
-        self.register_parameter("sigma", self.sigma.requires_grad_(True))
+        if opt_sigma:
+            self.register_parameter("sigma", self.sigma.requires_grad_(True))
+        else:
+            self.register_buffer("sigma", self.sigma.requires_grad_(False))
+        if opt_penalty:
+            self.register_parameter("penalty", self.penalty.requires_grad_(True))
+        else:
+            self.register_buffer("penalty", self.penalty.requires_grad_(False))
         if opt_centers:
             self.register_parameter("centers", self.centers.requires_grad_(True))
 
