@@ -4,6 +4,7 @@ from typing import List
 import torch
 
 import falkon
+
 try:
     import falkon.cuda.initialization
 except:
@@ -43,12 +44,13 @@ def sgpr_calc(X, Y, centers, sigma, penalty, compute_C: bool):
 
     kuf = full_rbf_kernel(centers, X, sigma)
     kuu = full_rbf_kernel(centers, centers, sigma) + torch.eye(centers.shape[0],
-                                                               device=centers.device) * 1e-6
+                                                               device=centers.device,
+                                                               dtype=X.dtype) * 1e-6
     L = torch.cholesky(kuu)
 
     A = torch.triangular_solve(kuf, L, upper=False).solution / sqrt_var
     AAT = A @ A.T
-    B = AAT + torch.eye(AAT.shape[0], device=AAT.device)
+    B = AAT + torch.eye(AAT.shape[0], device=AAT.device, dtype=AAT.dtype)
     LB = torch.cholesky(B)
     AY = A @ Y
     c = torch.triangular_solve(AY, LB, upper=False).solution / sqrt_var
@@ -69,16 +71,18 @@ def report_complexity_reg(
         sigma: torch.Tensor,
         step: int,
         verbose_tboard: bool,
-        ):
-    writer = get_writer()
-    writer.add_scalar('optim/d_eff', -deff.item(), step)
-    writer.add_scalar('optim/data_fit', -datafit.item(), step)
-    if trace.requires_grad:
-        writer.add_scalar('optim/trace', -trace.item(), step)
-        print(f"VALUE        d_eff {deff:.5e} - loss {datafit:.5e} - trace {trace:.5e}")
-    writer.add_scalar('optim/loss', (-deff - datafit - trace).item(), step)
-    writer.add_scalar('hparams/penalty', torch.exp(-penalty).item(), step)
-    writer.add_scalar('hparams/sigma', sigma[0], step)
+        use_writer: bool = True,
+):
+    if use_writer:
+        writer = get_writer()
+        writer.add_scalar('optim/d_eff', -deff.item(), step)
+        writer.add_scalar('optim/data_fit', -datafit.item(), step)
+        if trace.requires_grad:
+            writer.add_scalar('optim/trace', -trace.item(), step)
+            print(f"VALUE        d_eff {deff:.5e} - loss {datafit:.5e} - trace {trace:.5e}")
+        writer.add_scalar('optim/loss', (-deff - datafit - trace).item(), step)
+        writer.add_scalar('hparams/penalty', torch.exp(-penalty).item(), step)
+        writer.add_scalar('hparams/sigma', sigma[0], step)
 
     if verbose_tboard:
         grad_deff = torch.autograd.grad(-deff, hparams, retain_graph=True)
@@ -146,15 +150,17 @@ class NystromKRRModelMixin(FakeTorchModelMixin):
             device = torch.device('cuda')
         else:
             device = torch.device('cpu')
-        self.penalty = torch.tensor(penalty).to(device=device)
+        self.penalty = penalty.clone().detach().to(device=device)
+        self.sigma = sigma.clone().detach().to(device=device)
+        self.centers = centers.clone().detach().to(device=device)
         self.register_buffer("penalty", self.penalty)
-        self.sigma = torch.tensor(sigma).to(device=device)
         self.register_buffer("sigma", self.sigma)
-        self.centers = torch.tensor(centers).to(device=device)
         self.register_buffer("centers", self.centers)
-        self.f_alpha = torch.zeros(self.centers.shape[0], T, requires_grad=False, device=device)
+        self.f_alpha = torch.zeros(self.centers.shape[0], T, requires_grad=False, device=device,
+                                   dtype=centers.dtype)
         self.register_buffer("alpha", self.f_alpha)
-        self.f_alpha_pc = torch.zeros(self.centers.shape[0], T, requires_grad=False, device=device)
+        self.f_alpha_pc = torch.zeros(self.centers.shape[0], T, requires_grad=False, device=device,
+                                      dtype=centers.dtype)
         self.register_buffer("alpha_pc", self.f_alpha_pc)
 
         self.flk_opt = flk_opt
@@ -211,9 +217,12 @@ class SimpleFalkonComplexityReg(NystromKRRModelMixin):
             flk_opt,
             flk_maxiter,
             opt_centers,
+            opt_sigma,
+            opt_penalty,
             verbose_tboard: bool,
             cuda: bool,
             T: int,
+            only_trace: bool = False,
     ):
         super().__init__(
             penalty=penalty_init,
@@ -224,13 +233,20 @@ class SimpleFalkonComplexityReg(NystromKRRModelMixin):
             cuda=cuda,
             T=T,
         )
-        self.register_parameter("penalty", self.penalty.requires_grad_(True))
-        self.register_parameter("sigma", self.sigma.requires_grad_(True))
+        if opt_sigma:
+            self.register_parameter("sigma", self.sigma.requires_grad_(True))
+        else:
+            self.register_buffer("sigma", self.sigma.requires_grad_(False))
+        if opt_penalty:
+            self.register_parameter("penalty", self.penalty.requires_grad_(True))
+        else:
+            self.register_buffer("penalty", self.penalty.requires_grad_(False))
         if opt_centers:
             self.register_parameter("centers", self.centers.requires_grad_(True))
 
         self.verbose_tboard = verbose_tboard
         self.writer = get_writer()
+        self.only_trace = only_trace
 
     def adapt_hps(self, X, Y, step):
         AAT, LB, c, C = sgpr_calc(X, Y, self.centers, self.sigma, self.penalty, compute_C=True)
@@ -241,19 +257,22 @@ class SimpleFalkonComplexityReg(NystromKRRModelMixin):
 
         # NKRR + Trace
         # Complexity
-        deff = -torch.trace(C.T @ C)
+        if not self.only_trace:
+            deff = -torch.trace(C.T @ C)
+        else:
+            deff = torch.tensor(0.0)
         # Data-fit
-        c = c * sqrt_var  # Correct c would be LB^-1 @ A @ Y
-        datafit = - torch.square(Y).sum()
-        datafit += torch.square(c).sum()
+        if not self.only_trace:
+            c = c * sqrt_var  # Correct c would be LB^-1 @ A @ Y
+            datafit = - torch.square(Y).sum()
+            datafit += torch.square(c).sum()
+        else:
+            datafit = torch.tensor(0.0)
         # Traces
         # Cannot remove variance in either of these!
         # Keeping or removing `0.5` does not have much effect
-        if False:
-            trace = - 0.5 * Kdiag / (variance)
-            trace += 0.5 * torch.diag(AAT).sum()
-        else:
-            trace = torch.tensor(0.0)
+        trace = - 0.5 * Kdiag / (variance)
+        trace += 0.5 * torch.diag(AAT).sum()
 
         report_complexity_reg(
             deff=deff,
@@ -367,6 +386,7 @@ class GPComplexityReg(NystromKRRModelMixin):
             flk_maxiter,
             cuda: bool,
             T: int,
+            only_trace: bool = False,
     ):
         super().__init__(
             penalty=penalty_init,
@@ -390,6 +410,7 @@ class GPComplexityReg(NystromKRRModelMixin):
 
         self.verbose_tboard = verbose_tboard
         self.writer = get_writer()
+        self.only_trace = only_trace
 
     def adapt_hps(self, X, Y, step):
         AAT, LB, c, _ = sgpr_calc(X, Y, self.centers, self.sigma, self.penalty, compute_C=False)
@@ -398,11 +419,17 @@ class GPComplexityReg(NystromKRRModelMixin):
         Kdiag = X.shape[0]
 
         # Complexity
-        deff = -torch.log(torch.diag(LB)).sum()
-        deff += -0.5 * X.shape[0] * torch.log(variance)
+        if not self.only_trace:
+            deff = -torch.log(torch.diag(LB)).sum()
+            deff += -0.5 * X.shape[0] * torch.log(variance)
+        else:
+            deff = torch.tensor(0.0)
         # Data-fit
-        datafit = -0.5 * torch.square(Y).sum() / variance
-        datafit += 0.5 * torch.square(c).sum()
+        if not self.only_trace:
+            datafit = -0.5 * torch.square(Y).sum() / variance
+            datafit += 0.5 * torch.square(c).sum()
+        else:
+            datafit = torch.tensor(0.0)
         # Traces
         trace = -0.5 * Kdiag / variance
         trace += 0.5 * torch.diag(AAT).sum()
@@ -421,23 +448,23 @@ class GPComplexityReg(NystromKRRModelMixin):
 
 
 def train_complexity_reg(
-                    Xtr, Ytr,
-                    Xts, Yts,
-                    penalty_init: float,
-                    sigma_type: str,
-                    sigma_init: float,
-                    num_centers: int,
-                    opt_centers: bool,
-                    falkon_centers: CenterSelector,
-                    num_epochs: int,
-                    learning_rate: float,
-                    cuda: bool,
-                    loss_every: int,
-                    err_fn,
-                    falkon_opt,
-                    falkon_maxiter: int,
-                    model_type: str,
-                    ):
+        Xtr, Ytr,
+        Xts, Yts,
+        penalty_init: float,
+        sigma_type: str,
+        sigma_init: float,
+        num_centers: int,
+        opt_centers: bool,
+        falkon_centers: CenterSelector,
+        num_epochs: int,
+        learning_rate: float,
+        cuda: bool,
+        loss_every: int,
+        err_fn,
+        falkon_opt,
+        falkon_maxiter: int,
+        model_type: str,
+):
     print("Starting Falkon-NKRR-HO - FIXED VERSION - optimization.")
     print(f"{num_epochs} epochs - {sigma_type} sigma ({sigma_init}) - penalty ({penalty_init}) - "
           f"{num_centers} centers. LR={learning_rate}")
@@ -448,41 +475,44 @@ def train_complexity_reg(
 
     if model_type == "gp":
         model = GPComplexityReg(
-                penalty_init=penalty_init,
-                sigma_init=start_sigma,
-                centers_init=falkon_centers.select(Xtr, Y=None, M=num_centers),
-                opt_centers=opt_centers,
-                flk_opt=falkon_opt,
-                flk_maxiter=falkon_maxiter,
-                verbose_tboard=verbose,
-                cuda=cuda,
-                T=Ytr.shape[1],
+            penalty_init=penalty_init,
+            sigma_init=start_sigma,
+            centers_init=falkon_centers.select(Xtr, Y=None, M=num_centers),
+            opt_centers=opt_centers,
+            flk_opt=falkon_opt,
+            flk_maxiter=falkon_maxiter,
+            verbose_tboard=verbose,
+            cuda=cuda,
+            T=Ytr.shape[1],
+            only_trace=False,
+            opt_sigma=True,
+            opt_penalty=True
         )
     elif model_type == "deff-simple":
         model = SimpleFalkonComplexityReg(
-                penalty_init=penalty_init,
-                sigma_init=start_sigma,
-                centers_init=falkon_centers.select(Xtr, Y=None, M=num_centers),
-                opt_centers=opt_centers,
-                flk_opt=falkon_opt,
-                flk_maxiter=falkon_maxiter,
-                verbose_tboard=verbose,
-                cuda=cuda,
-                T=Ytr.shape[1],
+            penalty_init=penalty_init,
+            sigma_init=start_sigma,
+            centers_init=falkon_centers.select(Xtr, Y=None, M=num_centers),
+            opt_centers=opt_centers,
+            flk_opt=falkon_opt,
+            flk_maxiter=falkon_maxiter,
+            verbose_tboard=verbose,
+            cuda=cuda,
+            T=Ytr.shape[1],
         )
     elif model_type in {"deff-precise", "deff-fast"}:
         precise_trace = model_type == "deff-precise"
         model = FalkonComplexityReg(
-                penalty_init=penalty_init,
-                sigma_init=start_sigma,
-                centers_init=falkon_centers.select(Xtr, Y=None, M=num_centers),
-                opt_centers=opt_centers,
-                flk_opt=falkon_opt,
-                flk_maxiter=falkon_maxiter,
-                verbose_tboard=verbose,
-                precise_trace=precise_trace,
-                cuda=cuda,
-                T=Ytr.shape[1],
+            penalty_init=penalty_init,
+            sigma_init=start_sigma,
+            centers_init=falkon_centers.select(Xtr, Y=None, M=num_centers),
+            opt_centers=opt_centers,
+            flk_opt=falkon_opt,
+            flk_maxiter=falkon_maxiter,
+            verbose_tboard=verbose,
+            precise_trace=precise_trace,
+            cuda=cuda,
+            T=Ytr.shape[1],
         )
     else:
         raise RuntimeError(f"{model_type} model type not recognized!")
