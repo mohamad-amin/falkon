@@ -79,7 +79,7 @@ def report_complexity_reg(
         writer.add_scalar('optim/data_fit', -datafit.item(), step)
         if trace.requires_grad:
             writer.add_scalar('optim/trace', -trace.item(), step)
-            print(f"VALUE        d_eff {deff:.5e} - loss {datafit:.5e} - trace {trace:.5e}")
+            print(f"VALUE        d_eff {deff:.3e} - loss {datafit:.3e} - trace {trace:.3e}. tot {deff + datafit + trace:.3e}")
         writer.add_scalar('optim/loss', (-deff - datafit - trace).item(), step)
         writer.add_scalar('hparams/penalty', torch.exp(-penalty).item(), step)
         writer.add_scalar('hparams/sigma', sigma[0], step)
@@ -256,15 +256,15 @@ class SimpleFalkonComplexityReg(NystromKRRModelMixin):
         Kdiag = X.shape[0]
 
         # NKRR + Trace
-        # Complexity
+        # Complexity (nystrom effective-dimension)
         if not self.only_trace:
-            deff = -torch.trace(C.T @ C)
+            deff = torch.trace(C.T @ C)
         else:
             deff = torch.tensor(0.0)
         # Data-fit
         if not self.only_trace:
             c = c * sqrt_var  # Correct c would be LB^-1 @ A @ Y
-            datafit = - torch.square(Y).sum()
+            datafit = - torch.square(Y).sum()# / variance
             datafit += torch.square(c).sum()
         else:
             datafit = torch.tensor(0.0)
@@ -273,6 +273,10 @@ class SimpleFalkonComplexityReg(NystromKRRModelMixin):
         # Keeping or removing `0.5` does not have much effect
         trace = - 0.5 * Kdiag / (variance)
         trace += 0.5 * torch.diag(AAT).sum()
+
+        trace = trace #* variance
+        datafit = datafit / variance
+        deff = -deff * variance
 
         report_complexity_reg(
             deff=deff,
@@ -422,6 +426,7 @@ class GPComplexityReg(NystromKRRModelMixin):
         if not self.only_trace:
             deff = -torch.log(torch.diag(LB)).sum()
             deff += -0.5 * X.shape[0] * torch.log(variance)
+            print("-logdet: %.1e" % (deff))
         else:
             deff = torch.tensor(0.0)
         # Data-fit
@@ -445,6 +450,74 @@ class GPComplexityReg(NystromKRRModelMixin):
             verbose_tboard=self.verbose_tboard,
         )
         return deff + datafit + trace
+
+
+class TrainableSGPR():
+    def __init__(self,
+                 sigma_init,
+                 penalty_init,
+                 centers_init,
+                 opt_centers,
+                 opt_sigma,
+                 opt_penalty,
+                 num_epochs,
+                 learning_rate,
+                 err_fn):
+        from gpflow import set_trainable
+        import gpflow
+
+        self.penalty = penalty_init.item()
+        self.sigma = sigma_init.item()
+        self.centers = centers_init.numpy()
+
+        self.kernel = gpflow.kernels.SquaredExponential(lengthscales=self.sigma, variance=1)
+        set_trainable(self.kernel.variance, False)
+        if not opt_sigma:
+            set_trainable(self.kernel.lengthscales, False)
+
+        self.opt_centers = opt_centers
+        self.opt_penalty = opt_penalty
+        self.learning_rate = learning_rate
+        self.num_epochs = num_epochs
+        self.err_fn = err_fn
+
+    def train(self, Xtr, Ytr, Xts, Yts):
+        import tensorflow as tf
+        from gpflow import set_trainable
+        import gpflow
+
+        Xtr = Xtr.numpy()
+        Ytr = Ytr.numpy()
+        Xts, Yts = Xts.numpy(), Yts.numpy()
+
+        self.model = gpflow.models.SGPR(
+            (Xtr, Ytr),
+            kernel=self.kernel,
+            inducing_variable=self.centers,
+            noise_variance=self.penalty)
+        if not self.opt_centers:
+            set_trainable(self.model.inducing_variable.Z, False)
+        # self.model.likelihood.variance = gpflow.Parameter(1, transform=tfp.bijectors.Identity())
+        if not self.opt_penalty:
+            set_trainable(self.model.likelihood.variance, False)
+
+        opt = tf.optimizers.Adam(self.learning_rate)
+
+        @tf.function
+        def step_fn():
+            opt.minimize(self.model.training_loss, var_list=self.model.trainable_variables)
+
+        gpflow.utilities.print_summary(self.model)
+        for step in range(self.num_epochs):
+            step_fn()
+            tr_err, err_name = self.err_fn(Ytr, self.predict(Xtr))
+            val_err, err_name = self.err_fn(Yts, self.predict(Xts))
+            #gpflow.utilities.print_summary(self.model)
+            print(f"Epoch {step + 1} - train {err_name} = {tr_err:.4f} - test {err_name} {val_err:.4f}")
+
+    def predict(self, X):
+        return self.model.predict_y(X)[0]
+
 
 
 def train_complexity_reg(
