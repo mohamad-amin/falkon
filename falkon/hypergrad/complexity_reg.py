@@ -2,6 +2,7 @@ import time
 from typing import List
 
 import torch
+import numpy as np
 
 import falkon
 
@@ -101,7 +102,7 @@ def report_complexity_reg(
         writer.add_scalar('grads/sigma/d_eff', grad_deff[1][0].item(), step)
         writer.add_scalar('grads/sigma/data_fit', grad_loss[1][0].item(), step)
     else:
-        grad = torch.autograd.grad(-deff - datafit - trace, hparams, retain_graph=False)
+        grad = torch.autograd.grad(-(deff + datafit + trace), hparams, retain_graph=False)
         # writer.add_scalar('grads/penalty/sum', grad[0].item(), step)
         # writer.add_scalar('grads/sigma/sum', grad[1][0].item(), step)
         grad_deff = grad
@@ -264,19 +265,28 @@ class SimpleFalkonComplexityReg(NystromKRRModelMixin):
         # Data-fit
         if not self.only_trace:
             c = c * sqrt_var  # Correct c would be LB^-1 @ A @ Y
-            datafit = - torch.square(Y).sum()# / variance
+            datafit = - torch.square(Y).sum()
             datafit += torch.square(c).sum()
         else:
             datafit = torch.tensor(0.0)
         # Traces
         # Cannot remove variance in either of these!
         # Keeping or removing `0.5` does not have much effect
-        trace = - 0.5 * Kdiag / (variance)
+        trace = - 0.5 * Kdiag / variance
         trace += 0.5 * torch.diag(AAT).sum()
 
-        trace = trace #* variance
-        datafit = datafit / variance
-        deff = -deff * variance
+        #print("DataFit: %.2e" % (-datafit))
+        #print("Effective dim: %.2e" % (deff))
+        #print("Trace: %.2e" % (-trace * variance))
+        deff = torch.log(deff / variance) * X.shape[0]; datafit = datafit / variance; trace = trace
+        #deff = torch.log(deff / variance); datafit = datafit / variance; trace = trace
+        #deff = torch.log(deff) * X.shape[0]; datafit = datafit; trace = trace * variance
+        #deff = -torch.log(deff); datafit = datafit; trace = trace * variance
+        #deff = -torch.log(deff) * X.shape[0]; datafit = datafit; trace = trace * variance
+        #deff = -torch.log(deff /variance); datafit = datafit / variance; trace = trace
+
+        #deff = -torch.log(deff / variance)# * variance) #* X.shape[0]
+        #deff = torch.log(deff / variance) * X.shape[0]
 
         report_complexity_reg(
             deff=deff,
@@ -426,7 +436,6 @@ class GPComplexityReg(NystromKRRModelMixin):
         if not self.only_trace:
             deff = -torch.log(torch.diag(LB)).sum()
             deff += -0.5 * X.shape[0] * torch.log(variance)
-            print("-logdet: %.1e" % (deff))
         else:
             deff = torch.tensor(0.0)
         # Data-fit
@@ -438,6 +447,9 @@ class GPComplexityReg(NystromKRRModelMixin):
         # Traces
         trace = -0.5 * Kdiag / variance
         trace += 0.5 * torch.diag(AAT).sum()
+
+        #const = -0.5 * X.shape[0] * torch.log(2 * torch.tensor(np.pi, dtype=X.dtype))
+        #trace += const
 
         report_complexity_reg(
             deff=deff,
@@ -483,6 +495,7 @@ class TrainableSGPR():
 
     def train(self, Xtr, Ytr, Xts, Yts):
         import tensorflow as tf
+        import tensorflow_probability as tfp
         from gpflow import set_trainable
         import gpflow
 
@@ -497,11 +510,11 @@ class TrainableSGPR():
             noise_variance=self.penalty)
         if not self.opt_centers:
             set_trainable(self.model.inducing_variable.Z, False)
-        # self.model.likelihood.variance = gpflow.Parameter(1, transform=tfp.bijectors.Identity())
+        self.model.likelihood.variance = gpflow.Parameter(self.penalty, transform=tfp.bijectors.Identity())
         if not self.opt_penalty:
             set_trainable(self.model.likelihood.variance, False)
 
-        opt = tf.optimizers.Adam(self.learning_rate)
+        opt = tf.keras.optimizers.Adam(self.learning_rate, epsilon=1e-8)
 
         @tf.function
         def step_fn():
@@ -514,6 +527,7 @@ class TrainableSGPR():
             val_err, err_name = self.err_fn(Yts, self.predict(Xts))
             #gpflow.utilities.print_summary(self.model)
             print(f"Epoch {step + 1} - train {err_name} = {tr_err:.4f} - test {err_name} {val_err:.4f}")
+        gpflow.utilities.print_summary(self.model)
 
     def predict(self, X):
         return self.model.predict_y(X)[0]
