@@ -1,18 +1,18 @@
 import time
 from typing import List
+from functools import reduce
 
 import torch
 import numpy as np
 
 import falkon
-
 try:
     import falkon.cuda.initialization
 except:
     pass  # No GPU
 from falkon import FalkonOptions
 from falkon.center_selection import FixedSelector, CenterSelector
-from falkon.hypergrad.common import full_rbf_kernel, test_train_predict, get_start_sigma
+from falkon.hypergrad.common import full_rbf_kernel, test_train_predict, get_start_sigma, PositiveTransform
 from falkon.hypergrad.leverage_scores import regloss_and_deff, RegLossAndDeff
 from falkon.kernels import GaussianKernel
 from summary import get_writer
@@ -40,7 +40,7 @@ def sgpr_calc(X, Y, centers, sigma, penalty, compute_C: bool):
     -------
 
     """
-    variance = torch.exp(-penalty) * X.shape[0]
+    variance = penalty
     sqrt_var = torch.sqrt(variance)
 
     kuf = full_rbf_kernel(centers, X, sigma)
@@ -60,66 +60,29 @@ def sgpr_calc(X, Y, centers, sigma, penalty, compute_C: bool):
     if compute_C:
         C = torch.triangular_solve(A, LB, upper=False).solution
 
-    return AAT, LB, c, C
+    return AAT, LB, c, C, L
 
 
-def report_complexity_reg(
-        deff: torch.Tensor,
-        datafit: torch.Tensor,
-        trace: torch.Tensor,
-        hparams: List[torch.Tensor],
-        penalty: torch.Tensor,
-        sigma: torch.Tensor,
-        step: int,
-        verbose_tboard: bool,
-        use_writer: bool = True,
-):
-    if use_writer:
-        writer = get_writer()
-        writer.add_scalar('optim/d_eff', -deff.item(), step)
-        writer.add_scalar('optim/data_fit', -datafit.item(), step)
-        if trace.requires_grad:
-            writer.add_scalar('optim/trace', -trace.item(), step)
-            print(f"VALUE        d_eff {deff:.3e} - loss {datafit:.3e} - trace {trace:.3e}. tot {deff + datafit + trace:.3e}")
-        writer.add_scalar('optim/loss', (-deff - datafit - trace).item(), step)
-        writer.add_scalar('hparams/penalty', torch.exp(-penalty).item(), step)
-        writer.add_scalar('hparams/sigma', sigma[0], step)
+def report_grads(named_hparams, grads, losses, loss_names, verbose, step):
+    assert len(grads) == len(losses), f"Found {len(grads)} grads and {len(losses)} losses."
+    assert len(losses) == len(loss_names), f"Found {len(losses)} losses and {len(loss_names)} loss-names."
+    writer = get_writer()
+    report_str = "LOSSES: "
+    loss_sum = 0
+    for i in range(grads):
+        # Report the value of the loss
+        writer.add_scalar(f'optim/{loss_names[i]}', losses[i], step)
+        report_str += f"{loss_names[i]}: {losses[i]:.3e} - "
+        loss_sum += losses[i]
 
-    if verbose_tboard:
-        grad_deff = torch.autograd.grad(-deff, hparams, retain_graph=True)
-        grad_loss = torch.autograd.grad(-datafit, hparams, retain_graph=True)
-        if trace.requires_grad:
-            grad_trace = torch.autograd.grad(-trace, hparams, retain_graph=False, allow_unused=True)
-            # print(f"GRADS(sigma) d_eff {grad_deff[1][0]:.5e} - loss {grad_loss[1][0]:.5e} - trace {grad_trace[1][0]:.5e}")
-            print(
-                f"GRADS(penalty)   d_eff {grad_deff[0]:.5e} - loss {grad_loss[0]:.5e} - trace {grad_trace[0]:.5e}")
-            writer.add_scalar('grads/penalty/trace', grad_trace[0].item(), step)
-            writer.add_scalar('grads/sigma/trace', grad_trace[1][0].item(), step)
-        else:
-            grad_trace = [None] * len(grad_deff)
-        writer.add_scalar('grads/penalty/d_eff', grad_deff[0].item(), step)
-        writer.add_scalar('grads/penalty/data_fit', grad_loss[0].item(), step)
-        writer.add_scalar('grads/sigma/d_eff', grad_deff[1][0].item(), step)
-        writer.add_scalar('grads/sigma/data_fit', grad_loss[1][0].item(), step)
-    else:
-        grad = torch.autograd.grad(-(deff + datafit + trace), hparams, retain_graph=False)
-        # writer.add_scalar('grads/penalty/sum', grad[0].item(), step)
-        # writer.add_scalar('grads/sigma/sum', grad[1][0].item(), step)
-        grad_deff = grad
-        grad_loss = [None] * len(grad)
-        grad_trace = [None] * len(grad)
-
-    for hp, g1, g2, g3 in zip(hparams, grad_deff, grad_loss, grad_trace):
-        if not hp.requires_grad:
-            continue
-        if hp.grad is None:
-            hp.grad = torch.zeros_like(hp)
-        if g1 is not None:
-            hp.grad += g1
-        if g2 is not None:
-            hp.grad += g2
-        if g3 is not None:
-            hp.grad += g3
+        for j, (hp_name, hp_val) in enumerate(named_hparams.items()):
+            # Report the gradient of a specific loss wrt a specific hparam
+            writer.add_scalar(f'grads/{hp_name}/{loss_names[i]}', grads[i][j].data[0], step)
+            if i == 0:
+                # Report the hparam value
+                writer.add_scalar(f'hparams/{hp_name}', hp_val.data[0], step)
+    report_str += f"tot: {loss_sum:.3e}"
+    print(report_str, flush=True)
 
 
 class FakeTorchModelMixin():
@@ -140,21 +103,26 @@ class FakeTorchModelMixin():
     def parameters(self):
         return list(self._named_parameters.values())
 
+    def named_parameters(self):
+        return self._named_parameters
+
     def buffers(self):
         return list(self._named_buffers.values())
 
 
 class NystromKRRModelMixin(FakeTorchModelMixin):
-    def __init__(self, penalty, sigma, centers, flk_opt, flk_maxiter, cuda, T=1):
+    def __init__(self, penalty, sigma, centers, flk_opt, flk_maxiter, cuda, verbose, T=1):
         super().__init__()
         if cuda:
             device = torch.device('cuda')
         else:
             device = torch.device('cpu')
         self.penalty = penalty.clone().detach().to(device=device)
+        self.penalty_transform = PositiveTransform(1e-6)
+        self.register_buffer("penalty", self.penalty)
+
         self.sigma = sigma.clone().detach().to(device=device)
         self.centers = centers.clone().detach().to(device=device)
-        self.register_buffer("penalty", self.penalty)
         self.register_buffer("sigma", self.sigma)
         self.register_buffer("centers", self.centers)
         self.f_alpha = torch.zeros(self.centers.shape[0], T, requires_grad=False, device=device,
@@ -168,6 +136,28 @@ class NystromKRRModelMixin(FakeTorchModelMixin):
         self.flk_maxiter = flk_maxiter
 
         self.model = None
+        self.verbose = verbose
+
+    def hp_grad(self, *loss_terms, accumulate_grads=True):
+        grads = []
+        hparams = self.parameters()
+        if self.verbose:
+            for l in loss_terms:
+                grads.append(torch.autograd.grad(l, hparams, retain_graph=True))
+        else:
+            loss = reduce(torch.add, loss_terms)
+            grads.append(torch.autograd.grad(loss, hparams, retain_graph=False))
+
+        if accumulate_grads:
+            for g in grads:
+                for i in range(len(hparams)):
+                    hp = hparams[i]
+                    if hp.grad is None:
+                        hp.grad = torch.zeros_like(hp)
+                    if g[i] is not None:
+                        hp.grad += g[i]
+
+        return grads
 
     def adapt_alpha(self, X, Y):
         k = GaussianKernel(self.sigma.detach(), self.flk_opt)
@@ -178,7 +168,7 @@ class NystromKRRModelMixin(FakeTorchModelMixin):
             fcls = falkon.Falkon
 
         model = fcls(k,
-                     torch.exp(-self.penalty).item(),
+                     self.penalty_val.item() / X.shape[0],
                      M=self.centers.shape[0],
                      center_selection=FixedSelector(self.centers.detach()),
                      maxiter=self.flk_maxiter,
@@ -197,7 +187,8 @@ class NystromKRRModelMixin(FakeTorchModelMixin):
         k = GaussianKernel(self.sigma.detach(), self.flk_opt)
         model = self.model.__class__(
             kernel=k,
-            penalty=torch.exp(-self.penalty).item(),
+            #penalty=torch.exp(-self.penalty).item(),
+            penalty=self.penalty.item(),
             M=self.centers.shape[0],
             center_selection=FixedSelector(self.centers.detach()),
             maxiter=self.flk_maxiter,
@@ -207,6 +198,10 @@ class NystromKRRModelMixin(FakeTorchModelMixin):
 
     def eval(self):
         pass
+
+    @property
+    def penalty_val(self):
+        return self.penalty_transform(self.penalty)
 
 
 class SimpleFalkonComplexityReg(NystromKRRModelMixin):
@@ -233,28 +228,23 @@ class SimpleFalkonComplexityReg(NystromKRRModelMixin):
             flk_maxiter=flk_maxiter,
             cuda=cuda,
             T=T,
+            verbose=verbose_tboard,
         )
         if opt_sigma:
             self.register_parameter("sigma", self.sigma.requires_grad_(True))
-        else:
-            self.register_buffer("sigma", self.sigma.requires_grad_(False))
         if opt_penalty:
             self.register_parameter("penalty", self.penalty.requires_grad_(True))
-        else:
-            self.register_buffer("penalty", self.penalty.requires_grad_(False))
         if opt_centers:
             self.register_parameter("centers", self.centers.requires_grad_(True))
 
-        self.verbose_tboard = verbose_tboard
-        self.writer = get_writer()
         self.only_trace = only_trace
 
-    def adapt_hps(self, X, Y, step):
-        AAT, LB, c, C = sgpr_calc(X, Y, self.centers, self.sigma, self.penalty, compute_C=True)
-
-        variance = torch.exp(-self.penalty) * X.shape[0]
+    def hp_loss(self, X, Y):
+        variance = self.penalty_val
         sqrt_var = torch.sqrt(variance)
         Kdiag = X.shape[0]
+
+        AAT, LB, c, C, L = sgpr_calc(X, Y, self.centers, self.sigma, variance, compute_C=True)
 
         # NKRR + Trace
         # Complexity (nystrom effective-dimension)
@@ -288,17 +278,11 @@ class SimpleFalkonComplexityReg(NystromKRRModelMixin):
         #deff = -torch.log(deff / variance)# * variance) #* X.shape[0]
         #deff = torch.log(deff / variance) * X.shape[0]
 
-        report_complexity_reg(
-            deff=deff,
-            datafit=datafit,
-            trace=trace,
-            hparams=self.parameters(),
-            penalty=self.penalty,
-            sigma=self.sigma,
-            step=step,
-            verbose_tboard=self.verbose_tboard,
-        )
-        return deff + datafit + trace
+        return deff, datafit, trace
+
+    @property
+    def loss_names(self):
+        return "d-eff", "data-fit", "trace"
 
 
 class FalkonComplexityReg(NystromKRRModelMixin):
@@ -323,6 +307,7 @@ class FalkonComplexityReg(NystromKRRModelMixin):
             flk_maxiter=flk_maxiter,
             cuda=cuda,
             T=T,
+            verbose=verbose_tboard,
         )
         falkon.cuda.initialization.init(flk_opt)
         self.register_parameter("penalty", self.penalty.requires_grad_(True))
@@ -330,14 +315,12 @@ class FalkonComplexityReg(NystromKRRModelMixin):
         if opt_centers:
             self.register_parameter("centers", self.centers.requires_grad_(True))
 
-        self.verbose_tboard = verbose_tboard
         self.precise_trace = precise_trace
-        self.writer = get_writer()
 
-    def adapt_hps(self, X, Y, step):
+    def hp_loss(self, X, Y):
         deff, datafit, trace = regloss_and_deff(
             kernel_args=self.sigma,
-            penalty=self.penalty,
+            penalty=self.penalty_val,
             M=self.centers,
             X=X, Y=Y, t=200,
             deterministic=False,
@@ -346,18 +329,7 @@ class FalkonComplexityReg(NystromKRRModelMixin):
             solve_maxiter=self.flk_maxiter,
             gaussian_random=False,
         )
-
-        report_complexity_reg(
-            deff=deff,
-            datafit=datafit,
-            trace=trace,
-            hparams=self.parameters(),
-            penalty=self.penalty,
-            sigma=self.sigma,
-            step=step,
-            verbose_tboard=self.verbose_tboard,
-        )
-        return deff + datafit + trace
+        return deff, datafit, trace
 
     def adapt_alpha(self, X, Y):
         # Mostly copied from super-class but the more efficient shortcut is taken
@@ -369,7 +341,7 @@ class FalkonComplexityReg(NystromKRRModelMixin):
             fcls = falkon.Falkon
 
         model = fcls(k,
-                     torch.exp(-self.penalty).item(),  # / X.shape[0],
+                     self.penalty_val.item() / X.shape[0],
                      M=self.centers.shape[0],
                      center_selection=FixedSelector(self.centers.detach()),
                      maxiter=self.flk_maxiter,
@@ -384,6 +356,10 @@ class FalkonComplexityReg(NystromKRRModelMixin):
             self.f_alpha_pc = model.beta_.detach()
 
         self.model = model
+
+    @property
+    def loss_names(self):
+        return "d-eff", "data-fit", "trace"
 
 
 class GPComplexityReg(NystromKRRModelMixin):
@@ -410,27 +386,27 @@ class GPComplexityReg(NystromKRRModelMixin):
             flk_maxiter=flk_maxiter,
             cuda=cuda,
             T=T,
+            verbose=verbose_tboard,
         )
         if opt_sigma:
             self.register_parameter("sigma", self.sigma.requires_grad_(True))
-        else:
-            self.register_buffer("sigma", self.sigma.requires_grad_(False))
         if opt_penalty:
             self.register_parameter("penalty", self.penalty.requires_grad_(True))
-        else:
-            self.register_buffer("penalty", self.penalty.requires_grad_(False))
         if opt_centers:
             self.register_parameter("centers", self.centers.requires_grad_(True))
 
-        self.verbose_tboard = verbose_tboard
-        self.writer = get_writer()
         self.only_trace = only_trace
 
-    def adapt_hps(self, X, Y, step):
-        AAT, LB, c, _ = sgpr_calc(X, Y, self.centers, self.sigma, self.penalty, compute_C=False)
-
-        variance = torch.exp(-self.penalty) * X.shape[0]
+    def hp_loss(self, X, Y):
+        variance = self.penalty_val
+        sqrt_var = torch.sqrt(variance)
         Kdiag = X.shape[0]
+
+        AAT, LB, c, _, L = sgpr_calc(X, Y, self.centers, self.sigma, variance, compute_C=False)
+        self.AAT = AAT
+        self.LB = LB
+        self.c = c
+        self.L = L
 
         # Complexity
         if not self.only_trace:
@@ -448,20 +424,19 @@ class GPComplexityReg(NystromKRRModelMixin):
         trace = -0.5 * Kdiag / variance
         trace += 0.5 * torch.diag(AAT).sum()
 
-        #const = -0.5 * X.shape[0] * torch.log(2 * torch.tensor(np.pi, dtype=X.dtype))
-        #trace += const
+        const = -0.5 * X.shape[0] * torch.log(2 * torch.tensor(np.pi, dtype=X.dtype))
 
-        report_complexity_reg(
-            deff=deff,
-            datafit=datafit,
-            trace=trace,
-            hparams=self.parameters(),
-            penalty=self.penalty,
-            sigma=self.sigma,
-            step=step,
-            verbose_tboard=self.verbose_tboard,
-        )
-        return deff + datafit + trace
+        return deff, datafit, trace, const
+
+    def predict_closed_form(self, X):
+        kus = full_rbf_kernel(self.centers, X, self.sigma)
+        tmp1 = torch.triangular_solve(kus, self.L, upper=False).solution
+        tmp2 = torch.triangular_solve(tmp1, self.LB, upper=False).solution
+        return tmp2.T @ self.c
+
+    @property
+    def loss_names(self):
+        return "log-det", "data-fit", "trace", "const"
 
 
 class TrainableSGPR():
@@ -510,9 +485,10 @@ class TrainableSGPR():
             noise_variance=self.penalty)
         if not self.opt_centers:
             set_trainable(self.model.inducing_variable.Z, False)
-        self.model.likelihood.variance = gpflow.Parameter(self.penalty, transform=tfp.bijectors.Identity())
+        #self.model.likelihood.variance = gpflow.Parameter(self.penalty, transform=tfp.bijectors.Identity())
         if not self.opt_penalty:
             set_trainable(self.model.likelihood.variance, False)
+        self.model.kernel.lengthscales = gpflow.Parameter(self.sigma, transform=tfp.bijectors.Identity())
 
         opt = tf.keras.optimizers.Adam(self.learning_rate, epsilon=1e-8)
 
@@ -617,15 +593,17 @@ def train_complexity_reg(
     for epoch in range(num_epochs):
         e_start = time.time()
         opt_hp.zero_grad()
-        loss = -model.adapt_hps(Xtr, Ytr, cum_step)
+        losses = model.hp_loss(Xtr, Ytr)
+        grads = model.hp_grad(*losses, accumulate_grads=True)
+        report_grads(model.named_parameters(), grads, losses, model.loss_names, verbose, cum_step)
         # Loss reporting before step() to optimize (avoid second flk)
         if epoch != 0 and (epoch + 1) % loss_every == 0:
             model.adapt_alpha(Xtr, Ytr)
             cum_time, train_err, test_err = test_train_predict(
                 model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
                 err_fn=err_fn, epoch=epoch, time_start=e_start, cum_time=cum_time)
-            writer.add_scalar('Error/train', train_err, cum_step)
-            writer.add_scalar('Error/test', test_err, cum_step)
+            writer.add_scalar('error/train', train_err, cum_step)
+            writer.add_scalar('error/test', test_err, cum_step)
         opt_hp.step()
         cum_step += 1
 

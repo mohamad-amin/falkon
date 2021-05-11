@@ -6,6 +6,56 @@ import numpy as np
 import torch
 
 
+class TransformedParameter():
+    def __init__(self, value, transform):
+        self.transform = transform
+        self.value = self.transform.forward(value)
+
+    def __get__(self):
+        return self.value
+
+    def __repr__(self):
+        return self.value.__repr__()
+
+    def __str__(self):
+        return self.value.__repr__()
+
+
+class PositiveTransform(torch.distributions.transforms.Transform):
+    domain = constraints.real
+    codomain = constraints.positive
+
+    def __init__(self, lower_bound=0.0):
+        self.lower_bound = lower_bound
+
+    def __eq__(self, other):
+        if not isinstance(other, PositiveTransform):
+            return False
+        return other.lower_bound == self.lower_bound
+
+    def _call(self, x):
+        # softplus and then shift
+        y = torch.nn.functional.softplus(x)
+        y = y + self.lower_bound
+        return y
+
+    def _inverse(self, y):
+        # https://github.com/tensorflow/probability/blob/v0.12.2/tensorflow_probability/python/math/generic.py#L456-L507
+        x = y - self.lower_bound
+
+        threshold = torch.log(torch.finfo(val.dtype).eps) + 2.
+        is_too_small = x < torch.exp(threshold)
+        is_too_large = x > -threshold
+        too_small_val = torch.log(x)
+        too_large_val = x
+
+        x = torch.where(is_too_small | is_too_large, 1.0, x)
+        x = x + torch.log(-torch.expm1(-x))
+        return torch.where(is_too_small,
+                           too_small_val,
+                           torch.where(is_too_large, too_large_val, x))
+
+
 class FastTensorDataLoader:
     def __init__(self, *tensors, batch_size, shuffle=False, drop_last=False, cuda=False):
         assert all(t.shape[0] == tensors[0].shape[0] for t in tensors)
@@ -123,7 +173,7 @@ def test_train_predict(model,
     test_err, err_name = err_fn(Yts.detach().cpu(), test_preds.detach().cpu())
     train_err, err_name = err_fn(Ytr.detach().cpu(), train_preds.detach().cpu())
     out_str = (f"Epoch {epoch} ({cum_time:5.2f}s) - "
-               f"Sigma {model.sigma[0].item():.3f} - Penalty {np.exp(-model.penalty.item()):.2e} - "
+               f"Sigma {model.sigma[0].item():.3f} - Penalty {model.penalty_val.item():.2e} - "
                f"Tr  {err_name} = {train_err:6.4f} - "
                f"Ts  {err_name} = {test_err:6.4f}")
     ret = [cum_time, train_err, test_err]
