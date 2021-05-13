@@ -6,7 +6,7 @@ import numpy as np
 from libsvmdata import fetch_libsvm
 
 import falkon
-from falkon.hypergrad.complexity_reg import GPComplexityReg, SimpleFalkonComplexityReg, TrainableSGPR
+from falkon.hypergrad.complexity_reg import GPComplexityReg, SimpleFalkonComplexityReg, TrainableSGPR, reporting
 from falkon.hypergrad.common import test_train_predict
 
 
@@ -225,7 +225,7 @@ def train_sgpr_like(opt_model,
         only_trace=only_trace,
     )
     ## Closed-form baselines
-    penalty = model.penalty_val
+    penalty = model.penalty_val.detach()
     tr_err_krr = krr_train_error(Xtr, Xts, Ytr, Yts, kernel, penalty)
     ts_err_krr = krr_test_error(Xtr, Xts, Ytr, Yts, kernel, penalty)
     Bnm, Gmm, Bnm_test = get_svd_bg(Xtr, centers_init.shape[0], kernel, Xts)
@@ -237,10 +237,11 @@ def train_sgpr_like(opt_model,
     cum_time, cum_step = 0, 0
     for epoch in range(epochs):
         e_start = time.time()
+
         opt_hp.zero_grad()
         losses = model.hp_loss(Xtr, Ytr)
         grads = model.hp_grad(*losses, accumulate_grads=True)
-        report_grads(model.named_parameters(), grads, losses, model.loss_names, verbose=False, step=cum_step)
+        reporting(model.named_parameters(), grads, losses, model.loss_names, verbose=False, step=cum_step)
         opt_hp.step()
 
         model.adapt_alpha(Xtr, Ytr)

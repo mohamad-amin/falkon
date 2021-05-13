@@ -12,7 +12,7 @@ except:
     pass  # No GPU
 from falkon import FalkonOptions
 from falkon.center_selection import FixedSelector, CenterSelector
-from falkon.hypergrad.common import full_rbf_kernel, test_train_predict, get_start_sigma, PositiveTransform
+from falkon.hypergrad.common import full_rbf_kernel, test_train_predict, get_start_sigma, PositiveTransform, ExpTransform
 from falkon.hypergrad.leverage_scores import regloss_and_deff, RegLossAndDeff
 from falkon.kernels import GaussianKernel
 from summary import get_writer
@@ -63,26 +63,49 @@ def sgpr_calc(X, Y, centers, sigma, penalty, compute_C: bool):
     return AAT, LB, c, C, L
 
 
-def report_grads(named_hparams, grads, losses, loss_names, verbose, step):
-    assert len(grads) == len(losses), f"Found {len(grads)} grads and {len(losses)} losses."
+def get_scalar(t: torch.Tensor) -> float:
+    if t.dim() == 0:
+        return t.item()
+    return t.flatten()[0]
+
+
+def report_losses(losses, loss_names, step):
     assert len(losses) == len(loss_names), f"Found {len(losses)} losses and {len(loss_names)} loss-names."
     writer = get_writer()
     report_str = "LOSSES: "
     loss_sum = 0
-    for i in range(grads):
+    for loss, loss_name in zip(losses, loss_names):
         # Report the value of the loss
-        writer.add_scalar(f'optim/{loss_names[i]}', losses[i], step)
-        report_str += f"{loss_names[i]}: {losses[i]:.3e} - "
-        loss_sum += losses[i]
-
-        for j, (hp_name, hp_val) in enumerate(named_hparams.items()):
-            # Report the gradient of a specific loss wrt a specific hparam
-            writer.add_scalar(f'grads/{hp_name}/{loss_names[i]}', grads[i][j].data[0], step)
-            if i == 0:
-                # Report the hparam value
-                writer.add_scalar(f'hparams/{hp_name}', hp_val.data[0], step)
+        writer.add_scalar(f'optim/{loss_name}', loss, step)
+        report_str += f"{loss_name}: {loss:.3e} - "
+        loss_sum += loss
     report_str += f"tot: {loss_sum:.3e}"
     print(report_str, flush=True)
+
+
+def report_hps(named_hparams, step):
+    writer = get_writer()
+    for hp_name, hp_val in named_hparams.items():
+        # Report the hparam value
+        writer.add_scalar(f'hparams/{hp_name}', get_scalar(hp_val), step)
+
+
+def report_grads(named_hparams, grads, losses, loss_names, step):
+    assert len(losses) == len(loss_names), f"Found {len(losses)} losses and {len(loss_names)} loss-names."
+    assert len(grads) == len(losses), f"Found {len(grads)} grads and {len(losses)} losses."
+    writer = get_writer()
+
+    for i in range(grads):
+        for j, (hp_name, hp_val) in enumerate(named_hparams.items()):
+            # Report the gradient of a specific loss wrt a specific hparam
+            writer.add_scalar(f'grads/{hp_name}/{loss_names[i]}', get_scalar(grads[i][j]), step)
+
+
+def reporting(named_hparams, grads, losses, loss_names, verbose, step):
+    report_losses(losses, loss_names, step)
+    report_hps(named_hparams, step)
+    if verbose:
+        report_grads(named_hparams, grads, losses, loss_names, step)
 
 
 class FakeTorchModelMixin():
@@ -117,8 +140,9 @@ class NystromKRRModelMixin(FakeTorchModelMixin):
             device = torch.device('cuda')
         else:
             device = torch.device('cpu')
-        self.penalty = penalty.clone().detach().to(device=device)
-        self.penalty_transform = PositiveTransform(1e-6)
+        #self.penalty_transform = PositiveTransform(1e-10)
+        self.penalty_transform = ExpTransform()
+        self.penalty = self.penalty_transform._inverse(penalty.clone().detach().to(device=device))
         self.register_buffer("penalty", self.penalty)
 
         self.sigma = sigma.clone().detach().to(device=device)
@@ -187,8 +211,7 @@ class NystromKRRModelMixin(FakeTorchModelMixin):
         k = GaussianKernel(self.sigma.detach(), self.flk_opt)
         model = self.model.__class__(
             kernel=k,
-            #penalty=torch.exp(-self.penalty).item(),
-            penalty=self.penalty.item(),
+            penalty=self.penalty_val.item() / X.shape[0],
             M=self.centers.shape[0],
             center_selection=FixedSelector(self.centers.detach()),
             maxiter=self.flk_maxiter,
@@ -237,6 +260,8 @@ class SimpleFalkonComplexityReg(NystromKRRModelMixin):
         if opt_centers:
             self.register_parameter("centers", self.centers.requires_grad_(True))
 
+        print("Penalty: ", self.penalty)
+
         self.only_trace = only_trace
 
     def hp_loss(self, X, Y):
@@ -268,7 +293,11 @@ class SimpleFalkonComplexityReg(NystromKRRModelMixin):
         #print("DataFit: %.2e" % (-datafit))
         #print("Effective dim: %.2e" % (deff))
         #print("Trace: %.2e" % (-trace * variance))
-        deff = torch.log(deff / variance) * X.shape[0]; datafit = datafit / variance; trace = trace
+        if not self.only_trace:
+            deff = - torch.log(deff / variance) * X.shape[0]
+        if not self.only_trace:
+            datafit = -datafit / variance
+        trace = -trace
         #deff = torch.log(deff / variance); datafit = datafit / variance; trace = trace
         #deff = torch.log(deff) * X.shape[0]; datafit = datafit; trace = trace * variance
         #deff = -torch.log(deff); datafit = datafit; trace = trace * variance
@@ -329,7 +358,7 @@ class FalkonComplexityReg(NystromKRRModelMixin):
             solve_maxiter=self.flk_maxiter,
             gaussian_random=False,
         )
-        return deff, datafit, trace
+        return -deff, -datafit, -trace
 
     def adapt_alpha(self, X, Y):
         # Mostly copied from super-class but the more efficient shortcut is taken
@@ -426,7 +455,7 @@ class GPComplexityReg(NystromKRRModelMixin):
 
         const = -0.5 * X.shape[0] * torch.log(2 * torch.tensor(np.pi, dtype=X.dtype))
 
-        return deff, datafit, trace, const
+        return -deff, -datafit, -trace, -const
 
     def predict_closed_form(self, X):
         kus = full_rbf_kernel(self.centers, X, self.sigma)
@@ -595,7 +624,7 @@ def train_complexity_reg(
         opt_hp.zero_grad()
         losses = model.hp_loss(Xtr, Ytr)
         grads = model.hp_grad(*losses, accumulate_grads=True)
-        report_grads(model.named_parameters(), grads, losses, model.loss_names, verbose, cum_step)
+        reporting(model.named_parameters(), grads, losses, model.loss_names, verbose, cum_step)
         # Loss reporting before step() to optimize (avoid second flk)
         if epoch != 0 and (epoch + 1) % loss_every == 0:
             model.adapt_alpha(Xtr, Ytr)

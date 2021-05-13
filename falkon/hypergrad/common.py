@@ -4,6 +4,7 @@ from typing import Sequence, Optional, Tuple, Union, Dict
 
 import numpy as np
 import torch
+import torch.distributions.constraints as constraints
 
 
 class TransformedParameter():
@@ -21,11 +22,32 @@ class TransformedParameter():
         return self.value.__repr__()
 
 
+class ExpTransform(torch.distributions.transforms.Transform):
+    _cache_size = 0
+    domain = constraints.real
+    codomain = constraints.positive
+
+    def __init__(self):
+        super().__init__()
+
+    def __eq__(self, other):
+        return isinstance(other, ExpTransform)
+
+    def _call(self, x):
+        return torch.exp(x)
+
+    def _inverse(self, y):
+        return torch.log(y)
+
+
+
 class PositiveTransform(torch.distributions.transforms.Transform):
+    _cache_size = 0
     domain = constraints.real
     codomain = constraints.positive
 
     def __init__(self, lower_bound=0.0):
+        super().__init__()
         self.lower_bound = lower_bound
 
     def __eq__(self, other):
@@ -43,13 +65,13 @@ class PositiveTransform(torch.distributions.transforms.Transform):
         # https://github.com/tensorflow/probability/blob/v0.12.2/tensorflow_probability/python/math/generic.py#L456-L507
         x = y - self.lower_bound
 
-        threshold = torch.log(torch.finfo(val.dtype).eps) + 2.
+        threshold = torch.log(torch.tensor(torch.finfo(y.dtype).eps, dtype=y.dtype)) + 2.
         is_too_small = x < torch.exp(threshold)
         is_too_large = x > -threshold
         too_small_val = torch.log(x)
         too_large_val = x
 
-        x = torch.where(is_too_small | is_too_large, 1.0, x)
+        x = torch.where(is_too_small | is_too_large, torch.tensor(1.0, dtype=y.dtype), x)
         x = x + torch.log(-torch.expm1(-x))
         return torch.where(is_too_small,
                            too_small_val,
