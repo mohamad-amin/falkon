@@ -60,7 +60,7 @@ def sgpr_calc(X, Y, centers, sigma, penalty, compute_C: bool):
     if compute_C:
         C = torch.triangular_solve(A, LB, upper=False).solution
 
-    return AAT, LB, c, C, L
+    return AAT, LB, c, C, L, A
 
 
 def get_scalar(t: torch.Tensor) -> float:
@@ -140,8 +140,8 @@ class NystromKRRModelMixin(FakeTorchModelMixin):
             device = torch.device('cuda')
         else:
             device = torch.device('cpu')
-        #self.penalty_transform = PositiveTransform(1e-10)
-        self.penalty_transform = ExpTransform()
+        self.penalty_transform = PositiveTransform(1e-9)
+        #self.penalty_transform = ExpTransform()
         self.penalty = self.penalty_transform._inverse(penalty.clone().detach().to(device=device))
         self.register_buffer("penalty", self.penalty)
 
@@ -192,12 +192,12 @@ class NystromKRRModelMixin(FakeTorchModelMixin):
             fcls = falkon.Falkon
 
         model = fcls(k,
-                     self.penalty_val.item() / X.shape[0],
+                     self.penalty_val.item(),# / X.shape[0],
                      M=self.centers.shape[0],
                      center_selection=FixedSelector(self.centers.detach()),
                      maxiter=self.flk_maxiter,
                      options=self.flk_opt)
-        model.fit(X, Y, warm_start=self.f_alpha_pc)
+        model.fit(X, Y)#, warm_start=self.f_alpha_pc)
         self.f_alpha = model.alpha_.detach()
         self.f_alpha_pc = model.beta_.detach()
         self.model = model
@@ -225,6 +225,7 @@ class NystromKRRModelMixin(FakeTorchModelMixin):
     @property
     def penalty_val(self):
         return self.penalty_transform(self.penalty)
+
 
 
 class SimpleFalkonComplexityReg(NystromKRRModelMixin):
@@ -269,7 +270,7 @@ class SimpleFalkonComplexityReg(NystromKRRModelMixin):
         sqrt_var = torch.sqrt(variance)
         Kdiag = X.shape[0]
 
-        AAT, LB, c, C, L = sgpr_calc(X, Y, self.centers, self.sigma, variance, compute_C=True)
+        AAT, LB, c, C, L, _ = sgpr_calc(X, Y, self.centers, self.sigma, variance, compute_C=True)
 
         # NKRR + Trace
         # Complexity (nystrom effective-dimension)
@@ -294,10 +295,16 @@ class SimpleFalkonComplexityReg(NystromKRRModelMixin):
         #print("Effective dim: %.2e" % (deff))
         #print("Trace: %.2e" % (-trace * variance))
         if not self.only_trace:
-            deff = - torch.log(deff / variance) * X.shape[0]
+            #deff = -torch.log(deff / variance) * X.shape[0]
+            #deff = torch.log(deff) * X.shape[0]
+            deff = deff #* X.shape[0]
         if not self.only_trace:
-            datafit = -datafit / variance
-        trace = -trace
+            #datafit = -datafit / variance
+            datafit = -datafit
+        #trace = -trace
+        trace = - trace * variance
+
+
         #deff = torch.log(deff / variance); datafit = datafit / variance; trace = trace
         #deff = torch.log(deff) * X.shape[0]; datafit = datafit; trace = trace * variance
         #deff = -torch.log(deff); datafit = datafit; trace = trace * variance
@@ -312,6 +319,72 @@ class SimpleFalkonComplexityReg(NystromKRRModelMixin):
     @property
     def loss_names(self):
         return "d-eff", "data-fit", "trace"
+
+
+class NoRegFalkonComplexityReg(SimpleFalkonComplexityReg):
+    def __init__(
+            self,
+            penalty_init,
+            sigma_init,
+            centers_init,
+            flk_opt,
+            flk_maxiter,
+            opt_centers,
+            opt_sigma,
+            opt_penalty,
+            verbose_tboard: bool,
+            cuda: bool,
+            T: int,
+            only_trace: bool = False,
+    ):
+        super().__init__(penalty_init, sigma_init, centers_init, flk_opt, flk_maxiter,
+                         opt_centers, opt_sigma, opt_penalty, verbose_tboard, cuda, T,
+                         only_trace)
+
+    def hp_loss(self, X, Y):
+        variance = self.penalty_val
+        sqrt_var = torch.sqrt(variance)
+        Kdiag = X.shape[0]
+
+        AAT, LB, c, C, L, A = sgpr_calc(X, Y, self.centers, self.sigma, variance, compute_C=True)
+
+        # NKRR + Trace
+        # Complexity (nystrom effective-dimension)
+        if not self.only_trace:
+            deff = torch.trace(C.T @ C)
+            #print("deff", deff)
+            #print("Y std: %.2e" % (torch.std(Y)))
+            deff = deff * torch.std(Y) * 2
+            #print("Deff", deff)
+        else:
+            deff = torch.tensor(0.0)
+        # Data-fit
+        if not self.only_trace:
+            c_tilde = c * sqrt_var
+            d = A.T @ torch.triangular_solve(c_tilde, LB, upper=False, transpose=True).solution
+            datafit = torch.square(Y).sum() - 2 * torch.square(c_tilde).sum() + torch.square(d).sum()
+        else:
+            datafit = torch.tensor(0.0)
+        # Traces
+        # Cannot remove variance in either of these!
+        # Keeping or removing `0.5` does not have much effect
+        trace = - 0.5 * Kdiag / variance
+        trace += 0.5 * torch.diag(AAT).sum()
+        #trace = torch.tensor(0.0)
+
+        if not self.only_trace:
+            deff = deff
+        if not self.only_trace:
+            pass
+        #trace = -trace
+        trace = - trace * variance
+
+        return deff, datafit, trace
+
+    @property
+    def loss_names(self):
+        return "d-eff", "data-fit(noreg)", "trace"
+
 
 
 class FalkonComplexityReg(NystromKRRModelMixin):
@@ -431,7 +504,7 @@ class GPComplexityReg(NystromKRRModelMixin):
         sqrt_var = torch.sqrt(variance)
         Kdiag = X.shape[0]
 
-        AAT, LB, c, _, L = sgpr_calc(X, Y, self.centers, self.sigma, variance, compute_C=False)
+        AAT, LB, c, _, L, _ = sgpr_calc(X, Y, self.centers, self.sigma, variance, compute_C=False)
         self.AAT = AAT
         self.LB = LB
         self.c = c

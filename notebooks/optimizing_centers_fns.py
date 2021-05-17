@@ -6,7 +6,7 @@ import numpy as np
 from libsvmdata import fetch_libsvm
 
 import falkon
-from falkon.hypergrad.complexity_reg import GPComplexityReg, SimpleFalkonComplexityReg, TrainableSGPR, reporting
+from falkon.hypergrad.complexity_reg import GPComplexityReg, SimpleFalkonComplexityReg, TrainableSGPR, reporting, NoRegFalkonComplexityReg
 from falkon.hypergrad.common import test_train_predict
 
 
@@ -102,12 +102,17 @@ def preprocess_dataset(X, Y, n_train):
     Ytr = Y[:n_train].clone()#.to(dtype=torch.float64)
     Xts = X[n_train:].clone()#.to(dtype=torch.float64)
     Yts = Y[n_train:].clone()#.to(dtype=torch.float64)
+    # Preprocess X
     mean = Xtr.mean(axis=0, keepdims=True)
     std = Xtr.std(axis=0, keepdims=True)
     Xtr -= mean
     Xts -= mean
     Xtr /= std
     Xts /= std
+    # Preprocess Y
+    #norm = torch.linalg.norm(Ytr)
+    #Ytr /= norm
+    #Yts /= norm
     return Xtr, Ytr, Xts, Yts
 
 
@@ -188,6 +193,14 @@ def krr_test_error(Xtr, Xts, Ytr, Yts, kernel, la):
     return err
 
 
+def choose_centers(Xtr, M, random=False):
+    if random:
+        return torch.randn(M, Xtr.shape[1], dtype=Xtr.dtype, device=Xtr.device)
+    else:
+        idx = torch.randperm(Xtr.shape[0])[:M]
+        return Xtr[idx].clone().detach()
+
+
 # MAIN FUNCTIONS
 def train_sgpr_like(opt_model,
                     penalty_init,
@@ -208,6 +221,8 @@ def train_sgpr_like(opt_model,
         opt_model_cls = GPComplexityReg
     elif opt_model == "Falkon":
         opt_model_cls = SimpleFalkonComplexityReg
+    elif opt_model == "NoRegFalkon":
+        opt_model_cls = NoRegFalkonComplexityReg
     else:
         raise ValueError(opt_model)
     model = opt_model_cls(
