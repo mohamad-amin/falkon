@@ -1,3 +1,4 @@
+import abc
 import time
 from typing import List
 from functools import reduce
@@ -108,7 +109,7 @@ def reporting(named_hparams, grads, losses, loss_names, verbose, step):
         report_grads(named_hparams, grads, losses, loss_names, step)
 
 
-class FakeTorchModelMixin():
+class FakeTorchModelMixin(abc.ABC):
     def __init__(self):
         self._named_parameters = {}
         self._named_buffers = {}
@@ -131,6 +132,143 @@ class FakeTorchModelMixin():
 
     def buffers(self):
         return list(self._named_buffers.values())
+
+    def eval(self):
+        pass
+
+
+def hp_grad(model: FakeTorchModelMixin, loss_terms, accumulate_grads=True, verbose=True, losses_are_grads=False):
+    grads = []
+    hparams = model.parameters()
+    if not losses_are_grads:
+        if verbose:
+            for loss in loss_terms:
+                grads.append(torch.autograd.grad(loss, hparams, retain_graph=True))
+        else:
+            loss = reduce(torch.add, loss_terms)
+            grads.append(torch.autograd.grad(loss, hparams, retain_graph=False))
+    else:
+        grads = loss_terms
+
+    if accumulate_grads:
+        for g in grads:
+            for i in range(len(hparams)):
+                hp = hparams[i]
+                if hp.grad is None:
+                    hp.grad = torch.zeros_like(hp)
+                if g[i] is not None:
+                    hp.grad += g[i]
+    return grads
+
+
+class HyperOptimModel(FakeTorchModelMixin, abc.ABC):
+    @abc.abstractmethod
+    def predict(self, X):
+        pass
+
+    @abc.abstractmethod
+    def hp_loss(self, X, Y):
+        pass
+
+    @abc.abstractmethod
+    @property
+    def loss_names(self):
+        pass
+
+    @property
+    def losses_are_grads(self):
+        return False
+
+
+class NystromKRRModelMixinN(FakeTorchModelMixin, abc.ABC):
+    def __init__(self, penalty, sigma, centers, cuda, verbose):
+        super().__init__()
+        if cuda:
+            self.device = torch.device('cuda')
+        else:
+            self.device = torch.device('cpu')
+
+        self.penalty_transform = PositiveTransform(1e-9)
+        #self.penalty_transform = ExpTransform()
+        self.penalty = penalty
+        self.register_buffer("penalty", self.penalty_)
+
+        self.sigma = sigma
+        self.register_buffer("sigma", self.sigma_)
+
+        self.centers = centers
+        self.register_buffer("centers", self.centers_)
+
+        self.verbose = verbose
+
+    @property
+    def penalty(self):
+        return self.penalty_transform(self.penalty_)
+
+    @property
+    def sigma(self):
+        return self.sigma_
+
+    @property
+    def centers(self):
+        return self.centers_
+
+    @centers.setter
+    def centers(self, value):
+        if not isinstance(value, torch.Tensor):
+            value = torch.tensor(value)
+        self.centers_ = value.clone().detach().to(device=self.device)
+
+    @sigma.setter
+    def sigma(self, value):
+        if not isinstance(value, torch.Tensor):
+            value = torch.tensor(value)
+        self.sigma_ = value.clone().detach().to(device=self.device)
+
+    @penalty.setter
+    def penalty(self, value):
+        if not isinstance(value, torch.Tensor):
+            value = torch.tensor(value)
+        self.penalty_ = self.penalty_transform._inverse(value.clone().detach().to(device=self.device))
+
+
+class KRRModelMixinN(FakeTorchModelMixin, abc.ABC):
+    def __init__(self, penalty, sigma, cuda, verbose):
+        super().__init__()
+        if cuda:
+            self.device = torch.device('cuda')
+        else:
+            self.device = torch.device('cpu')
+
+        self.penalty_transform = PositiveTransform(1e-9)
+        #self.penalty_transform = ExpTransform()
+        self.penalty = penalty
+        self.register_buffer("penalty", self.penalty_)
+
+        self.sigma = sigma
+        self.register_buffer("sigma", self.sigma_)
+
+        self.verbose = verbose
+
+    @property
+    def penalty(self):
+        return self.penalty_transform(self.penalty_)
+
+    @property
+    def sigma(self):
+        return self.sigma_
+
+    @sigma.setter
+    def sigma(self, value):
+        if not isinstance(value, torch.Tensor):
+            value = torch.tensor(value)
+        self.sigma_ = value.clone().detach().to(device=self.device)
+
+    @penalty.setter
+    def penalty(self, value):
+        if not isinstance(value, torch.Tensor):
+            value = torch.tensor(value)
+        self.penalty_ = self.penalty_transform._inverse(value.clone().detach().to(device=self.device))
 
 
 class NystromKRRModelMixin(FakeTorchModelMixin):
@@ -202,8 +340,9 @@ class NystromKRRModelMixin(FakeTorchModelMixin):
         self.f_alpha_pc = model.beta_.detach()
         self.model = model
 
+    @abc.abstractmethod
     def predict(self, X):
-        return self.model.predict(X)
+        pass
 
     def get_model(self):
         if self.model is None:

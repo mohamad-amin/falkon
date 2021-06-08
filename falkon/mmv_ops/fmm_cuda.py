@@ -12,7 +12,7 @@ from falkon.cuda.cudart_gpu import cuda_memcpy2d_async
 from falkon.mmv_ops.utils import *
 from falkon.options import BaseOptions
 from falkon.sparse.sparse_tensor import SparseTensor
-from falkon.utils.cuda_helpers import copy_to_host_noorder, copy_to_host
+from falkon.utils.cuda_helpers import copy_to_host_noorder, copy_to_host, flk_copy
 from falkon.utils.helpers import (
     calc_gpu_block_sizes, sizeof_dtype,
     select_dim_over_nm, select_dim_over_nm_v2,
@@ -81,7 +81,8 @@ def _sparse_fmm(proc_idx, queue, device_id):
                 ddd = kernel._prepare_sparse(X1_chunk, X2_chunk)
                 cur_g_out = kernel._apply_sparse(X1_chunk_d, X2_chunk_d, cur_g_out)
                 cur_g_out = kernel._finalize(cur_g_out, ddd)
-                copy_to_host_noorder(ic, jc, cur_g_out, 0, 0, out, i, j, cpu_buf)
+                flk_copy(cur_g_out[:ic, :jc], cpu_buf[:ic, :jc])
+                out[i: i + ic, j: j + jc].copy_(cpu_buf[:ic, :jc])
                 del ddd, X1_chunk_d, X1_chunk
             del X2_chunk, X2_chunk_d
         del g_out
@@ -217,13 +218,7 @@ def _generic_fmm(proc_idx, queue, device_id):
                         # however, in case of C-contiguous inputs it will create an intermediate array
                         # which is undesired. We use cuda_memcpy2d_async which works well with C-contiguous
                         # arrays.
-                        if stride == "F":
-                            copy_to_host(ic, jc, cur_gout, 0, 0, cpu_buf, 0, 0, s=stream)
-                        else:
-                            cuda_memcpy2d_async(
-                                dst=cpu_buf.data_ptr(), dpitch=cpu_buf.stride(0) * dts,
-                                src=cur_gout.data_ptr(), spitch=cur_gout.stride(0) * dts,
-                                width=jc * dts, height=ic, stream=stream._as_parameter_)
+                        copy_to_host(ic, jc, cur_gout, 0, 0, cpu_buf, 0, 0, s=stream)
                         copy_ops[stream_id] = partial(do_copy_op, out, cpu_buf, i, ic, j, jc)
                     elif change_dtype:
                         out.narrow(0, i, ic).narrow(1, j, jc).copy_(cur_gout, non_blocking=True)

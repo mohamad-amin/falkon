@@ -2,7 +2,6 @@ import abc
 import time
 from typing import Sequence, Optional, Tuple, Union, Dict
 
-import numpy as np
 import torch
 import torch.distributions.constraints as constraints
 
@@ -38,7 +37,6 @@ class ExpTransform(torch.distributions.transforms.Transform):
 
     def _inverse(self, y):
         return torch.log(y)
-
 
 
 class PositiveTransform(torch.distributions.transforms.Transform):
@@ -183,8 +181,8 @@ def test_train_predict(model,
                        epoch: int,
                        time_start: float,
                        cum_time: float,
-                       Xval: Optional[torch.Tensor]=None,
-                       Yval: Optional[torch.Tensor]=None,
+                       Xval: Optional[torch.Tensor] = None,
+                       Yval: Optional[torch.Tensor] = None,
                        ):
     t_elapsed = time.time() - time_start  # Stop the time
     cum_time += t_elapsed
@@ -218,6 +216,13 @@ def get_start_sigma(sigma_init: float, sigma_type: str, d: int = None) -> torch.
     else:
         raise ValueError("sigma_type %s unrecognized" % (sigma_type))
     return start_sigma
+
+
+def get_scalar(t: torch.Tensor) -> float:
+    if t.dim() == 0:
+        return t.item()
+    return torch.flatten(t)[0]
+
 
 def cg(Ax, b, x0=None, max_iter=100, epsilon=1.0e-5):
     """ Conjugate Gradient
@@ -266,4 +271,3 @@ def cg(Ax, b, x0=None, max_iter=100, epsilon=1.0e-5):
 
 def cat_list_to_tensor(list_tx):
     return torch.cat([xx.view([-1]) for xx in list_tx])
-

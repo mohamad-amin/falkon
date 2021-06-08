@@ -6,7 +6,7 @@ from falkon.cuda import initialization
 from falkon.cuda.cusolver_gpu import *
 from falkon.utils import devices
 from falkon import la_helpers
-from falkon.utils.cuda_helpers import copy_to_device, copy_to_host
+from falkon.utils.cuda_helpers import copy_to_host, flk_copy
 from falkon.utils.helpers import choose_fn, sizeof_dtype
 # noinspection PyUnresolvedReferences
 from falkon.ooc_ops.cuda import parallel_potrf
@@ -65,7 +65,7 @@ def _ic_cholesky(A, upper, device, cusolver_handle):
             Agpu = A
         else:
             Agpu = create_fortran(A.shape, A.dtype, tc_device)
-            copy_to_device(n, n, A, 0, 0, Agpu, 0, 0)
+            flk_copy(A, Agpu)
 
         # Create workspace buffer
         potrf_bsize = potrf_buf_size(
@@ -81,7 +81,7 @@ def _ic_cholesky(A, upper, device, cusolver_handle):
 
         # Copy back to CPU
         if not A.is_cuda:
-            copy_to_host(n, n, Agpu, 0, 0, A, 0, 0)
+            flk_copy(Agpu, A)
             del Agpu
         del potrf_wspace, dev_info
     return A

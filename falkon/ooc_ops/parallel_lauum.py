@@ -7,7 +7,7 @@ import torch
 
 from falkon.cuda.cublas_gpu import *
 from falkon.cuda.cudart_gpu import cuda_memcpy2d_async
-from falkon.utils.cuda_helpers import copy_to_device, copy_to_host
+from falkon.utils.cuda_helpers import copy_to_device, copy_to_host, flk_copy
 from falkon.utils.helpers import choose_fn, sizeof_dtype
 from falkon.utils.tensor_helpers import create_fortran
 # noinspection PyUnresolvedReferences
@@ -121,12 +121,10 @@ def par_lauum_f_lower(A: torch.Tensor,
                     # of the triangular matrix. This depends on the `independent_output` flag.
                     Abb = A[bb.start:bb.end, bb.start:bb.end]
                     if independent_output:
-                        # cuda and non-cuda cases, since we have different orderings.
+                        # cuda and non-cuda cases, since we have different orderings (this will require extra buffer)
                         Abb.copy_(cur_lauum_out.T)
                     elif is_cuda:
-                        Abb.copy_(cur_lauum_out)
-                    else:
-                        copy_to_host(bb.length, bb.length, cur_lauum_out, 0, 0, Abb, 0, 0, s=s1)
+                        flk_copy(cur_lauum_out, Abb, s=s1)
                 elif r > b:
                     br = block_allocs[r]
 
@@ -166,13 +164,11 @@ def par_lauum_f_lower(A: torch.Tensor,
                         if is_cuda:
                             A[bb.start:bb.end, br.start:br.end].copy_(ccb[:br.length, :bb.length].T)
                         else:
-                            _temp_cpu = copy_to_host(br.length, bb.length, ccb, 0, 0, temp_bb, 0, 0, s1)
+                            _temp_cpu = flk_copy(ccb[:br.length, :bb.length], temp_bb[:br.length, :bb.length], s=s1)
                             s1.synchronize()
                             A[bb.start:bb.end, br.start:br.end].copy_(_temp_cpu.T)
-                    elif is_cuda:
-                        A[br.start:br.end, bb.start:bb.end].copy_(ccb[:br.length, :bb.length])
                     else:
-                        copy_to_host(br.length, bb.length, ccb, 0, 0, A, br.start, bb.start, s1)
+                        flk_copy(ccb[:br.length, :bb.length], A[br.start:br.end, bb.start:bb.end], s=s1)
             s1.synchronize()
 
 

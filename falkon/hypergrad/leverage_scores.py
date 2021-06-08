@@ -1,3 +1,4 @@
+import scipy.linalg
 import torch
 
 import falkon
@@ -288,6 +289,179 @@ def regloss_and_deff(
         solve_maxiter,
         gaussian_random,
     )
+
+
+# noinspection PyMethodOverriding
+class NoRegLossAndDeff(torch.autograd.Function):
+    EPS = 1e-6
+    NUM_DIFF_ARGS = 3
+    last_alpha = None
+
+    @staticmethod
+    def solve_falkon(X, centers, penalty, rhs, kernel_args, solve_options, solve_maxiter):
+        M_ = centers.detach()
+        kernel_args_ = kernel_args.detach()
+        K = GaussianKernel(kernel_args_, opt=solve_options)  # here which opt doesnt matter
+        precond = FalkonPreconditioner(penalty.item(), K, solve_options)  # here which opt doesnt matter
+        precond.init(M_)
+        optim = FalkonConjugateGradient(K, precond, solve_options)
+        beta = optim.solve(
+            X, M_, rhs, penalty.item(),
+            initial_solution=None,
+            max_iter=solve_maxiter,
+        )
+        sol_full = precond.apply(beta)  # eta, alpha
+        return sol_full
+
+    @staticmethod
+    def tri_inverse(T, lower):
+        if T.dtype == torch.float32:
+            Tinv = scipy.linalg.lapack.strtri(T.cpu().detach().numpy(), lower=lower, unitdiag=0, overwrite_c=1)
+        elif T.dtype == torch.float64:
+            Tinv = scipy.linalg.lapack.dtrtri(T.cpu().detach().numpy(), lower=lower, unitdiag=0, overwrite_c=1)
+        else:
+            raise TypeError("Dtype %s invalid" % (T.dtype))
+        if Tinv[1] != 0:
+            raise RuntimeError("TrTri failed ", Tinv[1])
+        return torch.from_numpy(Tinv[0]).to(device=T.device)
+
+    @staticmethod
+    def forward(
+            ctx,
+            kernel_args: torch.Tensor,
+            penalty: torch.Tensor,
+            M: torch.Tensor,
+            X: torch.Tensor,
+            Y: torch.Tensor,
+            t: int,
+            deterministic: bool,
+            use_precise_trace: bool,
+            solve_options: FalkonOptions,
+            solve_maxiter: int,
+            gaussian_random: bool,
+            ):
+        diff_kernel = DiffGaussianKernel(
+            kernel_args,
+            opt=FalkonOptions(keops_active="no"))
+
+        n = X.shape[0]
+        if deterministic:
+            torch.manual_seed(12)
+        if gaussian_random:
+            Z = torch.randn(n, t, dtype=X.dtype, device=X.device)
+        else:
+            Z = torch.empty(n, t, dtype=X.dtype, device=X.device).bernoulli_().mul_(2).sub_(1)
+
+        ZY = torch.cat((Z, Y), dim=1)
+        with torch.autograd.enable_grad():
+            k_vec_full = diff_kernel.mmv(M, X, ZY)
+            K_MM = full_rbf_kernel(M, M, kernel_args)
+
+        with torch.autograd.no_grad():
+            # Solve Falkon part 1
+            sol_full = NoRegLossAndDeff.solve_falkon(X, M, penalty, ZY, kernel_args, solve_options, solve_maxiter)
+            # sol_full is [eta, alpha]
+            RegLossAndDeff.last_alpha = sol_full[:, t:].clone()
+            y_tilde = diff_kernel.mmv(X, M, sol_full[:, t:])  # y_tilde = k_nm @ alpha
+        with torch.autograd.enable_grad():
+            kmn_ytilde = diff_kernel.mmv(M, X, y_tilde)  # k_nm.T @ y_tilde
+        with torch.autograd.no_grad():
+            # Solve Falkon part 2 (alpha_tilde = H^{-1} @ k_nm.T @ y_tilde
+            alpha_tilde = NoRegLossAndDeff.solve_falkon(X, M, penalty, kmn_ytilde, kernel_args, solve_options, solve_maxiter)
+
+        ### Trace terms
+        mm_eye = torch.eye(K_MM.shape[0], device=K_MM.device, dtype=K_MM.dtype)
+        with torch.autograd.enable_grad():
+            T = torch.cholesky(K_MM + mm_eye * RegLossAndDeff.EPS, upper=True)  # T.T @ T = K_MM
+        with torch.autograd.no_grad():
+            Tinv = NoRegLossAndDeff.tri_inverse(T, lower=0)
+        ### End Trace
+
+        # D-Eff = Tr((KNM @ KMM^{-1} @ KNM.T + lambda I)^{-1} KNM @ KMM^{-1} @ KNM.T)
+        d_eff = (k_vec_full[:, :t] * sol_full[:, :t]).sum(0).mean()
+        # Loss = Y.T @ Y - 2 Y.T @ KNM @ alpha + alpha.T @ KNM.T @ KNM @ alpha
+        loss = torch.square(Y).sum()
+        loss -= 2 * (k_vec_full[:, t:] * sol_full[:, t:]).sum(0).mean()
+        loss += torch.square(k_vec_full[:, t:]).sum(0).mean()
+        # Trace: Tr(K - KNM @ KMM^{-1} @ KNM.T)
+        trace = torch.square(diff_kernel.mmv(X, M, Tinv)).sum()
+
+        ctx.save_for_backward(kernel_args, penalty, M)
+        ctx.sol_full = sol_full
+        ctx.k_vec_full = k_vec_full
+        ctx.K_MM = K_MM
+        ctx.T = T
+        ctx.alpha_tilde = alpha_tilde
+        ctx.y_tilde = y_tilde
+        ctx.t = t
+        ctx.diff_kernel = diff_kernel
+        ctx.X = X
+        ctx.kmn_ytilde = kmn_ytilde
+
+        return d_eff, loss, trace
+
+    @staticmethod
+    def backward(ctx, out_deff, out_loss, out_trace):
+        sol_full, y_tilde, k_vec_full, K_MM, T, alpha_tilde, t, diff_kernel, X, kmn_ytilde = (
+            ctx.sol_full,
+            ctx.y_tilde,
+            ctx.k_vec_full,
+            ctx.K_MM,
+            ctx.T,
+            ctx.alpha_tilde,
+            ctx.t,
+            ctx.diff_kernel,
+            ctx.X,
+            ctx.kmn_ytilde,
+        )
+        n = X.shape[0]
+        kernel_args, penalty, M = ctx.saved_tensors
+
+        with torch.autograd.enable_grad():
+            KNM_sol_full = diff_kernel.mmv(X, M, sol_full)  # k_nm @ alpha  and  k_nm @ eta
+            KMM_sol_full = (penalty * n * K_MM) @ sol_full
+
+            # Effective dimension
+            deff_bg = -out_deff * (
+                2 * (k_vec_full[:, :t] * sol_full[:, :t]).sum(0).mean()
+                - (torch.square(KNM_sol_full[:, :t]).sum(0) + (sol_full[:, :t] * KMM_sol_full[:, :t]).sum(0)).mean()
+            )
+            # Loss without regularization
+            loss_bg = out_loss * (
+                -4 * (k_vec_full[:, t:] * sol_full[:, t:]).sum(0).mean()  # -4 * Y.T @ g(k_nm) @ alpha
+                + 2 * (torch.square(KNM_sol_full[:, t:]).sum(0) + (sol_full[:, t:] * KMM_sol_full[:, t:]).sum(0)).mean()  # 2 * alpha.T @ g(H) @ alpha
+                + 2 * (k_vec_full[:, t:] * alpha_tilde).sum(0).mean()  # 2 * Y.T @ g(k_nm) @ alpha_tilde
+                + 2 * (sol_full[:, t:] * kmn_ytilde).sum(0).mean()  # 2 * alpha.T @ g(k_nm.T) @ y_tilde
+                - 2 * ((KNM_sol_full[:, t:] * diff_kernel.mmv(X, M, alpha_tilde)).sum(0) + (KMM_sol_full[:, t:] * alpha_tilde).sum(0)).mean()  # -2 alpha @ g(H) @ alpha
+            )
+            # Trace with triangular inverse
+
+        #         trace_bg = -out_trace * (
+        #             1 / _penalty -
+        #             (
+        #                 2 * (k_vec_full[:, :t] * g).sum(0).mean()
+        #                 - torch.square(T @ g).sum(0).mean()
+        #             ) / (_penalty * n)
+        #         )
+        #
+        #     bg = deff_bg + loss_bg + trace_bg
+        #
+        # needs_grad = []
+        # for i in range(RegLossAndDeff.NUM_DIFF_ARGS):
+        #     if ctx.needs_input_grad[i]:
+        #         needs_grad.append(ctx.saved_tensors[i])
+        # grads = torch.autograd.grad(bg, needs_grad, retain_graph=True)
+        #
+        # result = []
+        # j = 0
+        # for i in range(len(ctx.needs_input_grad)):
+        #     if ctx.needs_input_grad[i]:
+        #         result.append(grads[j])
+        #         j += 1
+        #     else:
+        #         result.append(None)
+        # return tuple(result)
+
 
 
 # noinspection PyMethodOverriding
