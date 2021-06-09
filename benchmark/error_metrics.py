@@ -235,6 +235,10 @@ ERROR_METRICS: Dict[Dataset, List[ERROR_FN_TYPE]] = {
     Dataset.ICTUS: [binary_cerr],
     Dataset.SYNTH01NOISE: [rmse],
     Dataset.CHIET: [nrmse],
+    Dataset.ENERGY: [nrmse],
+    Dataset.BOSTON: [nrmse],
+    Dataset.PROTEIN: [nrmse],
+    Dataset.KIN40K: [nrmse],
 }
 TF_ERROR_METRICS: Dict[Dataset, ERROR_FN_TYPE] = {
     Dataset.TIMIT: timit_calc_error_tf,

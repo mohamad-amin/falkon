@@ -73,6 +73,10 @@ class Dataset(Enum):
     ICTUS = 'ictus'
     SYNTH01NOISE = 'synth-01noise'
     CHIET = 'chiet'
+    ENERGY = 'energy'
+    BOSTON = 'boston'
+    PROTEIN = 'protein'
+    KIN40K = 'kin40k'
 
     def __str__(self):
         return self.value

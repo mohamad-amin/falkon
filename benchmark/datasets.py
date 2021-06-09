@@ -927,6 +927,137 @@ class ChietDataset(BaseDataset):
         return self._dset_name
 
 
+class EnergyDataset(BaseDataset):
+    file_name = '/data/DATASETS/energy.hdf5'
+    _dset_name = 'ENERGY'
+    _default_train_frac = 0.8
+
+    @staticmethod
+    def read_data(dtype):
+        with h5py.File(EnergyDataset.file_name, 'r') as h5py_file:
+            X = np.array(h5py_file['X'], dtype=as_np_dtype(dtype))
+            Y = np.array(h5py_file['Y'], dtype=as_np_dtype(dtype))
+        return X, Y
+
+    @staticmethod
+    def split_data(X, Y, train_frac: Union[float, None]):
+        if train_frac is None:
+            train_frac = EnergyDataset._default_train_frac
+        idx_tr, idx_ts = equal_split(X.shape[0], train_frac)
+        return X[idx_tr], Y[idx_tr], X[idx_ts], Y[idx_ts]
+
+    @staticmethod
+    def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return standardize_x(Xtr, Xts)
+
+    @staticmethod
+    def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return Ytr.reshape((-1, 1)), Yts.reshape((-1, 1)), {}
+
+    def dset_name(self):
+        return self._dset_name
+
+
+class BostonDataset(BaseDataset):
+    file_name = '/data/DATASETS/boston.hdf5'
+    _dset_name = 'BOSTON'
+    _default_train_frac = 0.8
+
+    @staticmethod
+    def read_data(dtype):
+        with h5py.File(BostonDataset.file_name, 'r') as h5py_file:
+            X = np.array(h5py_file['X'], dtype=as_np_dtype(dtype))
+            Y = np.array(h5py_file['Y'], dtype=as_np_dtype(dtype))
+        return X, Y
+
+    @staticmethod
+    def split_data(X, Y, train_frac: Union[float, None]):
+        if train_frac is None:
+            train_frac = BostonDataset._default_train_frac
+        idx_tr, idx_ts = equal_split(X.shape[0], train_frac)
+        return X[idx_tr], Y[idx_tr], X[idx_ts], Y[idx_ts]
+
+    @staticmethod
+    def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return standardize_x(Xtr, Xts)
+
+    @staticmethod
+    def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return Ytr.reshape((-1, 1)), Yts.reshape((-1, 1)), {}
+
+    def dset_name(self):
+        return self._dset_name
+
+
+class ProteinDataset(BaseDataset):
+    file_name = '/data/DATASETS/protein.hdf5'
+    _dset_name = 'PROTEIN'
+    _default_train_frac = 0.8
+
+    @staticmethod
+    def read_data(dtype):
+        with h5py.File(ProteinDataset.file_name, 'r') as h5py_file:
+            X = np.array(h5py_file['X'], dtype=as_np_dtype(dtype))
+            Y = np.array(h5py_file['Y'], dtype=as_np_dtype(dtype))
+        return X, Y
+
+    @staticmethod
+    def split_data(X, Y, train_frac: Union[float, None]):
+        if train_frac is None:
+            train_frac = ProteinDataset._default_train_frac
+        idx_tr, idx_ts = equal_split(X.shape[0], train_frac)
+        return X[idx_tr], Y[idx_tr], X[idx_ts], Y[idx_ts]
+
+    @staticmethod
+    def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return standardize_x(Xtr, Xts)
+
+    @staticmethod
+    def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return Ytr.reshape((-1, 1)), Yts.reshape((-1, 1)), {}
+
+    def dset_name(self):
+        return self._dset_name
+
+
+class Kin40kDataset(BaseDataset):
+    file_name = '/data/DATASETS/kin40k.hdf5'
+    _dset_name = 'KIN40K'
+    _num_train = 10_000
+    _num_test = 30_000
+
+    @staticmethod
+    def read_data(dtype):
+        with h5py.File(Kin40kDataset.file_name, 'r') as h5py_file:
+            X_train = np.array(h5py_file['X_train'], dtype=as_np_dtype(dtype))
+            Y_train = np.array(h5py_file['Y_train'], dtype=as_np_dtype(dtype))
+            X_test = np.array(h5py_file['X_test'], dtype=as_np_dtype(dtype))
+            Y_test = np.array(h5py_file['Y_test'], dtype=as_np_dtype(dtype))
+        X = np.concatenate([X_train, X_test], axis=0)
+        Y = np.concatenate([Y_train, Y_test], axis=0)
+        return X, Y
+
+    @staticmethod
+    def split_data(X, Y, train_frac: Union[float, None]):
+        if train_frac is None:
+            idx_tr = np.arange(Kin40kDataset._num_train)
+            idx_ts = np.arange(Kin40kDataset._num_train, Kin40kDataset._num_train + Kin40kDataset._num_test)
+        else:
+            idx_tr, idx_ts = equal_split(X.shape[0], train_frac)
+        return X[idx_tr], Y[idx_tr], X[idx_ts], Y[idx_ts]
+
+    @staticmethod
+    def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return standardize_x(Xtr, Xts)
+
+    @staticmethod
+    def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return Ytr.reshape((-1, 1)), Yts.reshape((-1, 1)), {}
+
+    def dset_name(self):
+        return self._dset_name
+
+
 """ Public API """
 
 __LOADERS = {
@@ -946,6 +1077,10 @@ __LOADERS = {
     Dataset.ICTUS: IctusDataset(),
     Dataset.SYNTH01NOISE: SyntheticDataset(),
     Dataset.CHIET: ChietDataset(),
+    Dataset.ENERGY: EnergyDataset(),
+    Dataset.BOSTON: BostonDataset(),
+    Dataset.PROTEIN: ProteinDataset(),
+    Dataset.KIN40K: Kin40kDataset()
 }
 
 
