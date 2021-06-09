@@ -104,18 +104,18 @@ class SGPR(NystromKRRModelMixinN, HyperOptimModel):
         self.c = torch.triangular_solve(AY, self.LB, upper=False).solution / sqrt_var
 
         # Complexity
-        deff = -torch.log(torch.diag(self.LB)).sum()
-        deff += -0.5 * X.shape[0] * torch.log(variance)
+        logdet = torch.log(torch.diag(self.LB)).sum()
+        logdet += 0.5 * X.shape[0] * torch.log(variance)
         # Data-fit
-        datafit = -0.5 * torch.square(Y).sum() / variance
-        datafit += 0.5 * torch.square(self.c).sum()
+        datafit = 0.5 * torch.square(Y).sum() / variance
+        datafit -= 0.5 * torch.square(self.c).sum()
         # Traces
-        trace = -0.5 * Kdiag / variance
-        trace += 0.5 * torch.diag(AAT).sum()
+        trace = 0.5 * Kdiag / variance
+        trace -= 0.5 * torch.diag(AAT).sum()
 
-        const = -0.5 * X.shape[0] * torch.log(2 * torch.tensor(np.pi, dtype=X.dtype))
+        const = 0.5 * X.shape[0] * torch.log(2 * torch.tensor(np.pi, dtype=X.dtype))
 
-        return -deff, -datafit, -trace, -const
+        return logdet, datafit, trace, const
 
     def predict(self, X):
         if self.L is None or self.LB is None or self.c is None:
