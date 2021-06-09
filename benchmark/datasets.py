@@ -31,6 +31,15 @@ def standardize_x(Xtr, Xts):
     return Xtr, Xts, {}
 
 
+def mean_remove_y(Ytr, Yts):
+    mtr = np.mean(Ytr, dtype=np.float64).astype(Ytr.dtype)
+    Ytr -= mtr
+    Yts -= mtr
+    Ytr = Ytr.reshape((-1, 1))
+    Yts = Yts.reshape((-1, 1))
+    return Ytr, Yts, {'Y_mean': mtr}
+
+
 def as_np_dtype(dtype):
     if "float32" in str(dtype):
         return np.float32
@@ -916,12 +925,7 @@ class ChietDataset(BaseDataset):
 
     @staticmethod
     def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
-        mtr = np.mean(Ytr, dtype=np.float64).astype(Ytr.dtype)
-        Ytr -= mtr
-        Yts -= mtr
-        Ytr = Ytr.reshape((-1, 1))
-        Yts = Yts.reshape((-1, 1))
-        return Ytr, Yts, {'Y_mean': mtr}
+        return mean_remove_y(Ytr, Yts)
 
     def dset_name(self):
         return self._dset_name
@@ -952,7 +956,7 @@ class EnergyDataset(BaseDataset):
 
     @staticmethod
     def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
-        return Ytr.reshape((-1, 1)), Yts.reshape((-1, 1)), {}
+        return mean_remove_y(Ytr, Yts)
 
     def dset_name(self):
         return self._dset_name
@@ -983,7 +987,7 @@ class BostonDataset(BaseDataset):
 
     @staticmethod
     def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
-        return Ytr.reshape((-1, 1)), Yts.reshape((-1, 1)), {}
+        return mean_remove_y(Ytr, Yts)
 
     def dset_name(self):
         return self._dset_name
@@ -1014,7 +1018,7 @@ class ProteinDataset(BaseDataset):
 
     @staticmethod
     def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
-        return Ytr.reshape((-1, 1)), Yts.reshape((-1, 1)), {}
+        return mean_remove_y(Ytr, Yts)
 
     def dset_name(self):
         return self._dset_name
@@ -1052,7 +1056,7 @@ class Kin40kDataset(BaseDataset):
 
     @staticmethod
     def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
-        return Ytr.reshape((-1, 1)), Yts.reshape((-1, 1)), {}
+        return mean_remove_y(Ytr, Yts)
 
     def dset_name(self):
         return self._dset_name
