@@ -59,17 +59,14 @@ class NystromLOOCV(NystromKRRModelMixinN, HyperOptimModel):
     def hp_loss(self, X, Y):
         variance = self.penalty
         sqrt_var = torch.sqrt(variance)
-        Kdiag = X.shape[0]
 
         m = self.centers.shape[0]
         kmn = full_rbf_kernel(self.centers, X, self.sigma)
         kmm = (full_rbf_kernel(self.centers, self.centers, self.sigma) +
                torch.eye(m, device=X.device, dtype=X.dtype) * 1e-6)
         self.L = torch.cholesky(kmm)   # L @ L.T = kmm
-        # A = L^{-1} K_mn / (sqrt(n*pen))
         A = torch.triangular_solve(kmn, self.L, upper=False).solution / sqrt_var
         AAT = A @ A.T
-        # B = A @ A.T + I
         B = AAT + torch.eye(AAT.shape[0], device=X.device, dtype=X.dtype)
         self.LB = torch.cholesky(B)  # LB @ LB.T = B
 
@@ -78,15 +75,13 @@ class NystromLOOCV(NystromKRRModelMixinN, HyperOptimModel):
         # diag(S) = diag(C.T @ C) = sum(C * C, dim=-1)
         diag_s = torch.sum(torch.square(C), dim=-1)
 
+        self.c = C @ Y / sqrt_var
         # Now f(\alpha) = C.T @ C @ Y
-        d = C.T @ (C @ Y)
-
-        # Compute c (only useful for predictions)
-        self.c = torch.triangular_solve(A @ Y, self.LB, upper=False).solution / sqrt_var
+        d = C.T @ self.c * sqrt_var
 
         num = Y - d
-        den = 1 - diag_s
-        return (torch.sum((num / den)**2), )
+        den = 1.0 - diag_s
+        return (((num / den)**2).sum(0).mean(), )
 
     def predict(self, X):
         if self.L is None or self.LB is None or self.c is None:
