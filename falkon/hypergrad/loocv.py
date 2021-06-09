@@ -86,7 +86,7 @@ class NystromLOOCV(NystromKRRModelMixinN, HyperOptimModel):
 
         num = Y - d
         den = 1 - diag_s
-        return torch.sum((num / den)**2)
+        return (torch.sum((num / den)**2), )
 
     def predict(self, X):
         if self.L is None or self.LB is None or self.c is None:

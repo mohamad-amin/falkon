@@ -5,6 +5,7 @@ import torch
 
 from falkon import FalkonOptions
 from falkon.kernels import GaussianKernel
+from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
 from falkon.hypergrad.common import full_rbf_kernel, get_scalar, cg
 from falkon.hypergrad.complexity_reg import NystromKRRModelMixinN, HyperOptimModel
 
@@ -71,9 +72,9 @@ class NystromClosedFormHgrad(NystromKRRModelMixinN, HyperOptimModel):
         kmval = full_rbf_kernel(self.centers, Xval, self.sigma)
         tmp1 = torch.triangular_solve(kmval, self.L, upper=False).solution
         tmp2 = torch.triangular_solve(tmp1, self.LB, upper=False).solution
-        val_preds = tmp2 @ self.c
+        val_preds = tmp2.T @ self.c
 
-        return torch.sum(torch.square(Yval - val_preds))
+        return (torch.sum(torch.square(Yval - val_preds)), )
 
     def predict(self, X):
         if self.L is None or self.LB is None or self.c is None:
@@ -132,9 +133,9 @@ class NystromIFTHgrad(NystromKRRModelMixinN, HyperOptimModel):
 
         self.tr_indices = tr_indices
         self.ts_indices = ts_indices
-        self.cg_steps = 100
+        self.cg_steps = 10
         self.cg_tol = cg_tol
-        self.falkon_opt = FalkonOptions()
+        self.falkon_opt = FalkonOptions(use_cpu=not cuda, keops_active="no")
         self.alpha = None
 
     def compute_alpha(self, Xtr, Ytr) -> torch.Tensor:
@@ -158,19 +159,21 @@ class NystromIFTHgrad(NystromKRRModelMixinN, HyperOptimModel):
         return d
 
     def compute_val_loss(self, alpha, Xval, Yval) -> torch.Tensor:
-        kernel = GaussianKernel(self.sigma.detach(), self.falkon_opt)
+        kernel = DiffGaussianKernel(self.sigma, self.falkon_opt)
         preds = kernel.mmv(Xval, self.centers, alpha)
         return torch.mean((preds - Yval) ** 2)
 
     def compute_tr_loss(self, alpha, Xtr, Ytr) -> torch.Tensor:
-        kernel = GaussianKernel(self.sigma.detach(), self.falkon_opt)
+        kernel = DiffGaussianKernel(self.sigma, self.falkon_opt)
         preds = kernel.mmv(Xtr, self.centers, alpha)
         return torch.mean((preds - Ytr) ** 2) + self.penalty * alpha.T @ kernel.mmv(self.centers, self.centers, alpha)
 
     def hessian_vector_product(self, Xtr, vector) -> torch.Tensor:
+        vector = vector[0]
         kernel = GaussianKernel(self.sigma.detach(), self.falkon_opt)
-        return (kernel.mmv(self.centers, Xtr, kernel.mmv(Xtr, self.centers, vector)) +
-                self.penalty * kernel.mmv(self.centers, self.centers, vector))
+        return [kernel.dmmv(Xtr, self.centers, vector, None) + self.penalty * kernel.mmv(self.centers, self.centers, vector)]
+        return [(kernel.mmv(self.centers, Xtr, kernel.mmv(Xtr, self.centers, vector)) +
+                 self.penalty * kernel.mmv(self.centers, self.centers, vector))]
 
     def mixed_vector_product(self, first_derivative, vector) -> Iterable[torch.Tensor]:
         return torch.autograd.grad(first_derivative, self.parameters(), grad_outputs=vector, allow_unused=True)
@@ -185,6 +188,7 @@ class NystromIFTHgrad(NystromKRRModelMixinN, HyperOptimModel):
 
         with torch.autograd.no_grad():
             self.alpha = self.compute_alpha(Xtr, Ytr)
+        self.alpha.requires_grad_()
         with torch.autograd.enable_grad():
             val_loss = self.compute_val_loss(self.alpha, Xval, Yval)
         val_grad_alpha = torch.autograd.grad(val_loss, self.alpha, allow_unused=True, create_graph=False, retain_graph=True)
@@ -192,11 +196,11 @@ class NystromIFTHgrad(NystromKRRModelMixinN, HyperOptimModel):
 
         with torch.autograd.enable_grad():
             tr_loss = self.compute_tr_loss(self.alpha, Xtr, Ytr)
-            tr_grad_alpha = torch.autograd.grad(tr_loss, self.alpha, retain_graph=True)
+            tr_grad_alpha = torch.autograd.grad(tr_loss, self.alpha, create_graph=True)
 
         with torch.autograd.no_grad():
             hvp = partial(self.hessian_vector_product, Xtr)
-            vs, cg_iter_completed, hvp_time = cg(hvp, val_grad_alpha, max_iter=self.cg_steps, epsilon=self.cg_tol)
+            vs = cg(hvp, val_grad_alpha, max_iter=self.cg_steps, epsilon=self.cg_tol)
 
         # Multiply the mixed inner gradient by `vs`
         grads = self.mixed_vector_product(tr_grad_alpha, vs)
@@ -214,7 +218,7 @@ class NystromIFTHgrad(NystromKRRModelMixinN, HyperOptimModel):
             raise RuntimeError("Call hp_loss before calling predict.")
         # Predictions are handled directly.
         kms = full_rbf_kernel(self.centers, X, self.sigma)
-        return kms @ self.alpha.T
+        return kms.T @ self.alpha
 
     @property
     def losses_are_grads(self):

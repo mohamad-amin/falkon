@@ -58,7 +58,7 @@ def run_grid_search(
         seed: int):
     torch.manual_seed(seed)
     np.random.seed(seed)
-    Xtr, Ytr, Xts, Yts, metadata = get_load_fn(dataset)(np.float32, as_torch=True)
+    Xtr, Ytr, Xts, Yts, metadata = get_load_fn(dataset)(np.float64, as_torch=True)
     err_fns = get_err_fns(dataset)
 
     # Center selection (not on GPR!)

@@ -170,8 +170,8 @@ class HyperOptimModel(FakeTorchModelMixin, abc.ABC):
     def hp_loss(self, X, Y):
         pass
 
-    @abc.abstractmethod
     @property
+    @abc.abstractmethod
     def loss_names(self):
         pass
 
@@ -221,7 +221,12 @@ class NystromKRRModelMixinN(FakeTorchModelMixin, abc.ABC):
 
     @sigma.setter
     def sigma(self, value):
-        if not isinstance(value, torch.Tensor):
+        # sigma cannot be a 0D tensor.
+        if isinstance(value, float):
+            value = torch.tensor([value], dtype=self.penalty_.dtype)
+        elif isinstance(value, torch.Tensor) and value.dim() == 0:
+            value = torch.tensor([value.item()], dtype=value.dtype)
+        elif not isinstance(value, torch.Tensor):
             value = torch.tensor(value)
         self.sigma_ = value.clone().detach().to(device=self.device)
 
@@ -260,7 +265,12 @@ class KRRModelMixinN(FakeTorchModelMixin, abc.ABC):
 
     @sigma.setter
     def sigma(self, value):
-        if not isinstance(value, torch.Tensor):
+        # sigma cannot be a 0D tensor.
+        if isinstance(value, float):
+            value = torch.tensor([value], dtype=self.penalty_.dtype)
+        elif isinstance(value, torch.Tensor) and value.dim() == 0:
+            value = torch.tensor([value.item()], dtype=value.dtype)
+        elif not isinstance(value, torch.Tensor):
             value = torch.tensor(value)
         self.sigma_ = value.clone().detach().to(device=self.device)
 

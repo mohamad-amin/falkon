@@ -86,7 +86,8 @@ class NystromGCV(NystromKRRModelMixinN, HyperOptimModel):
         # Denomoinator
         C = torch.triangular_solve(A, self.LB, upper=False).solution
         denominator = (1 - torch.square(C).sum() / X.shape[0])**2
-        return numerator / denominator
+        loss = (numerator / denominator)[0]
+        return (loss, )
 
     def predict(self, X):
         if self.L is None or self.LB is None or self.c is None:
