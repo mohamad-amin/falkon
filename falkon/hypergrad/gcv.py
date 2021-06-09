@@ -57,7 +57,7 @@ class NystromGCV(NystromKRRModelMixinN, HyperOptimModel):
         if opt_centers:
             self.register_parameter("centers", self.centers_.requires_grad_(True))
 
-        self.L, self.LB, self.c = None, None, None
+        self.L, self.LB, self.d = None, None, None
 
     def hp_loss(self, X, Y):
         variance = self.penalty
@@ -76,27 +76,25 @@ class NystromGCV(NystromKRRModelMixinN, HyperOptimModel):
         self.LB = torch.cholesky(B)  # LB @ LB.T = B
 
         AY = A @ Y
-        # Now we need to compute A.T @ LB^{-T} @ LB^{-1} @ A @ Y
-        d = torch.triangular_solve(AY, self.LB, upper=False).solution
-        self.c = d / sqrt_var  # only for predictions
-        d = torch.triangular_solve(d, self.LB, upper=False, transpose=True).solution
-        d = A.T @ d
-        numerator = torch.square(d).sum(0) / X.shape[0]
+        # numerator is (1/n)*||(I - A.T @ LB^{-T} @ LB^{-1} @ A) @ Y||^2
+        # compute A.T @ LB^{-T} @ LB^{-1} @ A @ Y
+        tmp1 = torch.triangular_solve(AY, self.LB, upper=False).solution
+        tmp2 = torch.triangular_solve(tmp1, self.LB, upper=False, transpose=True).solution
+        self.d = tmp2 / sqrt_var  # only for predictions
+        tmp3 = Y - A.T @ tmp2
+        numerator = (1/X.shape[0]) * torch.square(tmp3).sum(0).mean()
 
-        # Denomoinator
+        # Denominator
         C = torch.triangular_solve(A, self.LB, upper=False).solution
         denominator = (1 - torch.square(C).sum() / X.shape[0])**2
-        loss = (numerator / denominator)[0]
-        return (loss, )
+        return ((numerator / denominator)[0], )
 
     def predict(self, X):
-        if self.L is None or self.LB is None or self.c is None:
+        if self.L is None or self.LB is None or self.d is None:
             raise RuntimeError("Call hp_loss before calling predict.")
-        # Predictions are handled directly.
         kms = full_rbf_kernel(self.centers, X, self.sigma)
-        tmp1 = torch.triangular_solve(kms, self.L, upper=False).solution
-        tmp2 = torch.triangular_solve(tmp1, self.LB, upper=False).solution
-        return tmp2.T @ self.c
+        tmp1 = torch.triangular_solve(self.d, self.L, upper=False, transpose=True).solution
+        return kms.T @ tmp1
 
     @property
     def loss_names(self):
