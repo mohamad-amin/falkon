@@ -44,7 +44,7 @@ class NystromClosedFormHgrad(NystromKRRModelMixinN, HyperOptimModel):
 
         self.tr_indices = tr_indices
         self.ts_indices = ts_indices
-        self.L, self.LB, self.c = None, None, None
+        self.alpha = None
 
     def hp_loss(self, X, Y):
         Xtr = X[self.tr_indices]
@@ -59,30 +59,29 @@ class NystromClosedFormHgrad(NystromKRRModelMixinN, HyperOptimModel):
         kmn = full_rbf_kernel(self.centers, Xtr, self.sigma)
         kmm = (full_rbf_kernel(self.centers, self.centers, self.sigma) +
                torch.eye(m, device=Xtr.device, dtype=Xtr.dtype) * 1e-6)
-        self.L = torch.cholesky(kmm)   # L @ L.T = kmm
+        kmval = full_rbf_kernel(self.centers, Xval, self.sigma)
+
+        L = torch.cholesky(kmm)   # L @ L.T = kmm
         # A = L^{-1} K_mn / (sqrt(n*pen))
-        A = torch.triangular_solve(kmn, self.L, upper=False).solution / sqrt_var
+        A = torch.triangular_solve(kmn, L, upper=False).solution / sqrt_var
         AAT = A @ A.T
         # B = A @ A.T + I
         B = AAT + torch.eye(AAT.shape[0], device=Xtr.device, dtype=Xtr.dtype)
-        self.LB = torch.cholesky(B)  # LB @ LB.T = B
+        LB = torch.cholesky(B)  # LB @ LB.T = B
         AYtr = A @ Ytr
-        self.c = torch.triangular_solve(AYtr, self.LB, upper=False).solution / sqrt_var
+        c = torch.triangular_solve(AYtr, LB, upper=False).solution / sqrt_var
 
-        kmval = full_rbf_kernel(self.centers, Xval, self.sigma)
-        tmp1 = torch.triangular_solve(kmval, self.L, upper=False).solution
-        tmp2 = torch.triangular_solve(tmp1, self.LB, upper=False).solution
-        val_preds = tmp2.T @ self.c
+        tmp1 = torch.triangular_solve(c, LB, upper=False, transpose=True).solution
+        self.alpha = torch.triangular_solve(tmp1, L, upper=False, transpose=True).solution
+        val_preds = kmval.T @ self.alpha
 
         return (torch.sum(torch.square(Yval - val_preds)), )
 
     def predict(self, X):
-        if self.L is None or self.LB is None or self.c is None:
+        if self.alpha is None:
             raise RuntimeError("Call hp_loss before calling predict.")
         kms = full_rbf_kernel(self.centers, X, self.sigma)
-        tmp1 = torch.triangular_solve(kms, self.L, upper=False).solution
-        tmp2 = torch.triangular_solve(tmp1, self.LB, upper=False).solution
-        return tmp2.T @ self.c
+        return kms.T @ self.alpha
 
     @property
     def loss_names(self):
