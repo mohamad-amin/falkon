@@ -4,8 +4,8 @@ from typing import Optional, Dict, List, Any
 import torch
 from dataclasses import dataclass
 
+from falkon.hypergrad.creg import DeffNoPenFitTr, DeffPenFitTr
 from falkon.hypergrad.hgrad import NystromClosedFormHgrad, NystromIFTHgrad
-
 from falkon.hypergrad.common import get_start_sigma, get_scalar
 from falkon.hypergrad.complexity_reg import HyperOptimModel, hp_grad
 from falkon.hypergrad.gcv import NystromGCV
@@ -204,6 +204,14 @@ def init_model(model_type, data, penalty_init, sigma_init, centers_init, opt_pen
                                 centers_init=centers_init, opt_centers=opt_centers,
                                 opt_sigma=opt_sigma, opt_penalty=opt_penalty, cuda=cuda,
                                 tr_indices=tr_idx, ts_indices=val_idx, cg_tol=cg_tol)
+    elif model_type == "creg-penfit":
+        model = DeffPenFitTr(sigma_init=start_sigma, penalty_init=penalty_init,
+                             centers_init=centers_init, opt_sigma=opt_sigma,
+                             opt_penalty=opt_penalty, opt_centers=opt_centers, cuda=cuda)
+    elif model_type == "creg-nopenfit":
+        model = DeffNoPenFitTr(sigma_init=start_sigma, penalty_init=penalty_init,
+                               centers_init=centers_init, opt_sigma=opt_sigma,
+                               opt_penalty=opt_penalty, opt_centers=opt_centers, cuda=cuda)
     else:
         raise RuntimeError(f"{model_type} model type not recognized!")
 
