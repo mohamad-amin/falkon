@@ -91,10 +91,12 @@ def mse(y_true, y_pred):
 
     y_mean = np.abs(np.mean(y_true))
 
-    return math.sqrt(np.mean((y_true.reshape(-1) - y_pred.reshape(-1))**2)) / y_mean, "nrmse"
+    return math.sqrt(np.mean((y_true.reshape(-1) - y_pred.reshape(-1))**2)), "rmse"
+    #return math.sqrt(np.mean((y_true.reshape(-1) - y_pred.reshape(-1))**2)) / y_mean, "nrmse"
 
 
 def preprocess_dataset(X, Y, n_train):
+    np.random.seed(10)
     shuffle = np.random.permutation(X.shape[0])
     X = X[shuffle]
     Y = Y[shuffle]
@@ -111,6 +113,12 @@ def preprocess_dataset(X, Y, n_train):
     Xts /= std
     # Preprocess Y
     #norm = torch.linalg.norm(Ytr)
+    ymean = Ytr.mean()
+    ystd  = Ytr.std()
+    Ytr -= ymean
+    Yts -= ymean
+    Ytr /= ystd
+    Yts /= ystd
     #Ytr /= norm
     #Yts /= norm
     return Xtr, Ytr, Xts, Yts
@@ -193,7 +201,8 @@ def krr_test_error(Xtr, Xts, Ytr, Yts, kernel, la):
     return err
 
 
-def choose_centers(Xtr, M, random=False):
+def choose_centers(Xtr, M, random=False, seed=19):
+    torch.manual_seed(seed)
     if random:
         return torch.randn(M, Xtr.shape[1], dtype=Xtr.dtype, device=Xtr.device)
     else:
@@ -241,13 +250,14 @@ def train_sgpr_like(opt_model,
     )
     ## Closed-form baselines
     penalty = model.penalty_val.detach()
-    tr_err_krr = krr_train_error(Xtr, Xts, Ytr, Yts, kernel, penalty)
-    ts_err_krr = krr_test_error(Xtr, Xts, Ytr, Yts, kernel, penalty)
-    Bnm, Gmm, Bnm_test = get_svd_bg(Xtr, centers_init.shape[0], kernel, Xts)
-    tr_err_svd = get_train_error(Bnm, Bnm_test, Gmm, Ytr, Yts, penalty)
-    ts_err_svd = get_test_error(Bnm, Bnm_test, Gmm, Ytr, Yts, penalty)
+    #tr_err_krr = krr_train_error(Xtr, Xts, Ytr, Yts, kernel, penalty)
+    #ts_err_krr = krr_test_error(Xtr, Xts, Ytr, Yts, kernel, penalty)
+    #Bnm, Gmm, Bnm_test = get_svd_bg(Xtr, centers_init.shape[0], kernel, Xts)
+    #tr_err_svd = get_train_error(Bnm, Bnm_test, Gmm, Ytr, Yts, penalty)
+    #ts_err_svd = get_test_error(Bnm, Bnm_test, Gmm, Ytr, Yts, penalty)
     ## Run SGD training
     train_errors, test_errors, fro_errors = [], [], []
+    penalties, sigmas = [], []
     opt_hp = torch.optim.Adam(model.parameters(), lr=lr)
     cum_time, cum_step = 0, 0
     for epoch in range(epochs):
@@ -259,25 +269,29 @@ def train_sgpr_like(opt_model,
         reporting(model.named_parameters(), grads, losses, model.loss_names, verbose=False, step=cum_step)
         opt_hp.step()
 
-        model.adapt_alpha(Xtr, Ytr)
+        #model.adapt_alpha(Xtr, Ytr)
         cum_time, train_err, test_err = test_train_predict(
             model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
             err_fn=mse, epoch=epoch, time_start=e_start, cum_time=cum_time)
         # Frobenius error: the squared-frobenius norm of the difference between the
         # kernel matrix with the optimized centers (Nystrom), and the kernel
         # matrix obtained by truncated-SVD of the kernel (with the same number of sing-vecs)
-        fro_errors.append(compare_ker_fro(model, Xtr))
+        #fro_errors.append(compare_ker_fro(model, Xtr))
         train_errors.append(train_err)
         test_errors.append(test_err)
-        print("Fro err: %.3f" % (fro_errors[-1]))
+        penalties.append(model.penalty_val.detach().cpu().item())
+        sigmas.append(model.sigma.detach().cpu().item())
+        #print("Fro err: %.3f" % (fro_errors[-1]))
         cum_step += 1
 
     return {
         "tr_errs": np.asarray(train_errors),
         "ts_errs": np.asarray(test_errors),
         "fro_errs": np.asarray(fro_errors),
-        "tr_err_krr": tr_err_krr,
-        "ts_err_krr": ts_err_krr,
-        "tr_err_svd": tr_err_svd,
-        "ts_err_svd": ts_err_svd,
+        #"tr_err_krr": tr_err_krr,
+        #"ts_err_krr": ts_err_krr,
+        #"tr_err_svd": tr_err_svd,
+        #"ts_err_svd": ts_err_svd,
+        "sigma": np.asarray(sigmas),
+        "penalty": np.asarray(penalties),
     }

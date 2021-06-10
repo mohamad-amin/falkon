@@ -57,7 +57,7 @@ class NystromLOOCV(NystromKRRModelMixinN, HyperOptimModel):
         self.L, self.LB, self.c = None, None, None
 
     def hp_loss(self, X, Y):
-        variance = self.penalty
+        variance = self.penalty * X.shape[0]
         sqrt_var = torch.sqrt(variance)
 
         m = self.centers.shape[0]
@@ -72,8 +72,7 @@ class NystromLOOCV(NystromKRRModelMixinN, HyperOptimModel):
 
         # C = LB^{-1} A
         C = torch.triangular_solve(A, self.LB, upper=False).solution
-        # diag(S) = diag(C.T @ C) = sum(C * C, dim=-1)
-        diag_s = torch.sum(torch.square(C), dim=-1)
+        diag_s = torch.diag(C.T @ C)
 
         self.c = C @ Y / sqrt_var
         # Now f(\alpha) = C.T @ C @ Y
