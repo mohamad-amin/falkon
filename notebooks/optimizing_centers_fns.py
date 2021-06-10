@@ -1,14 +1,16 @@
-import time
 import math
+import time
 
-import torch
 import numpy as np
+import torch
 from libsvmdata import fetch_libsvm
 
 import falkon
-from falkon.hypergrad.complexity_reg import GPComplexityReg, SimpleFalkonComplexityReg, TrainableSGPR, reporting, NoRegFalkonComplexityReg
 from falkon.hypergrad.common import test_train_predict
-
+from falkon.hypergrad.complexity_reg import (
+    GPComplexityReg, SimpleFalkonComplexityReg, reporting,
+    NoRegFalkonComplexityReg
+)
 
 dset_sigmas_15la = {
     "cpusmall": 8.,

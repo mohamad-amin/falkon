@@ -109,7 +109,7 @@ class SGPR(NystromKRRModelMixinN, HyperOptimModel):
         # Data-fit
         datafit = 0.5 * torch.square(Y).sum() / variance
         datafit -= 0.5 * torch.square(self.c).sum()
-        # Traces
+        # Traces (minimize)
         trace = 0.5 * Kdiag / variance
         trace -= 0.5 * torch.diag(AAT).sum()
 

@@ -57,7 +57,7 @@ def run_gmap_exp(dataset: Dataset,
                                     hessian_cg_tol=hessian_cg_tol,
                                     loss=loss,
                                     err_fns=err_fns,
-                                   )
+                                    )
     out_fn = f"./logs/gd_map_{dataset}_{int(datetime.datetime.timestamp(datetime.datetime.now()) * 1000)}.csv"
     print("Saving gradient map to %s" % (out_fn))
     df.to_csv(out_fn)
@@ -72,13 +72,16 @@ def run_gpflow(dataset: Dataset,
                seed: int,
                gradient_map: bool,
                ):
+    np.random.seed(seed)
     batch_size = 1000
     dt = np.float64
     model_type = "sgpr"
     import gpflow
+    import tensorflow as tf
     import tensorflow_probability as tfp
     gpflow.config.set_default_float(dt)
     from gpflow_model import TrainableSVGP, TrainableSGPR, TrainableGPR
+    tf.random.set_seed(seed)
 
     # Load data
     Xtr, Ytr, Xts, Yts, metadata = get_load_fn(dataset)(dt, as_torch=False, as_tf=True)
@@ -109,28 +112,27 @@ def run_gpflow(dataset: Dataset,
     gpflow.set_trainable(kernel.variance, False)
     gpflow.set_trainable(kernel.lengthscales, True)
 
-
     if model_type == "sgpr":
         gpflow_model = TrainableSGPR(kernel,
-                                       centers,
-                                       num_iter=num_iter,
-                                       err_fn=err_fns[0],
-                                       train_hyperparams=True,
-                                       lr=lr,
-                                       )
+                                     centers,
+                                     num_iter=num_iter,
+                                     err_fn=err_fns[0],
+                                     train_hyperparams=opt_centers,
+                                     lr=lr,
+                                     )
     elif model_type == "svgp":
         gpflow_model = TrainableSVGP(kernel,
-                                       centers,
-                                       batch_size=batch_size,
-                                       num_iter=num_iter,
-                                       err_fn=err_fns[0],
-                                       var_dist="full",
-                                       classif=None,
-                                       error_every=10,
-                                       train_hyperparams=False,
-                                       optimize_centers=False,
-                                       lr=lr,
-                                       natgrad_lr=0.1)
+                                     centers,
+                                     batch_size=batch_size,
+                                     num_iter=num_iter,
+                                     err_fn=err_fns[0],
+                                     var_dist="full",
+                                     classif=None,
+                                     error_every=10,
+                                     train_hyperparams=False,
+                                     optimize_centers=False,
+                                     lr=lr,
+                                     natgrad_lr=0.1)
     elif model_type == "gpr":
         gpflow_model = TrainableGPR(kernel,
                                     num_iter=num_iter,
@@ -143,7 +145,8 @@ def run_gpflow(dataset: Dataset,
     if gradient_map:
         if model_type not in ["sgpr", "svgp"]:
             raise ValueError("Gradient-map only doable with SGPR or SVGP models")
-        df = gpflow_model.gradient_map(Xtr, Ytr, Xts, Yts, variance_list=np.linspace(0.1, 2.0, 20), lengthscale_list=np.linspace(1, 20, 20))
+        df = gpflow_model.gradient_map(Xtr, Ytr, Xts, Yts, variance_list=np.linspace(0.1, 2.0, 20),
+                                       lengthscale_list=np.linspace(1, 20, 20))
         out_fn = f"./logs/gd_map_{model_type}_{dataset}_{int(datetime.datetime.timestamp(datetime.datetime.now()) * 1000)}.csv"
         print("Saving gradient map to %s" % (out_fn))
         df.to_csv(out_fn)
@@ -200,7 +203,8 @@ def run_nkrr(dataset: Dataset,
 
     # Initialize Falkon model
     falkon_opt = FalkonOptions(use_cpu=False, debug=False, cg_tolerance=1e-8, pc_epsilon_32=1e-6,
-                               min_cuda_pc_size_32=100, min_cuda_iter_size_32=100, never_store_kernel=True)
+                               min_cuda_pc_size_32=100, min_cuda_iter_size_32=100,
+                               never_store_kernel=True)
 
     if mode == "nkrr":
         nkrr_ho(
@@ -322,7 +326,10 @@ def run_exp(dataset: Dataset,
     np.random.seed(seed)
     from falkon import FalkonOptions
     from falkon.center_selection import FixedSelector, UniformSelector
-    from falkon.hypergrad.falkon_ho import run_falkon_hypergrad, ValidationLoss, stochastic_flk_hypergrad
+    from falkon.hypergrad.falkon_ho import (
+        run_falkon_hypergrad, ValidationLoss,
+        stochastic_flk_hypergrad
+    )
     torch.autograd.set_detect_anomaly(True)
     loss = ValidationLoss(loss)
 
@@ -331,7 +338,7 @@ def run_exp(dataset: Dataset,
 
     # We use a validation split (redefinition of Xtr, Ytr).
     if train_frac < 1.0:
-        #idx_tr, idx_val = equal_split(Xtr.shape[0], train_frac=train_frac)
+        # idx_tr, idx_val = equal_split(Xtr.shape[0], train_frac=train_frac)
         n_train = int(Xtr.shape[0] * train_frac)
         idx_tr = torch.arange(n_train)
         idx_val = torch.arange(n_train, Xtr.shape[0])
@@ -344,8 +351,10 @@ def run_exp(dataset: Dataset,
     fmt_str = f"Dataset:{dataset}, cuda:{cuda}, sgd:{sgd}, warm_start:{warm_start}, cg_tol:{cg_tol}, opt-centers:{opt_centers}, loss:{loss}\n"
     fmt_str += f"hp-lr:{outer_lr}, {sigma_type} sigma, training-fraction:{train_frac}"
     if sgd: fmt_str += f", batch size:{batch_size}"
-    if 'centers' in metadata: fmt_str += f", stored centers"
-    else: fmt_str += ", fixed centers"
+    if 'centers' in metadata:
+        fmt_str += f", stored centers"
+    else:
+        fmt_str += ", fixed centers"
 
     print("Starting FalkonHO training.")
     print(fmt_str)
@@ -367,16 +376,18 @@ def run_exp(dataset: Dataset,
     falkon_opt = FalkonOptions(use_cpu=False, debug=False, cg_tolerance=cg_tol)
 
     t_s = time.time()
+
     def cback(i, model):
         if i % error_every != 0:
             return
         train_pred = model.predict(data['Xtr'].cuda())
-        #val_pred = model.predict(data['Xts'])
+        # val_pred = model.predict(data['Xts'])
         val_pred = model.predict(Xts.cuda())
         train_err, err = err_fns[0](data['Ytr'].cpu(), train_pred.cpu(), **metadata)
-        #val_err, err = err_fns[0](data['Yts'].cpu(), val_pred.cpu(), **metadata)
+        # val_err, err = err_fns[0](data['Yts'].cpu(), val_pred.cpu(), **metadata)
         val_err, err = err_fns[0](Yts.cpu(), val_pred.cpu(), **metadata)
-        print(f"Iteration {i} ({time.time() - t_s:.2f}s) - Train {err}: {train_err:.5f} -- Test {err}: {val_err:.5f}")
+        print(
+            f"Iteration {i} ({time.time() - t_s:.2f}s) - Train {err}: {train_err:.5f} -- Test {err}: {val_err:.5f}")
 
     if sgd:
         hps, val_loss, hgrads, best_model, times = stochastic_flk_hypergrad(
@@ -502,7 +513,6 @@ if __name__ == "__main__":
     p.add_argument('--loss-type', type=str, default='reg',
                    help="Loss to use in FLK_FIX NKRR setting. can either be regularized loss or just the squared loss")
 
-
     args = p.parse_args()
     print("-------------------------------------------")
     print(datetime.datetime.now())
@@ -532,6 +542,7 @@ if __name__ == "__main__":
                      )
     elif args.nkrr:
         from summary import get_writer
+
         get_writer(args.name)
         run_nkrr(dataset=args.dataset,
                  num_epochs=args.steps,
