@@ -2,7 +2,7 @@ from typing import Dict, Callable, Any, Tuple, List, Generator, Union
 
 import numpy as np
 
-from benchmark_utils import Dataset
+from .benchmark_utils import Dataset
 
 
 def _ensure_numpy(*arrays) -> Generator[np.ndarray, None, None]:

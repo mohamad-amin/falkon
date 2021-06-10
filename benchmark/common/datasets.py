@@ -6,7 +6,7 @@ import numpy as np
 import scipy.io as scio
 import scipy.sparse
 
-from benchmark_utils import Dataset
+from .benchmark_utils import Dataset
 
 __all__ = (
     "get_load_fn", "get_cv_fn",
