@@ -5,11 +5,12 @@ import functools
 
 import numpy as np
 import pandas as pd
-from falkon.hypergrad.nkrr_ho import flk_nkrr_ho_fix
+#from falkon.hypergrad.nkrr_ho import flk_nkrr_ho_fix
 
 from datasets import get_load_fn, equal_split
 from benchmark_utils import *
 from error_metrics import get_err_fns, mse
+from falkon.center_selection import UniformSelector
 
 
 def run_gmap_exp(dataset: Dataset,
@@ -71,11 +72,13 @@ def run_gpflow(dataset: Dataset,
                opt_centers: bool,
                seed: int,
                gradient_map: bool,
+               num_centers: int,
                ):
     np.random.seed(seed)
     batch_size = 1000
     dt = np.float64
     model_type = "sgpr"
+    import torch
     import gpflow
     import tensorflow as tf
     import tensorflow_probability as tfp
@@ -87,16 +90,23 @@ def run_gpflow(dataset: Dataset,
     Xtr, Ytr, Xts, Yts, metadata = get_load_fn(dataset)(dt, as_torch=False, as_tf=True)
     err_fns = get_err_fns(dataset)
     err_fns = [functools.partial(fn, **metadata) for fn in err_fns]
-    centers = metadata['centers'].astype(dt)
+    if 'centers' in metadata:
+        centers = metadata['centers'].astype(dt)
+    else:
+        selector = UniformSelector(np.random.default_rng(seed))
+        centers = selector.select(torch.from_numpy(Xtr), None, num_centers)
+        centers = centers.numpy()
 
     # We use a validation split (redefinition of Xtr, Ytr).
-    if not gradient_map:
+    if False and not gradient_map:
         train_frac = 0.8
         idx_tr, idx_val = equal_split(Xtr.shape[0], train_frac=train_frac)
         Xval, Yval = Xtr[idx_val], Ytr[idx_val]
         Xtr, Ytr = Xtr[idx_tr], Ytr[idx_tr]
         print("Splitting data for validation and testing: Have %d train - %d validation samples" %
               (Xtr.shape[0], Xval.shape[0]))
+    else:
+        Xval, Yval = Xts, Yts
 
     # Data are divided by `lengthscales`
     # variance is multiplied outside of the exponential
@@ -529,6 +539,7 @@ if __name__ == "__main__":
                    sigma_init=args.sigma_init,
                    opt_centers=args.optimize_centers,
                    seed=args.seed,
+                   num_centers=args.M,
                    gradient_map=args.map_gradient,
                    )
     elif args.map_gradient:
