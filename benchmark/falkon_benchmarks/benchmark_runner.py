@@ -1,15 +1,14 @@
 import argparse
 import functools
-import os
 import sys
 import time
 from typing import Optional, List
 
 import numpy as np
 
-from benchmark_utils import *
-from datasets import get_load_fn, get_cv_fn
-from error_metrics import get_err_fns, get_tf_err_fn
+from common.benchmark_utils import *
+from common.datasets import get_load_fn, get_cv_fn
+from common.error_metrics import get_err_fns, get_tf_err_fn
 
 RANDOM_SEED = 123
 EPRO_DIRECTORY = "../../EigenPro2"
@@ -131,7 +130,7 @@ def run_gpytorch_sgpr(dset: Dataset,
                       seed: int,
                       ):
     import torch
-    from gpytorch_sgpr import GpytorchSGPR
+    from models.gpytorch_sgpr import GpytorchSGPR
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -193,7 +192,7 @@ def run_gpytorch(dset: Dataset,
                  ):
     import torch
     import gpytorch
-    from gpytorch_variational_models import TwoClassVGP, RegressionVGP, MultiClassVGP
+    from models.gpytorch_variational_models import TwoClassVGP, RegressionVGP, MultiClassVGP
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -445,7 +444,7 @@ def run_sgpr_gpflow(dset: Dataset,
                     ):
     import tensorflow as tf
     import gpflow
-    from gpflow_model import TrainableSGPR
+    from models.gpflow_model import TrainableSGPR
     tf.random.set_seed(seed)
     np.random.seed(seed)
 
@@ -508,7 +507,7 @@ def run_gpflow(dset: Dataset,
                ):
     import tensorflow as tf
     import gpflow
-    from gpflow_model import TrainableSVGP
+    from models.gpflow_model import TrainableSVGP
     tf.random.set_seed(seed)
     np.random.seed(seed)
 

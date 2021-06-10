@@ -11,7 +11,7 @@ from falkon.hypergrad.complexity_reg import HyperOptimModel, hp_grad
 from falkon.hypergrad.gcv import NystromGCV
 from falkon.hypergrad.loocv import NystromLOOCV
 from falkon.hypergrad.sgpr import GPR, SGPR
-from summary import get_writer
+from benchmark.common.summary import get_writer
 
 __all__ = [
     "train_complexity_reg",

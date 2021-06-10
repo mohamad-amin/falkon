@@ -16,9 +16,9 @@ import time
 import numpy as np
 import torch
 
-from benchmark_utils import DataType, Dataset
-from datasets import get_load_fn
-from error_metrics import get_err_fns
+from common.benchmark_utils import DataType, Dataset
+from common.datasets import get_load_fn
+from common.error_metrics import get_err_fns
 import falkon
 from falkon import kernels
 from falkon.cuda import initialization

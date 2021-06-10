@@ -1,19 +1,17 @@
 from collections import defaultdict
 import argparse
 import functools
-import time
 import datetime
-from typing import Optional, List
+from typing import Optional
 
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
 
-from benchmark_utils import *
-from datasets import get_load_fn, get_cv_fn, equal_split
-from error_metrics import get_err_fns, get_tf_err_fn
+from common.benchmark_utils import *
+from common.datasets import get_load_fn, equal_split
+from common.error_metrics import get_err_fns
 
-from falkon import kernels
 from falkon.models import falkon
 from falkon.utils import TicToc
 from falkon.hypergrad.falkon_ho import run_falkon_hypergrad

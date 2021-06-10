@@ -1,6 +1,5 @@
 import abc
 import time
-from typing import List
 from functools import reduce
 
 import torch
@@ -13,10 +12,10 @@ except:
     pass  # No GPU
 from falkon import FalkonOptions
 from falkon.center_selection import FixedSelector, CenterSelector
-from falkon.hypergrad.common import full_rbf_kernel, test_train_predict, get_start_sigma, PositiveTransform, ExpTransform
+from falkon.hypergrad.common import full_rbf_kernel, test_train_predict, get_start_sigma, PositiveTransform
 from falkon.hypergrad.leverage_scores import regloss_and_deff, RegLossAndDeff
 from falkon.kernels import GaussianKernel
-from summary import get_writer
+from benchmark.common.summary import get_writer
 
 
 def sgpr_calc(X, Y, centers, sigma, penalty, compute_C: bool):

@@ -4,12 +4,11 @@ import functools
 
 import torch
 
-from summary import get_writer
+from benchmark.common.summary import get_writer
 import falkon
 from falkon import FalkonOptions
 from falkon.kernels import GaussianKernel
 from falkon.optim import ConjugateGradient
-from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
 from falkon.hypergrad.common import get_start_sigma, test_train_predict, cg, full_rbf_kernel
 from falkon.center_selection import FixedSelector, CenterSelector
 

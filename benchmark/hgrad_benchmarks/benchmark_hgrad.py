@@ -7,9 +7,9 @@ import numpy as np
 import pandas as pd
 #from falkon.hypergrad.nkrr_ho import flk_nkrr_ho_fix
 
-from datasets import get_load_fn, equal_split
-from benchmark_utils import *
-from error_metrics import get_err_fns, mse
+from common.datasets import get_load_fn, equal_split
+from common.benchmark_utils import *
+from common.error_metrics import get_err_fns
 from falkon.center_selection import UniformSelector
 
 
@@ -24,7 +24,7 @@ def run_gmap_exp(dataset: Dataset,
     torch.manual_seed(seed)
     from falkon import FalkonOptions
     from falkon.center_selection import FixedSelector
-    from falkon.hypergrad.falkon_ho import run_falkon_hypergrad, map_gradient, ValidationLoss
+    from falkon.hypergrad.falkon_ho import map_gradient, ValidationLoss
 
     loss = ValidationLoss(loss)
     err_fns = get_err_fns(dataset)
@@ -83,7 +83,7 @@ def run_gpflow(dataset: Dataset,
     import tensorflow as tf
     import tensorflow_probability as tfp
     gpflow.config.set_default_float(dt)
-    from gpflow_model import TrainableSVGP, TrainableSGPR, TrainableGPR
+    from models.gpflow_model import TrainableSVGP, TrainableSGPR, TrainableGPR
     tf.random.set_seed(seed)
 
     # Load data
@@ -552,7 +552,7 @@ if __name__ == "__main__":
                      seed=args.seed,
                      )
     elif args.nkrr:
-        from summary import get_writer
+        from common.summary import get_writer
 
         get_writer(args.name)
         run_nkrr(dataset=args.dataset,

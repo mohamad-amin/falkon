@@ -2,7 +2,6 @@ import itertools
 import time
 import math
 
-from reprint import output
 import numpy as np
 import torch
 import torch.nn as nn
@@ -11,15 +10,14 @@ from falkon.optim import ConjugateGradient
 import falkon
 from falkon.center_selection import FixedSelector, CenterSelector
 from falkon.hypergrad.leverage_scores import (
-    subs_deff_simple, gauss_effective_dimension,
+    gauss_effective_dimension,
     gauss_nys_effective_dimension, loss_and_deff,
     regloss_and_deff, LossAndDeff, RegLossAndDeff,
-    sgpr_trace,
 )
 from falkon.hypergrad.common import FastTensorDataLoader
 from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
 from falkon.kernels import GaussianKernel
-from summary import get_writer
+from benchmark.common.summary import get_writer
 
 
 def test_predict(model,
