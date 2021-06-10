@@ -10,10 +10,10 @@ import numpy as np
 import pandas as pd
 import torch
 
-from common.datasets import get_load_fn
-from common.error_metrics import get_err_fns
-from common.summary import get_writer
-from common.benchmark_utils import Dataset
+from benchmark.common.datasets import get_load_fn
+from benchmark.common.error_metrics import get_err_fns
+from benchmark.common.summary import get_writer
+from benchmark.common.benchmark_utils import Dataset
 from falkon.center_selection import UniformSelector
 from falkon.hypergrad.training import init_model, train_complexity_reg, HPGridPoint, run_on_grid
 

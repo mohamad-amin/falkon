@@ -7,7 +7,6 @@ import json
 
 import torch
 import numpy as np
-from scipy.linalg.lapack import dpotrf, spotrf
 
 import falkon
 from falkon.ooc_ops.ooc_potrf import gpu_cholesky

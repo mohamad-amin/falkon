@@ -7,9 +7,9 @@ import numpy as np
 import pandas as pd
 #from falkon.hypergrad.nkrr_ho import flk_nkrr_ho_fix
 
-from common.datasets import get_load_fn, equal_split
-from common.benchmark_utils import *
-from common.error_metrics import get_err_fns
+from benchmark.common.datasets import get_load_fn, equal_split
+from benchmark.common.benchmark_utils import *
+from benchmark.common.error_metrics import get_err_fns
 from falkon.center_selection import UniformSelector
 
 

@@ -5,13 +5,13 @@ import functools
 import numpy as np
 import torch
 
-from common.benchmark_utils import *
-from common.datasets import get_load_fn, equal_split
-from common.error_metrics import get_err_fns
 from falkon import FalkonOptions
 from falkon.center_selection import UniformSelector, FixedSelector
 from falkon.hypergrad import validation_hp, complexity_reg
-from common.summary import get_writer
+from benchmark.common.benchmark_utils import *
+from benchmark.common.datasets import get_load_fn, equal_split
+from benchmark.common.error_metrics import get_err_fns
+from benchmark.common.summary import get_writer
 
 
 def retrain_and_test(model, Xtr, Ytr, Xts, Yts, err_fns, metadata, cuda, maxiter):

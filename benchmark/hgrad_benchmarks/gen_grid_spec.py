@@ -1,9 +1,7 @@
 import argparse
-
-import numpy as np
-import pandas as pd
 import itertools
 
+import numpy as np
 
 sigmas = np.logspace(0, 2, 10)
 penalties = np.logspace(-8, 2, 15)

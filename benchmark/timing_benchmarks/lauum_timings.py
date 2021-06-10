@@ -7,7 +7,7 @@ import json
 
 import torch
 import numpy as np
-from scipy.linalg.lapack import slauum, dlauum
+from scipy.linalg.lapack import slauum
 
 import falkon
 from falkon.ooc_ops.ooc_lauum import gpu_lauum

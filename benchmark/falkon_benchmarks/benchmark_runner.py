@@ -6,9 +6,9 @@ from typing import Optional, List
 
 import numpy as np
 
-from common.benchmark_utils import *
-from common.datasets import get_load_fn, get_cv_fn
-from common.error_metrics import get_err_fns, get_tf_err_fn
+from benchmark.common.benchmark_utils import *
+from benchmark.common.datasets import get_load_fn, get_cv_fn
+from benchmark.common.error_metrics import get_err_fns, get_tf_err_fn
 
 RANDOM_SEED = 123
 EPRO_DIRECTORY = "../../EigenPro2"

@@ -1,4 +1,3 @@
-import os
 import sys
 sys.path.append("..")
 
@@ -9,7 +8,6 @@ import argparse
 import torch
 
 from falkon.kernels import GaussianKernel
-from falkon import FalkonOptions
 
 
 def gen_data(N, M, D, T, cuda=False, dtype=torch.float64):

@@ -8,9 +8,9 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 
-from common.benchmark_utils import *
-from common.datasets import get_load_fn, equal_split
-from common.error_metrics import get_err_fns
+from benchmark.common.benchmark_utils import *
+from benchmark.common.datasets import get_load_fn, equal_split
+from benchmark.common.error_metrics import get_err_fns
 
 from falkon.models import falkon
 from falkon.utils import TicToc
