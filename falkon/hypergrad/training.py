@@ -29,11 +29,12 @@ def report_losses(losses, loss_names, step) -> Dict[str, float]:
     report_dict = {}
     loss_sum = 0
     for loss, loss_name in zip(losses, loss_names):
+        _loss = get_scalar(loss)
         # Report the value of the loss
-        writer.add_scalar(f'optim/{loss_name}', loss, step)
-        report_str += f"{loss_name}: {loss:.3e} - "
-        report_dict[f"loss_{loss_name}"] = loss
-        loss_sum += loss
+        writer.add_scalar(f'optim/{loss_name}', _loss, step)
+        report_str += f"{loss_name}: {_loss:.3e} - "
+        report_dict[f"loss_{loss_name}"] = _loss
+        loss_sum += _loss
     if len(losses) > 1:
         report_str += f"tot: {loss_sum:.3e}"
     report_dict["loss"] = loss_sum
@@ -45,9 +46,10 @@ def report_hps(named_hparams, step) -> Dict[str, float]:
     writer = get_writer()
     report_dict = {}
     for hp_name, hp_val in named_hparams.items():
+        hp_val_ = get_scalar(hp_val)
         # Report the hparam value
-        writer.add_scalar(f'hparams/{hp_name}', get_scalar(hp_val), step)
-        report_dict[f"hp_{hp_name}"] = get_scalar(hp_val)
+        writer.add_scalar(f'hparams/{hp_name}', hp_val_, step)
+        report_dict[f"hp_{hp_name}"] = hp_val_
     return report_dict
 
 
@@ -59,9 +61,10 @@ def report_grads(named_hparams, grads, losses, loss_names, step) -> Dict[str, fl
     report_dict = {}
     for i in range(len(grads)):
         for j, (hp_name, hp_val) in enumerate(named_hparams.items()):
+            grad_ = get_scalar(grads[i][j])
             # Report the gradient of a specific loss wrt a specific hparam
-            writer.add_scalar(f'grads/{hp_name}/{loss_names[i]}', get_scalar(grads[i][j]), step)
-            report_dict[f"grad_{hp_name}_{loss_names[i]}"] = get_scalar(grads[i][j])
+            writer.add_scalar(f'grads/{hp_name}/{loss_names[i]}', grad_, step)
+            report_dict[f"grad_{hp_name}_{loss_names[i]}"] = grad_
     return report_dict
 
 
@@ -93,10 +96,10 @@ def pred_reporting(model: HyperOptimModel,
     cum_time += t_elapsed
     model.eval()
 
-    test_preds = model.predict(Xts)
-    train_preds = model.predict(Xtr)
-    test_err, err_name = err_fn(Yts.detach().cpu(), test_preds.detach().cpu())
-    train_err, err_name = err_fn(Ytr.detach().cpu(), train_preds.detach().cpu())
+    test_preds = model.predict(Xts).detach().cpu()
+    train_preds = model.predict(Xtr).detach().cpu()
+    test_err, err_name = err_fn(Yts.detach().cpu(), test_preds)
+    train_err, err_name = err_fn(Ytr.detach().cpu(), train_preds)
     out_str = (f"Epoch {epoch} ({cum_time:5.2f}s) - "
                f"Sigma {get_scalar(model.sigma):.3f} - Penalty {get_scalar(model.penalty):.2e} - "
                f"Tr  {err_name} = {train_err:6.4f} - "
@@ -106,8 +109,8 @@ def pred_reporting(model: HyperOptimModel,
 
     ret = [cum_time, train_err, test_err]
     if Xval is not None and Yval is not None:
-        val_preds = model.predict(Xval)
-        val_err, err_name = err_fn(Yval.detach().cpu(), val_preds.detach().cpu())
+        val_preds = model.predict(Xval).detach().cpu()
+        val_err, err_name = err_fn(Yval.detach().cpu(), val_preds)
         out_str += f" - Val {err_name} = {val_err:6.4f}"
         ret.append(val_err)
         writer.add_scalar(f'error/{err_name}/val', val_err, epoch)

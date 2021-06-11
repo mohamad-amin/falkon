@@ -139,7 +139,7 @@ def run_optimization(
                                 Xts=Xts, Yts=Yts,
                                 model=model, err_fn=partial(err_fns[0], **metadata),
                                 learning_rate=learning_rate, num_epochs=num_epochs,
-                                cuda=cuda, verbose=True, loss_every=loss_every)
+                                cuda=cuda, verbose=False, loss_every=loss_every)
     save_logs(logs, exp_name=exp_name)
 
 

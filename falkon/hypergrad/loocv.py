@@ -86,10 +86,10 @@ class NystromLOOCV(NystromKRRModelMixinN, HyperOptimModel):
         if self.L is None or self.LB is None or self.c is None:
             raise RuntimeError("Call hp_loss before calling predict.")
         # Predictions are handled directly.
+        tmp1 = torch.triangular_solve(self.c, self.LB, upper=False, transpose=True).solution
+        tmp2 = torch.triangular_solve(tmp1, self.L, upper=False, transpose=True).solution
         kms = full_rbf_kernel(self.centers, X, self.sigma)
-        tmp1 = torch.triangular_solve(kms, self.L, upper=False).solution
-        tmp2 = torch.triangular_solve(tmp1, self.LB, upper=False).solution
-        return tmp2.T @ self.c
+        return kms.T @ tmp2
 
     @property
     def loss_names(self):

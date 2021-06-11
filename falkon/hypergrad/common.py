@@ -219,10 +219,12 @@ def get_start_sigma(sigma_init: float, sigma_type: str, d: int = None) -> torch.
     return start_sigma
 
 
-def get_scalar(t: torch.Tensor) -> float:
-    if t.dim() == 0:
-        return deepcopy(t.item())
-    return deepcopy(torch.flatten(t)[0].item())
+def get_scalar(t: Union[torch.Tensor, float]) -> float:
+    if isinstance(t, torch.Tensor):
+        if t.dim() == 0:
+            return deepcopy(t.detach().cpu().item())
+        return deepcopy(torch.flatten(t)[0].detach().cpu().item())
+    return t
 
 
 def cg(Ax, b, x0=None, max_iter=100, epsilon=1.0e-5):
