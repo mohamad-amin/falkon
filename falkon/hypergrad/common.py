@@ -1,3 +1,4 @@
+from copy import deepcopy
 import abc
 import time
 from typing import Sequence, Optional, Tuple, Union, Dict
@@ -220,8 +221,8 @@ def get_start_sigma(sigma_init: float, sigma_type: str, d: int = None) -> torch.
 
 def get_scalar(t: torch.Tensor) -> float:
     if t.dim() == 0:
-        return t.item()
-    return torch.flatten(t)[0]
+        return deepcopy(t.item())
+    return deepcopy(torch.flatten(t)[0].item())
 
 
 def cg(Ax, b, x0=None, max_iter=100, epsilon=1.0e-5):

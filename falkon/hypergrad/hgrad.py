@@ -210,7 +210,7 @@ class NystromIFTHgrad(NystromKRRModelMixinN, HyperOptimModel):
                 final_grads.append(ohp - g)
             else:
                 final_grads.append(-g)
-        return final_grads
+        return (final_grads, )
 
     def predict(self, X):
         if self.alpha is None:

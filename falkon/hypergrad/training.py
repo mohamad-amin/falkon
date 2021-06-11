@@ -57,7 +57,7 @@ def report_grads(named_hparams, grads, losses, loss_names, step) -> Dict[str, fl
     assert len(grads) == len(losses), f"Found {len(grads)} grads and {len(losses)} losses."
     writer = get_writer()
     report_dict = {}
-    for i in range(grads):
+    for i in range(len(grads)):
         for j, (hp_name, hp_val) in enumerate(named_hparams.items()):
             # Report the gradient of a specific loss wrt a specific hparam
             writer.add_scalar(f'grads/{hp_name}/{loss_names[i]}', get_scalar(grads[i][j]), step)
@@ -153,7 +153,7 @@ def train_complexity_reg(
                 model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
                 err_fn=err_fn, epoch=epoch, time_start=e_start, cum_time=cum_time)
             cum_time = pred_dict["cum_time"]
-        grads = hp_grad(*losses, accumulate_grads=True, losses_are_grads=model.losses_are_grads)
+        grads = hp_grad(model, *losses, accumulate_grads=True, losses_are_grads=model.losses_are_grads)
         loss_dict = grad_loss_reporting(model.named_parameters(), grads, losses, model.loss_names,
                                         verbose, epoch, losses_are_grads=model.losses_are_grads)
         opt_hp.step()

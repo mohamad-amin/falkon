@@ -115,7 +115,7 @@ class SGPR(NystromKRRModelMixinN, HyperOptimModel):
 
         const = 0.5 * X.shape[0] * torch.log(2 * torch.tensor(np.pi, dtype=X.dtype))
 
-        return logdet, datafit, trace, const
+        return logdet, datafit, trace
 
     def predict(self, X):
         if self.L is None or self.LB is None or self.c is None:
@@ -127,7 +127,7 @@ class SGPR(NystromKRRModelMixinN, HyperOptimModel):
 
     @property
     def loss_names(self):
-        return "log-det", "data-fit", "trace", "const"
+        return "log-det", "data-fit", "trace"
 
     def __repr__(self):
         return f"SGPR(sigma={get_scalar(self.sigma)}, penalty={get_scalar(self.penalty)}, num_centers={self.centers.shape[0]}, " \

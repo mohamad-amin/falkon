@@ -83,14 +83,14 @@ def run_gpflow(dataset: Dataset,
     import tensorflow as tf
     import tensorflow_probability as tfp
     gpflow.config.set_default_float(dt)
-    from models.gpflow_model import TrainableSVGP, TrainableSGPR, TrainableGPR
+    from benchmark.models.gpflow_model import TrainableSVGP, TrainableSGPR, TrainableGPR
     tf.random.set_seed(seed)
 
     # Load data
     Xtr, Ytr, Xts, Yts, metadata = get_load_fn(dataset)(dt, as_torch=False, as_tf=True)
     err_fns = get_err_fns(dataset)
     err_fns = [functools.partial(fn, **metadata) for fn in err_fns]
-    if 'centers' in metadata:
+    if False and 'centers' in metadata:
         centers = metadata['centers'].astype(dt)
     else:
         selector = UniformSelector(np.random.default_rng(seed))
@@ -116,7 +116,7 @@ def run_gpflow(dataset: Dataset,
         initial_sigma = np.array([sigma_init] * Xtr.shape[1], dtype=dt)
     else:
         raise ValueError("Sigma type %s not recognized" % (sigma_type))
-    kernel_variance = 3
+    kernel_variance = 1
     kernel = gpflow.kernels.SquaredExponential(lengthscales=initial_sigma, variance=kernel_variance)
     kernel.lengthscales = gpflow.Parameter(initial_sigma, transform=tfp.bijectors.Identity())
     gpflow.set_trainable(kernel.variance, False)

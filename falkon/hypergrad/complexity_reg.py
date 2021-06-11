@@ -136,7 +136,7 @@ class FakeTorchModelMixin(abc.ABC):
         pass
 
 
-def hp_grad(model: FakeTorchModelMixin, loss_terms, accumulate_grads=True, verbose=True, losses_are_grads=False):
+def hp_grad(model: FakeTorchModelMixin, *loss_terms, accumulate_grads=True, verbose=True, losses_are_grads=False):
     grads = []
     hparams = model.parameters()
     if not losses_are_grads:

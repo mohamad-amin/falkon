@@ -193,5 +193,5 @@ if __name__ == "__main__":
         run_optimization(exp_name=args.name, dataset=args.dataset, model_type=args.model,
                          penalty_init=args.penalty_init, sigma_type=args.sigma_type, sigma_init=args.sigma_init,
                          opt_centers=args.oc, opt_sigma=args.os, opt_penalty=args.op, num_centers=args.num_centers,
-                         num_epochs=args.num_epochs, learning_rate=args.lr, val_pct=args.val_pct,
+                         num_epochs=args.epochs, learning_rate=args.lr, val_pct=args.val_pct,
                          cg_tol=args.cg_tol, cuda=args.cuda, seed=args.seed)

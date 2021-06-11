@@ -109,7 +109,7 @@ class TrainableSGPR():
             (X, Y),
             kernel=self.kernel,
             inducing_variable=self.Z,
-            noise_variance=0.1)
+            noise_variance=0.001)
         #self.model.likelihood.variance = gpflow.Parameter(1, transform=tfp.bijectors.Identity())
 
         # Setup training parameters
