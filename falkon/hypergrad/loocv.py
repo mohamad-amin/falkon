@@ -65,14 +65,14 @@ class NystromLOOCV(NystromKRRModelMixinN, HyperOptimModel):
         kmm = (full_rbf_kernel(self.centers, self.centers, self.sigma) +
                torch.eye(m, device=X.device, dtype=X.dtype) * 1e-6)
         self.L = torch.cholesky(kmm)   # L @ L.T = kmm
-        A = torch.triangular_solve(kmn, self.L, upper=False).solution / sqrt_var
-        AAT = A @ A.T
-        B = AAT + torch.eye(AAT.shape[0], device=X.device, dtype=X.dtype)
-        self.LB = torch.cholesky(B)  # LB @ LB.T = B
+        A = torch.triangular_solve(kmn, self.L, upper=False).solution / sqrt_var  # m, n
+        AAT = A @ A.T   # m, m
+        B = AAT + torch.eye(AAT.shape[0], device=X.device, dtype=X.dtype)  # m, m
+        self.LB = torch.cholesky(B)  # LB @ LB.T = B  m, m
 
         # C = LB^{-1} A
-        C = torch.triangular_solve(A, self.LB, upper=False).solution
-        diag_s = torch.diag(C.T @ C)
+        C = torch.triangular_solve(A, self.LB, upper=False).solution  # m, n
+        diag_s = (C * C).sum(0)  # == torch.diag(C.T @ C)  n, 1
 
         self.c = C @ Y / sqrt_var
         # Now f(\alpha) = C.T @ C @ Y
