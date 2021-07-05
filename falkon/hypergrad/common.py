@@ -70,7 +70,7 @@ class PositiveTransform(torch.distributions.transforms.Transform):
         too_small_val = torch.log(x)
         too_large_val = x
 
-        x = torch.where(is_too_small | is_too_large, torch.tensor(1.0, dtype=y.dtype), x)
+        x = torch.where(is_too_small | is_too_large, torch.tensor(1.0, dtype=y.dtype, device=y.device), x)
         x = x + torch.log(-torch.expm1(-x))
         return torch.where(is_too_small,
                            too_small_val,

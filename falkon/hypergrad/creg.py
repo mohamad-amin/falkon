@@ -133,7 +133,7 @@ class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         C = torch.triangular_solve(A, LB, upper=False).solution
 
         # Complexity (nystrom-deff)
-        ndeff = torch.trace(C.T @ C)
+        ndeff = C.square().sum()  # = torch.trace(C.T @ C)
         datafit = torch.square(Y).sum() - 2 * torch.square(c * sqrt_var).sum() + variance * torch.square(d).sum()
         trace = Kdiag - torch.trace(AAT) * variance
 

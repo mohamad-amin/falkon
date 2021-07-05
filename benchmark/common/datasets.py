@@ -40,6 +40,18 @@ def mean_remove_y(Ytr, Yts):
     return Ytr, Yts, {'Y_mean': mtr}
 
 
+def standardize_y(Ytr, Yts):
+    mtr = np.mean(Ytr, dtype=np.float64).astype(Ytr.dtype)
+    str = np.std(Ytr, dtype=np.float64, ddof=1).astype(Ytr.dtype)
+    Ytr -= mtr
+    Ytr /= str
+    Yts -= mtr
+    Yts /= str
+    Ytr = Ytr.reshape((-1, 1))
+    Yts = Yts.reshape((-1, 1))
+    return Ytr, Yts, {'Y_mean': mtr, 'Y_std': str}
+
+
 def as_np_dtype(dtype):
     if "float32" in str(dtype):
         return np.float32
@@ -956,6 +968,7 @@ class EnergyDataset(BaseDataset):
 
     @staticmethod
     def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        #return standardize_y(Ytr, Yts)
         return mean_remove_y(Ytr, Yts)
 
     def dset_name(self):
@@ -988,6 +1001,7 @@ class BostonDataset(BaseDataset):
     @staticmethod
     def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
         return mean_remove_y(Ytr, Yts)
+        #return standardize_y(Ytr, Yts)
 
     def dset_name(self):
         return self._dset_name
@@ -1019,6 +1033,7 @@ class ProteinDataset(BaseDataset):
     @staticmethod
     def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
         return mean_remove_y(Ytr, Yts)
+        #return standardize_y(Ytr, Yts)
 
     def dset_name(self):
         return self._dset_name

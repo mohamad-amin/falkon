@@ -1,4 +1,5 @@
 import time
+from functools import reduce
 from typing import Optional, Dict, List, Any
 
 import torch
@@ -137,9 +138,20 @@ def train_complexity_reg(
 ) -> List[Dict[str, float]]:
     if cuda:
         Xtr, Ytr, Xts, Yts = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
-    opt_hp = torch.optim.Adam([
-        {"params": model.parameters(), "lr": learning_rate},
-    ])
+    optim = "rmsprop"
+    if optim == "adam":
+        opt_hp = torch.optim.Adam([
+            {"params": model.parameters(), "lr": learning_rate},
+        ])
+    elif optim == "lbfgs":
+        if model.losses_are_grads:
+            raise ValueError("L-BFGS not valid for model %s" % (model))
+        opt_hp = torch.optim.LBFGS(model.parameters(), lr=learning_rate,
+                history_size=100,)
+    elif optim == "rmsprop":
+        opt_hp = torch.optim.RMSprop(model.parameters(), lr=learning_rate)
+    else:
+        raise ValueError("Optimizer %s not recognized" % (optim))
     print(f"Starting hyperparameter optimization on model {model}.")
     print(f"Will run for {num_epochs} epochs with {opt_hp} optimizer.")
 
@@ -147,19 +159,27 @@ def train_complexity_reg(
     cum_time = 0
     for epoch in range(num_epochs):
         e_start = time.time()
-        opt_hp.zero_grad()
-        losses = model.hp_loss(Xtr, Ytr)
-        # Loss reporting before grad() to optimize
+        grads: Any = None
+        losses: Any = None
+
+        def closure():
+            opt_hp.zero_grad()
+            nonlocal grads, losses
+            losses = model.hp_loss(Xtr, Ytr)
+            grads = hp_grad(model, *losses, accumulate_grads=True, losses_are_grads=model.losses_are_grads)
+            loss = reduce(torch.add, losses)
+            return float(loss)
+
+        opt_hp.step(closure)
+
         pred_dict = {}
         if epoch != 0 and (epoch + 1) % loss_every == 0:
             pred_dict = pred_reporting(
                 model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
                 err_fn=err_fn, epoch=epoch, time_start=e_start, cum_time=cum_time)
             cum_time = pred_dict["cum_time"]
-        grads = hp_grad(model, *losses, accumulate_grads=True, losses_are_grads=model.losses_are_grads)
         loss_dict = grad_loss_reporting(model.named_parameters(), grads, losses, model.loss_names,
                                         verbose, epoch, losses_are_grads=model.losses_are_grads)
-        opt_hp.step()
         loss_dict.update(pred_dict)
         logs.append(loss_dict)
     return logs
@@ -176,6 +196,7 @@ def init_model(model_type, data, penalty_init, sigma_init, centers_init, opt_pen
         all_idx = torch.randperm(tot)
         val_idx = all_idx[:n_val]
         tr_idx = all_idx[n_val:]
+        print(f"Validation split ({val_pct}): {len(tr_idx)} training points, {len(val_idx)} validation points")
 
     if model_type == "gpr":
         model = GPR(sigma_init=start_sigma, penalty_init=penalty_init,

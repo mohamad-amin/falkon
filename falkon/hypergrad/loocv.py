@@ -72,7 +72,7 @@ class NystromLOOCV(NystromKRRModelMixinN, HyperOptimModel):
 
         # C = LB^{-1} A
         C = torch.triangular_solve(A, self.LB, upper=False).solution  # m, n
-        diag_s = (C * C).sum(0)  # == torch.diag(C.T @ C)  n, 1
+        diag_s = (C.square()).sum(0)  # == torch.diag(C.T @ C)  n, 1
 
         self.c = C @ Y / sqrt_var
         # Now f(\alpha) = C.T @ C @ Y
