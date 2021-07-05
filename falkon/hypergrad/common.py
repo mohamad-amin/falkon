@@ -274,3 +274,16 @@ def cg(Ax, b, x0=None, max_iter=100, epsilon=1.0e-5):
 
 def cat_list_to_tensor(list_tx):
     return torch.cat([xx.view([-1]) for xx in list_tx])
+
+
+def cholesky(M, upper=False):
+    if upper:
+        U, info = torch.linalg.cholesky_ex(M.transpose(-2, -1).conj())
+        if info > 0:
+            raise RuntimeError("Cholesky failed on row %d" % (info))
+        return U.transpose(-2, -1).conj()
+    else:
+        L, info = torch.linalg.cholesky_ex(M, check_errors=False)
+        if info > 0:
+            raise RuntimeError("Cholesky failed on row %d" % (info))
+        return L

@@ -6,7 +6,7 @@ import torch
 from falkon import FalkonOptions
 from falkon.kernels import GaussianKernel
 from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
-from falkon.hypergrad.common import full_rbf_kernel, get_scalar, cg
+from falkon.hypergrad.common import full_rbf_kernel, get_scalar, cg, cholesky
 from falkon.hypergrad.complexity_reg import NystromKRRModelMixinN, HyperOptimModel
 
 
@@ -61,13 +61,13 @@ class NystromClosedFormHgrad(NystromKRRModelMixinN, HyperOptimModel):
                torch.eye(m, device=Xtr.device, dtype=Xtr.dtype) * 1e-6)
         kmval = full_rbf_kernel(self.centers, Xval, self.sigma)
 
-        L = torch.cholesky(kmm)   # L @ L.T = kmm
+        L = cholesky(kmm)   # L @ L.T = kmm
         # A = L^{-1} K_mn / (sqrt(n*pen))
         A = torch.triangular_solve(kmn, L, upper=False).solution / sqrt_var
         AAT = A @ A.T
         # B = A @ A.T + I
         B = AAT + torch.eye(AAT.shape[0], device=Xtr.device, dtype=Xtr.dtype)
-        LB = torch.cholesky(B)  # LB @ LB.T = B
+        LB = cholesky(B)  # LB @ LB.T = B
         AYtr = A @ Ytr
         c = torch.triangular_solve(AYtr, LB, upper=False).solution / sqrt_var
 
@@ -142,13 +142,13 @@ class NystromIFTHgrad(NystromKRRModelMixinN, HyperOptimModel):
         kmn = full_rbf_kernel(self.centers, Xtr, self.sigma)
         kmm = (full_rbf_kernel(self.centers, self.centers, self.sigma) +
                torch.eye(self.centers.shape[0], device=Xtr.device, dtype=Xtr.dtype) * 1e-6)
-        L = torch.cholesky(kmm)  # L @ L.T = kmm
+        L = cholesky(kmm)  # L @ L.T = kmm
         # A = L^{-1} K_mn / (sqrt(n*pen))
         A = torch.triangular_solve(kmn, L, upper=False).solution / sqrt_var
         AAT = A @ A.T
         # B = A @ A.T + I
         B = AAT + torch.eye(AAT.shape[0], device=Xtr.device, dtype=Xtr.dtype)
-        LB = torch.cholesky(B)  # LB @ LB.T = B
+        LB = cholesky(B)  # LB @ LB.T = B
 
         # Now we need to compute la^{-1/2} * L^{-T} @ LB^{-T} @ LB^{-1} @ A @ Y
         AY = A @ Ytr

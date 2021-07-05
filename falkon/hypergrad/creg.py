@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from falkon.hypergrad.common import full_rbf_kernel, get_scalar
+from falkon.hypergrad.common import full_rbf_kernel, get_scalar, cholesky
 from falkon.hypergrad.complexity_reg import NystromKRRModelMixinN, KRRModelMixinN, HyperOptimModel
 
 
@@ -42,13 +42,13 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         kmn = full_rbf_kernel(self.centers, X, self.sigma)
         kmm = (full_rbf_kernel(self.centers, self.centers, self.sigma) +
                torch.eye(m, device=X.device, dtype=X.dtype) * 1e-6)
-        self.L = torch.cholesky(kmm)   # L @ L.T = kmm
+        self.L = cholesky(kmm)   # L @ L.T = kmm
         # A = L^{-1} K_mn / (sqrt(n*pen))
         A = torch.triangular_solve(kmn, self.L, upper=False).solution / sqrt_var
         AAT = A @ A.T
         # B = A @ A.T + I
         B = AAT + torch.eye(AAT.shape[0], device=X.device, dtype=X.dtype)
-        self.LB = torch.cholesky(B)  # LB @ LB.T = B
+        self.LB = cholesky(B)  # LB @ LB.T = B
         AY = A @ Y
         self.c = torch.triangular_solve(AY, self.LB, upper=False).solution / sqrt_var
 
@@ -116,13 +116,13 @@ class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         kmn = full_rbf_kernel(self.centers, X, self.sigma)
         kmm = (full_rbf_kernel(self.centers, self.centers, self.sigma) +
                torch.eye(m, device=X.device, dtype=X.dtype) * 1e-6)
-        L = torch.cholesky(kmm)   # L @ L.T = kmm
+        L = cholesky(kmm)   # L @ L.T = kmm
         # A = L^{-1} K_mn / (sqrt(n*pen))
         A = torch.triangular_solve(kmn, L, upper=False).solution / sqrt_var
         AAT = A @ A.T
         # B = A @ A.T + I
         B = AAT + torch.eye(AAT.shape[0], device=X.device, dtype=X.dtype)
-        LB = torch.cholesky(B)  # LB @ LB.T = B
+        LB = cholesky(B)  # LB @ LB.T = B
         AY = A @ Y
         c = torch.triangular_solve(AY, LB, upper=False).solution / sqrt_var
 

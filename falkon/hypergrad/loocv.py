@@ -1,6 +1,6 @@
 import torch
 
-from falkon.hypergrad.common import full_rbf_kernel, get_scalar
+from falkon.hypergrad.common import full_rbf_kernel, get_scalar, cholesky
 from falkon.hypergrad.complexity_reg import NystromKRRModelMixinN, HyperOptimModel
 
 
@@ -64,11 +64,11 @@ class NystromLOOCV(NystromKRRModelMixinN, HyperOptimModel):
         kmn = full_rbf_kernel(self.centers, X, self.sigma)
         kmm = (full_rbf_kernel(self.centers, self.centers, self.sigma) +
                torch.eye(m, device=X.device, dtype=X.dtype) * 1e-6)
-        self.L = torch.cholesky(kmm)   # L @ L.T = kmm
+        self.L = cholesky(kmm)   # L @ L.T = kmm
         A = torch.triangular_solve(kmn, self.L, upper=False).solution / sqrt_var  # m, n
         AAT = A @ A.T   # m, m
         B = AAT + torch.eye(AAT.shape[0], device=X.device, dtype=X.dtype)  # m, m
-        self.LB = torch.cholesky(B)  # LB @ LB.T = B  m, m
+        self.LB = cholesky(B)  # LB @ LB.T = B  m, m
 
         # C = LB^{-1} A
         C = torch.triangular_solve(A, self.LB, upper=False).solution  # m, n
