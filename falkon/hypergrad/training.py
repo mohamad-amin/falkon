@@ -135,23 +135,23 @@ def train_complexity_reg(
         cuda: bool,
         verbose: bool,
         loss_every: int,
+        optimizer: str,
 ) -> List[Dict[str, float]]:
     if cuda:
         Xtr, Ytr, Xts, Yts = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
-    optim = "rmsprop"
-    if optim == "adam":
+    if optimizer == "adam":
         opt_hp = torch.optim.Adam([
             {"params": model.parameters(), "lr": learning_rate},
         ])
-    elif optim == "lbfgs":
+    elif optimizer == "lbfgs":
         if model.losses_are_grads:
             raise ValueError("L-BFGS not valid for model %s" % (model))
         opt_hp = torch.optim.LBFGS(model.parameters(), lr=learning_rate,
-                history_size=100,)
-    elif optim == "rmsprop":
+                                   history_size=100, )
+    elif optimizer == "rmsprop":
         opt_hp = torch.optim.RMSprop(model.parameters(), lr=learning_rate)
     else:
-        raise ValueError("Optimizer %s not recognized" % (optim))
+        raise ValueError("Optimizer %s not recognized" % (optimizer))
     print(f"Starting hyperparameter optimization on model {model}.")
     print(f"Will run for {num_epochs} epochs with {opt_hp} optimizer.")
 
@@ -166,7 +166,8 @@ def train_complexity_reg(
             opt_hp.zero_grad()
             nonlocal grads, losses
             losses = model.hp_loss(Xtr, Ytr)
-            grads = hp_grad(model, *losses, accumulate_grads=True, losses_are_grads=model.losses_are_grads)
+            grads = hp_grad(model, *losses, accumulate_grads=True,
+                            losses_are_grads=model.losses_are_grads)
             loss = reduce(torch.add, losses)
             return float(loss)
 
@@ -196,7 +197,8 @@ def init_model(model_type, data, penalty_init, sigma_init, centers_init, opt_pen
         all_idx = torch.randperm(tot)
         val_idx = all_idx[:n_val]
         tr_idx = all_idx[n_val:]
-        print(f"Validation split ({val_pct}): {len(tr_idx)} training points, {len(val_idx)} validation points")
+        print(
+            f"Validation split ({val_pct}): {len(tr_idx)} training points, {len(val_idx)} validation points")
 
     if model_type == "gpr":
         model = GPR(sigma_init=start_sigma, penalty_init=penalty_init,

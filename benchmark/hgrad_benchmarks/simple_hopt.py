@@ -105,6 +105,7 @@ def run_optimization(
         learning_rate: float,
         val_pct: float,
         cg_tol: float,
+        optimizer: str,
         cuda: bool,
         seed: int
 ):
@@ -139,7 +140,7 @@ def run_optimization(
                                 Xts=Xts, Yts=Yts,
                                 model=model, err_fn=partial(err_fns[0], **metadata),
                                 learning_rate=learning_rate, num_epochs=num_epochs,
-                                cuda=cuda, verbose=False, loss_every=loss_every)
+                                cuda=cuda, verbose=False, loss_every=loss_every, optimizer=optimizer)
     save_logs(logs, exp_name=exp_name)
 
 
@@ -172,6 +173,7 @@ if __name__ == "__main__":
                    help="Number of Nystrom centers for Falkon")
     p.add_argument('--val-pct', type=float, default=0,
                    help="Fraction of validation data (hgrad experiments)")
+    p.add_argument('--optimizer', type=str, default='adam')
     p.add_argument('--grid-spec', type=str, default=None,
                    help="Grid-spec file. Triggers a grid-search run instead of optimization.")
     p.add_argument('--cuda', action='store_true')
@@ -194,4 +196,4 @@ if __name__ == "__main__":
                          penalty_init=args.penalty_init, sigma_type=args.sigma_type, sigma_init=args.sigma_init,
                          opt_centers=args.oc, opt_sigma=args.os, opt_penalty=args.op, num_centers=args.num_centers,
                          num_epochs=args.epochs, learning_rate=args.lr, val_pct=args.val_pct,
-                         cg_tol=args.cg_tol, cuda=args.cuda, seed=args.seed)
+                         cg_tol=args.cg_tol, cuda=args.cuda, seed=args.seed, optimizer=args.optimizer)
