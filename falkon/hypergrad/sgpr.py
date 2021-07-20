@@ -85,7 +85,7 @@ class SGPR(NystromKRRModelMixinN, HyperOptimModel):
         self.L, self.LB, self.c = None, None, None
 
     def hp_loss(self, X, Y):
-        variance = self.penalty
+        variance = self.penalty * X.shape[0]
         sqrt_var = torch.sqrt(variance)
         Kdiag = X.shape[0]
 

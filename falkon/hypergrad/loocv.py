@@ -57,7 +57,8 @@ class NystromLOOCV(NystromKRRModelMixinN, HyperOptimModel):
         self.L, self.LB, self.c = None, None, None
 
     def hp_loss(self, X, Y):
-        variance = self.penalty * X.shape[0]
+        # - 1 due to LOOCV effect.
+        variance = self.penalty * (X.shape[0] - 1)
         sqrt_var = torch.sqrt(variance)
 
         m = self.centers.shape[0]
@@ -80,7 +81,7 @@ class NystromLOOCV(NystromKRRModelMixinN, HyperOptimModel):
 
         num = Y - d
         den = 1.0 - diag_s
-        return (((num / den)**2).sum(0).mean(), )
+        return ((num / den).square().mean(0).mean(), )
 
     def predict(self, X):
         if self.L is None or self.LB is None or self.c is None:

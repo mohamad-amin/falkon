@@ -60,7 +60,8 @@ class NystromGCV(NystromKRRModelMixinN, HyperOptimModel):
         self.L, self.LB, self.d = None, None, None
 
     def hp_loss(self, X, Y):
-        variance = self.penalty
+        # Like with LOOCV we are virtually using an estimator trained with n - 1 points.
+        variance = self.penalty * (X.shape[0] - 1)
         sqrt_var = torch.sqrt(variance)
 
         m = self.centers.shape[0]
@@ -82,12 +83,12 @@ class NystromGCV(NystromKRRModelMixinN, HyperOptimModel):
         tmp2 = torch.triangular_solve(tmp1, self.LB, upper=False, transpose=True).solution
         self.d = tmp2 / sqrt_var  # only for predictions
         tmp3 = Y - A.T @ tmp2
-        numerator = (1/X.shape[0]) * torch.square(tmp3).sum(0).mean()
+        numerator = torch.square(tmp3).sum(0).mean()
 
         # Denominator
         C = torch.triangular_solve(A, self.LB, upper=False).solution
         denominator = (1 - torch.square(C).sum() / X.shape[0])**2
-        return (numerator / denominator, )
+        return ((1 / X.shape[0]) * (numerator / denominator), )
 
     def predict(self, X):
         if self.L is None or self.LB is None or self.d is None:

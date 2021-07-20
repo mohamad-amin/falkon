@@ -12,7 +12,8 @@ from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
 from falkon.hypergrad.leverage_scores import (
     full_deff, full_deff_simple, subs_deff_simple,
     GaussEffectiveDimension, gauss_effective_dimension, gauss_nys_effective_dimension,
-    loss_and_deff, regloss_and_deff,
+    regloss_and_deff, NystromEffectiveDimension, NystromKernelTrace, NoRegLossAndDeff, GCV,
+    NystromPenalizedDataFit, RegLossAndDeffv2,
 )
 from falkon.kernels import GaussianKernel
 from falkon.tests.gen_random import gen_random
@@ -184,6 +185,7 @@ def test_compare_deff_outputs(dtype):
         K(X, M) @ torch.pinverse(K(M, M) @ K(M, M) + p * X.shape[0] * K(M, M)) @ K(M, X)).sum()
     print("d_eff_double_nys", d_eff_double_nys.item())
 
+
 def test_gpytorch_quad_derivative():
     X = torch.from_numpy(gen_random(1000, 3, np.float32, F=False))
     Y = (X ** 2).mean(1) + torch.randn(X.shape[0]) * 0.3
@@ -225,3 +227,7 @@ def test_gpytorch_quad_derivative():
         ))
         optimizer.step()
 
+
+def test_complexity_reg_impl():
+    RegLossAndDeffv2.grad_check()
+    # NystromKernelTrace.grad_check()
