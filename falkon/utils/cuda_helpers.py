@@ -75,12 +75,8 @@ def copy_to_device(rows, cols, H, Hi, Hj, D, Di, Dj, s=None):
             cuda_memcpy2d_async(
                 src=H_narrow.data_ptr(), spitch=H_narrow.stride(0) * dts,
                 dst=D_narrow.data_ptr(), dpitch=D_narrow.stride(0) * dts,
-                width=cols * dts, height=rows, stream=s._as_parameter)
+                width=cols * dts, height=rows, stream=s._as_parameter_)
         else:
-            print("spitch", H_narrow.stride(0))
-            print("dpitch", D_narrow.stride(0))
-            print("width", cols)
-            print("height", rows)
             cuda_memcpy2d(
                 src=H_narrow.data_ptr(), spitch=H_narrow.stride(0) * dts,
                 dst=D_narrow.data_ptr(), dpitch=D_narrow.stride(0) * dts,
@@ -111,7 +107,7 @@ def copy_to_device_noorder(rows, cols, H, Hi, Hj, D, Di, Dj, s=None, check=False
             cuda_memcpy2d_async(
                 dst=H_narrow.data_ptr(), dpitch=H_narrow.stride(0) * dts,
                 src=D_narrow.data_ptr(), spitch=D_narrow.stride(0) * dts,
-                width=cols * dts, height=rows, stream=s._as_parameter)
+                width=cols * dts, height=rows, stream=s._as_parameter_)
         else:
             cuda_memcpy2d(
                 dst=H_narrow.data_ptr(), dpitch=H_narrow.stride(0) * dts,
@@ -146,7 +142,7 @@ def copy_to_host(rows, cols, D, Di, Dj, H, Hi, Hj, s=None):
             cuda_memcpy2d_async(
                 src=D_narrow.data_ptr(), spitch=D_narrow.stride(0) * dts,
                 dst=H_narrow.data_ptr(), dpitch=H_narrow.stride(0) * dts,
-                width=cols * dts, height=rows, stream=s._as_parameter)
+                width=cols * dts, height=rows, stream=s._as_parameter_)
         else:
             cuda_memcpy2d(
                 src=D_narrow.data_ptr(), spitch=D_narrow.stride(0) * dts,
