@@ -139,10 +139,13 @@ def train_complexity_reg(
 ) -> List[Dict[str, float]]:
     if cuda:
         Xtr, Ytr, Xts, Yts = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
+    schedule = None
     if optimizer == "adam":
         opt_hp = torch.optim.Adam([
             {"params": model.parameters(), "lr": learning_rate},
         ])
+        schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_hp, factor=0.3, patience=20)
+        #schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=200, gamma=0.3)
     elif optimizer == "lbfgs":
         if model.losses_are_grads:
             raise ValueError("L-BFGS not valid for model %s" % (model))
@@ -183,6 +186,9 @@ def train_complexity_reg(
                                         verbose, epoch, losses_are_grads=model.losses_are_grads)
         loss_dict.update(pred_dict)
         logs.append(loss_dict)
+        if schedule is not None:
+            if 'train_NRMSE' in loss_dict:
+                schedule.step(loss_dict['train_NRMSE'])
     return logs
 
 
