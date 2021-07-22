@@ -14,6 +14,7 @@ from benchmark.common.datasets import get_load_fn
 from benchmark.common.error_metrics import get_err_fns
 from benchmark.common.summary import get_writer
 from benchmark.common.benchmark_utils import Dataset
+from falkon import FalkonOptions
 from falkon.center_selection import UniformSelector
 from falkon.hypergrad.training import init_model, train_complexity_reg, HPGridPoint, run_on_grid
 
@@ -203,6 +204,11 @@ if __name__ == "__main__":
     np.random.seed(args.seed)
     get_writer(args.name)
     args.model = args.model.lower()
+
+    if torch.cuda.is_available():
+        torch.cuda.init()
+        from falkon.cuda import initialization
+        initialization.init(FalkonOptions())
 
     if args.grid_spec is not None:
         run_grid_search(exp_name=args.name, dataset=args.dataset, model_type=args.model,
