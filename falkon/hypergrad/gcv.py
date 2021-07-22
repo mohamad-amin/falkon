@@ -46,7 +46,7 @@ class StochasticNystromGCV(NystromKRRModelMixinN, HyperOptimModel):
                    X=X, Y=Y, num_estimators=self.num_trace_est, deterministic=False,
                    solve_options=self.flk_opt, solve_maxiter=self.flk_maxiter,
                    gaussian_random=False)
-        return loss
+        return [loss]
 
     def predict(self, X):
         if GCV.last_alpha is None:
