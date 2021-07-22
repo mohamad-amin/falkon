@@ -5,11 +5,15 @@ from typing import Optional, Dict, List, Any
 import torch
 from dataclasses import dataclass
 
-from falkon.hypergrad.creg import DeffNoPenFitTr, DeffPenFitTr
+from falkon import FalkonOptions, Falkon
+from falkon.hypergrad.creg import (
+    DeffNoPenFitTr, DeffPenFitTr, StochasticDeffPenFitTr,
+    StochasticDeffNoPenFitTr
+)
 from falkon.hypergrad.hgrad import NystromClosedFormHgrad, NystromIFTHgrad
 from falkon.hypergrad.common import get_start_sigma, get_scalar
 from falkon.hypergrad.complexity_reg import HyperOptimModel, hp_grad
-from falkon.hypergrad.gcv import NystromGCV
+from falkon.hypergrad.gcv import NystromGCV, StochasticNystromGCV
 from falkon.hypergrad.loocv import NystromLOOCV
 from falkon.hypergrad.sgpr import GPR, SGPR
 from benchmark.common.summary import get_writer
@@ -91,18 +95,38 @@ def pred_reporting(model: HyperOptimModel,
                    cum_time: float,
                    Xval: Optional[torch.Tensor] = None,
                    Yval: Optional[torch.Tensor] = None,
+                   resolve_model: bool = False,
                    ) -> Dict[str, float]:
     writer = get_writer()
     t_elapsed = time.time() - time_start  # Stop the time
     cum_time += t_elapsed
     model.eval()
+    sigma, penalty, centers = model.sigma, model.penalty, model.centers
+
+    if resolve_model:
+        if hasattr(model, "flk_opt"):
+            flk_opt = model.flk_opt
+        else:
+            flk_opt = FalkonOptions(use_cpu=not torch.cuda.is_available())
+        from falkon.kernels import GaussianKernel
+        kernel = GaussianKernel(sigma, flk_opt)
+        from falkon.center_selection import FixedSelector
+        flk_model = Falkon(kernel, penalty, M=centers.shape[0],
+                           center_selection=FixedSelector(centers), maxiter=30,
+                           seed=1312, error_fn=err_fn, error_every=1, options=flk_opt)
+        if Xval is not None and Yval is not None:
+            Xtr_full, Ytr_full = torch.cat((Xtr, Xval), dim=0), torch.cat((Ytr, Yval), dim=0)
+        else:
+            Xtr_full, Ytr_full = Xtr, Ytr
+        flk_model.fit(Xtr_full, Ytr_full, Xts, Yts)
+        model = flk_model
 
     test_preds = model.predict(Xts).detach().cpu()
     train_preds = model.predict(Xtr).detach().cpu()
     test_err, err_name = err_fn(Yts.detach().cpu(), test_preds)
     train_err, err_name = err_fn(Ytr.detach().cpu(), train_preds)
     out_str = (f"Epoch {epoch} ({cum_time:5.2f}s) - "
-               f"Sigma {get_scalar(model.sigma):.3f} - Penalty {get_scalar(model.penalty):.2e} - "
+               f"Sigma {get_scalar(sigma):.3f} - Penalty {get_scalar(penalty):.2e} - "
                f"Tr  {err_name} = {train_err:6.4f} - "
                f"Ts  {err_name} = {test_err:6.4f}")
     writer.add_scalar(f'error/{err_name}/train', train_err, epoch)
@@ -136,6 +160,7 @@ def train_complexity_reg(
         verbose: bool,
         loss_every: int,
         optimizer: str,
+        retrain_nkrr: bool = False,
 ) -> List[Dict[str, float]]:
     if cuda:
         Xtr, Ytr, Xts, Yts = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
@@ -144,7 +169,7 @@ def train_complexity_reg(
         opt_hp = torch.optim.Adam([
             {"params": model.parameters(), "lr": learning_rate},
         ])
-        #schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_hp, factor=0.3, patience=20)
+        # schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_hp, factor=0.3, patience=20)
         schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=80, gamma=0.3)
     elif optimizer == "lbfgs":
         if model.losses_are_grads:
@@ -180,7 +205,8 @@ def train_complexity_reg(
         if epoch != 0 and (epoch + 1) % loss_every == 0:
             pred_dict = pred_reporting(
                 model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
-                err_fn=err_fn, epoch=epoch, time_start=e_start, cum_time=cum_time)
+                err_fn=err_fn, epoch=epoch, time_start=e_start, cum_time=cum_time,
+                resolve_model=retrain_nkrr)
             cum_time = pred_dict["cum_time"]
         loss_dict = grad_loss_reporting(model.named_parameters(), grads, losses, model.loss_names,
                                         verbose, epoch, losses_are_grads=model.losses_are_grads)
@@ -192,11 +218,20 @@ def train_complexity_reg(
                     schedule.step(loss_dict['train_NRMSE'])
             else:
                 schedule.step()
+    if retrain_nkrr:
+        print(f"Final retrain after {num_epochs} epochs:")
+        pred_dict = pred_reporting(
+            model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
+            err_fn=err_fn, epoch=num_epochs, time_start=time.time(), cum_time=cum_time,
+            resolve_model=retrain_nkrr)
+        logs.append(pred_dict)
+
     return logs
 
 
 def init_model(model_type, data, penalty_init, sigma_init, centers_init, opt_penalty, opt_sigma,
-               opt_centers, sigma_type, cuda, val_pct, cg_tol):
+               opt_centers, sigma_type, cuda, val_pct, cg_tol, num_trace_vecs=20, flk_maxiter=10,
+               nystrace_ste=False):
     start_sigma = get_start_sigma(sigma_init, sigma_type, data['X'].shape[1])
     if model_type in {"hgrad-closed", "hgrad-ift"}:
         if val_pct <= 0 or val_pct >= 100:
@@ -206,8 +241,10 @@ def init_model(model_type, data, penalty_init, sigma_init, centers_init, opt_pen
         all_idx = torch.randperm(tot)
         val_idx = all_idx[:n_val]
         tr_idx = all_idx[n_val:]
-        print(
-            f"Validation split ({val_pct}): {len(tr_idx)} training points, {len(val_idx)} validation points")
+        print(f"Validation split ({val_pct}): {len(tr_idx)} training points, "
+              f"{len(val_idx)} validation points")
+
+    flk_opt = FalkonOptions(cg_tolerance=cg_tol, use_cpu=not torch.cuda.is_available(), cg_full_gradient_every=10)
 
     if model_type == "gpr":
         model = GPR(sigma_init=start_sigma, penalty_init=penalty_init,
@@ -247,6 +284,24 @@ def init_model(model_type, data, penalty_init, sigma_init, centers_init, opt_pen
         model = DeffNoPenFitTr(sigma_init=start_sigma, penalty_init=penalty_init,
                                centers_init=centers_init, opt_sigma=opt_sigma,
                                opt_penalty=opt_penalty, opt_centers=opt_centers, cuda=cuda)
+    elif model_type == "stoch-creg-penfit":
+        model = StochasticDeffPenFitTr(sigma_init=start_sigma, penalty_init=penalty_init,
+                                       centers_init=centers_init, opt_sigma=opt_sigma,
+                                       opt_penalty=opt_penalty, opt_centers=opt_centers, cuda=cuda,
+                                       flk_opt=flk_opt, num_trace_est=num_trace_vecs,
+                                       flk_maxiter=flk_maxiter, nystrace_ste=nystrace_ste)
+    elif model_type == "stoch-creg-nopenfit":
+        model = StochasticDeffNoPenFitTr(sigma_init=start_sigma, penalty_init=penalty_init,
+                                         centers_init=centers_init, opt_sigma=opt_sigma,
+                                         opt_penalty=opt_penalty, opt_centers=opt_centers,
+                                         cuda=cuda, flk_opt=flk_opt, num_trace_est=num_trace_vecs,
+                                         flk_maxiter=flk_maxiter, nystrace_ste=nystrace_ste)
+    elif model_type == "stoch-gcv":
+        model = StochasticNystromGCV(sigma_init=start_sigma, penalty_init=penalty_init,
+                                     centers_init=centers_init, opt_sigma=opt_sigma,
+                                     opt_penalty=opt_penalty, opt_centers=opt_centers, cuda=cuda,
+                                     flk_opt=flk_opt, num_trace_est=num_trace_vecs,
+                                     flk_maxiter=flk_maxiter)
     else:
         raise RuntimeError(f"{model_type} model type not recognized!")
 

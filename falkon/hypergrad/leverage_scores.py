@@ -1,297 +1,23 @@
-import dataclasses
 from typing import Optional
 
 import scipy.linalg
 import torch
 
-import falkon
 from falkon import FalkonOptions
 from falkon.hypergrad.common import full_rbf_kernel
 from falkon.kernels import GaussianKernel
 from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
-from falkon.la_helpers import potrf, trsm
 from falkon.optim import FalkonConjugateGradient
 from falkon.preconditioner import FalkonPreconditioner
 
-__all__ = ("gauss_effective_dimension", "gauss_nys_effective_dimension")
-
-
-def subs_deff_simple(kernel: falkon.kernels.Kernel,
-                     penalty: torch.Tensor,
-                     X: torch.Tensor,
-                     J: torch.Tensor) -> torch.Tensor:
-    n = X.shape[0]
-    K_JJ = kernel(J, J)
-    K_XJ = kernel(X, J)
-
-    # Inversion
-    U, S, _ = torch.svd(K_JJ + penalty * n * torch.eye(K_JJ.shape[0], dtype=K_JJ.dtype, device=K_JJ.device))
-    # Exclude eigen-values close to 0
-    thresh = (S[0] * S.shape[0] * torch.finfo(S.dtype).eps).item()
-    stable_eig = (S > thresh)
-    print("%d stable eigenvalues" % (stable_eig.sum()))
-    U_thin = U[:, stable_eig]  # n x m
-    S_thin = S[stable_eig]     # m
-    S_thin_root_inv = torch.sqrt(S_thin).reciprocal().reshape(-1, 1)  # m x 1
-    K_JJ_inv = S_thin_root_inv * U_thin.T   # square root inverse (m x n)
-
-    # Multiply by the large kernel
-    E = K_JJ_inv @ K_XJ.T  # x * j
-
-    # Calculate the trace, which is just the squared norm of the columns
-    dim_eff = (1 / penalty) - (1 / (penalty * n)) * torch.sum(torch.norm(E, dim=1) ** 2)
-    return dim_eff
-
-
-def full_deff_simple(kernel, penalty, X):
-    K = kernel(X, X)
-    K_inv = torch.pinverse(K + penalty * X.shape[0] * torch.eye(X.shape[0]))
-    tau = torch.diagonal(K @ K_inv)
-    return tau.sum()
-
-
-def full_deff(kernel, penalty, X: torch.Tensor):
-    K = kernel(X, X)  # n * n
-    n = X.shape[0]
-
-    K_invertible = K + penalty * n * torch.eye(X.shape[0])
-
-    U_DD, S_DD, _ = torch.svd(K_invertible)
-    # Exclude eigen-values close to 0
-    thresh = (S_DD.max() * S_DD.shape[0] * torch.finfo(S_DD.dtype).eps).item()
-    stable_eig = (S_DD > thresh)
-    U_thin = U_DD[:, stable_eig]  # n x m
-    S_thin = S_DD[stable_eig]     # m
-    S_thin_inv = torch.sqrt(S_thin).reciprocal().reshape(-1, 1)  # m x 1
-
-    # diag(S_root_inv) @ U.T
-    E = S_thin_inv * U_thin.T   # square root inverse (m x n)
-    E = E @ K
-    # the diagonal entries of XX'(X'X + lam*S^(-2))^(-1)XX' are just the squared
-    # ell-2 norm of the columns of (X'X + lam*S^(-2))^(-1/2)XX'
-    tau = (torch.diagonal(K) - torch.square(E).sum(0)) / (penalty * n)
-    assert torch.all(tau >= 0)
-    d_eff = tau.sum()
-    return d_eff
-
-
-@torch.jit.script
-def my_cdist(x1, x2):
-    x1_norm = torch.norm(x1, p=2, dim=-1, keepdim=True).pow(2)
-    x2_norm = torch.norm(x2, p=2, dim=-1, keepdim=True).pow(2)
-    res = torch.addmm(x2_norm.transpose(-2, -1), x1, x2.transpose(-2, -1), alpha=-2).add_(x1_norm)
-    res = res.clamp_min_(1e-30)
-    return res
-
-
-def gauss_effective_dimension(kernel_args, penalty, X, t, deterministic=False):
-    return GaussEffectiveDimension.apply(kernel_args, penalty, X, t, deterministic)
-
-
-# noinspection PyMethodOverriding
-class GaussEffectiveDimension(torch.autograd.Function):
-    NUM_DIFF_ARGS = 3
-
-    @staticmethod
-    @torch.jit.script
-    def _naive_torch_gaussian_kernel(X1, X2, sigma):
-        pairwise_dists = my_cdist(X1 / sigma, X2 / sigma)
-        return torch.exp(-0.5 * pairwise_dists)
-
-    @staticmethod
-    def _cholesky_solve(L, b):
-        y = trsm(b, L, alpha=1.0, lower=True, transpose=0)
-        return trsm(y, L, alpha=1.0, lower=True, transpose=1)
-
-    @staticmethod
-    def forward(ctx, kernel_args, penalty, X, t, deterministic):
-        n = X.shape[0]
-        if deterministic:
-            torch.manual_seed(12)
-        Z = torch.randn(t, n, dtype=X.dtype, device=X.device).T  # n x t
-
-        with torch.autograd.enable_grad():
-            # Using naive or ours is equivalent, as long as splitting doesn't occur?
-            K = GaussEffectiveDimension._naive_torch_gaussian_kernel(X, X, kernel_args).T
-            KZ = K @ Z   # n x t
-        with torch.autograd.no_grad():
-            _penalty = penalty * n                # Rescaled penalty
-            Keye = K + torch.diag_embed(_penalty.expand(n))
-            if K.is_cuda:
-                from falkon.ooc_ops.ooc_potrf import gpu_cholesky
-                K_chol = gpu_cholesky(Keye, upper=False, clean=False, overwrite=True, opt=FalkonOptions())
-            else:
-                K_chol = potrf(Keye, upper=False, clean=False, overwrite=True, cuda=Keye.is_cuda)
-            KinvZ = GaussEffectiveDimension._cholesky_solve(K_chol, Z)
-            ctx.save_for_backward(kernel_args, penalty, X)
-            ctx.K_chol = K_chol
-            ctx.KinvZ = KinvZ
-            ctx.KZ = KZ
-            ctx.K = K
-            return (KZ * KinvZ).sum(0).mean()
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        """
-        Z.T @ K' @ Kinv @ Z - Z.T @ K @ Kinv @ Kl' @ Kinv @ Z
-
-        where Kl' @ Kinv @ Z = K' @ Kinv @ Z + l' * Kinv @ Z
-        """
-        kernel_args, penalty, X = ctx.saved_tensors
-        with torch.autograd.no_grad():
-            KinvKZ = GaussEffectiveDimension._cholesky_solve(ctx.K_chol, ctx.KZ)
-
-        with torch.autograd.enable_grad():
-            _penalty = X.shape[0] * penalty
-            loss_p1 = (ctx.KZ * ctx.KinvZ).sum(0).mean()
-            loss_p2 = (KinvKZ * (ctx.K @ ctx.KinvZ + _penalty * ctx.KinvZ)).sum(0).mean()
-            loss = grad_output * (loss_p1 - loss_p2)
-
-        needs_grad = []
-        for i in range(GaussEffectiveDimension.NUM_DIFF_ARGS):
-            if ctx.needs_input_grad[i]:
-                needs_grad.append(ctx.saved_tensors[i])
-        grads = torch.autograd.grad(loss, needs_grad, retain_graph=True)
-        result = []
-        j = 0
-        for i in range(len(ctx.needs_input_grad)):
-            if ctx.needs_input_grad[i]:
-                result.append(grads[j])
-                j += 1
-            else:
-                result.append(None)
-        return tuple(result)
-
-
-def gauss_nys_effective_dimension(kernel_args, penalty, M, X, t, deterministic=False, preconditioner=None):
-    opt = FalkonOptions(keops_active="no")
-    K = GaussianKernel(kernel_args.detach(), opt=opt)
-    if preconditioner is None:
-        preconditioner = FalkonPreconditioner(penalty.detach(), K, opt)
-        preconditioner.init(M.detach())
-    optim = FalkonConjugateGradient(K, preconditioner, opt)
-
-    return GaussNysEffectiveDimension.apply(kernel_args, penalty, M, X, t, deterministic, optim, preconditioner)
-
-
-# noinspection PyMethodOverriding
-class GaussNysEffectiveDimension(torch.autograd.Function):
-    NUM_DIFF_ARGS = 3
-    MAX_ITER = 10
-
-    @staticmethod
-    @torch.jit.script
-    def _naive_torch_gaussian_kernel(X1, X2, sigma):
-        pairwise_dists = my_cdist(X1 / sigma, X2 / sigma)
-        return torch.exp(-0.5 * pairwise_dists)
-
-    @staticmethod
-    def forward(ctx, kernel_args, penalty, M, X, t, deterministic, optim: FalkonConjugateGradient, precond):
-        n = X.shape[0]
-        if deterministic:
-            torch.manual_seed(12)
-        Z = torch.randn(t, n, dtype=X.dtype, device=X.device).T  # n x t
-
-        # TODO: flk already has args, penalty, M
-        with torch.autograd.no_grad():
-            beta = optim.solve(X, M, Z, penalty, initial_solution=None,
-                               max_iter=GaussNysEffectiveDimension.MAX_ITER,
-                               callback=None)
-            f1 = precond.apply(beta)
-
-        with torch.autograd.enable_grad():
-            f2 = GaussNysEffectiveDimension._naive_torch_gaussian_kernel(M, X, kernel_args) @ Z
-
-            ctx.save_for_backward(kernel_args, penalty, M)
-            ctx.f1 = f1
-            ctx.f2 = f2
-            ctx.X = X
-            return (f1 * f2).sum(0).mean()
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        X, f1, f2 = ctx.X, ctx.f1, ctx.f2
-        n = X.shape[0]
-        kernel_args, penalty, M = ctx.saved_tensors
-
-        with torch.autograd.enable_grad():
-            l1 = (f2 * f1).sum(0).mean()
-            K_nm = GaussNysEffectiveDimension._naive_torch_gaussian_kernel(X, M, kernel_args)
-            K_mm = GaussNysEffectiveDimension._naive_torch_gaussian_kernel(M, M, kernel_args)
-            l2_p1 = K_nm @ f1
-            l2_p2 = K_mm @ f1
-            l2 = (torch.square(l2_p1)).sum(0).mean() + penalty * n * (f1 * l2_p2).sum(0).mean()
-
-            loss = grad_output * (2 * l1 - l2)
-
-        needs_grad = []
-        for i in range(GaussNysEffectiveDimension.NUM_DIFF_ARGS):
-            if ctx.needs_input_grad[i]:
-                needs_grad.append(ctx.saved_tensors[i])
-        grads = torch.autograd.grad(loss, needs_grad, retain_graph=True, allow_unused=True)
-        result = []
-        j = 0
-        for i in range(len(ctx.needs_input_grad)):
-            if ctx.needs_input_grad[i]:
-                result.append(grads[j])
-                j += 1
-            else:
-                result.append(None)
-        return tuple(result)
-
-
-def regloss_and_deff(
-            kernel_args: torch.Tensor,
-            penalty: torch.Tensor,
-            M: torch.Tensor,
-            X: torch.Tensor,
-            Y: torch.Tensor,
-            t: int,
-            deterministic: bool = False,
-            use_precise_trace: bool = True,
-            solve_options: FalkonOptions = None,
-            solve_maxiter: int = 10,
-            gaussian_random: bool = True,
-            ):
-    """
-
-    Parameters
-    ----------
-    gaussian_random
-    kernel_args
-    penalty
-    M
-    X
-    Y
-    t
-    deterministic
-    use_precise_trace
-    solve_options
-    solve_maxiter
-
-    Returns
-    -------
-    (d_eff, loss, trace) : Tuple[float]
-        The three terms making up complexity-regularized loss
-    """
-    if solve_options is None:
-        solve_options = FalkonOptions(
-                cg_tolerance=1e-4,  # default is 1e-7
-                cg_full_gradient_every=10,  # default is 10
-                pc_epsilon_32=1e-6,  # default is 1e-5
-                cg_epsilon_32=1e-7,  # default is 1e-7
-            )
-
-    return RegLossAndDeff.apply(
-        kernel_args,
-        penalty,
-        M, X, Y, t,
-        deterministic,
-        use_precise_trace,
-        solve_options,
-        solve_maxiter,
-        gaussian_random,
-    )
+__all__ = (
+    "creg_plainfit",
+    "NoRegLossAndDeff",
+    "GCV",
+    "gcv",
+    "creg_penfit",
+    "RegLossAndDeffv2",
+)
 
 
 class NoRegLossAndDeffCtx():
@@ -488,21 +214,20 @@ def calc_grads(ctx, backward, num_diff_args):
 
 # noinspection PyMethodOverriding
 class NystromKernelTraceHutch(torch.autograd.Function):
+    EPS = 1e-6
     """
     STE with bernoulli Z (m x t)
-    note Tr(knm @ Kmm^{-1} @ knm.T) = Tr(knm.T @ knm @ kmm^{-1}) = Tr(L^{-1} knm.T knm L^{-T}) so
-    solve knm @ (L^{-T} @ Z)
-
-    Z = torch.empty(M.shape[0], T, dtype=X.dtype, device=X.device).bernoulli_().mul_(2).sub_(1)
-    part1 = torch.triangular_solve(Z, L, upper=False, transpose=True).solution.contiguous()
-    part2 = kernel.mmv(X, M, part1)
-    return part2.square().sum(0).mean()
+    note Tr(knm @ Kmm^{-1} @ knm.T) = Tr( knm L^{-T} L^{-1} knm.T) so
+    solve g1 = L^{-1} @ knm.T @ Z
+    solve g2 = L^{-T} @ g1  - only used for backward
+    
+    fwd: g1.T @ g1
     """
     @staticmethod
     def forward(ctx,
                 kernel_args,
-                M,
-                X,
+                M: torch.Tensor,
+                X: torch.Tensor,
                 t: int,
                 deterministic: bool,
                 gaussian_random: bool,
@@ -512,43 +237,50 @@ class NystromKernelTraceHutch(torch.autograd.Function):
             opt=FalkonOptions(keops_active="no"))
         if deterministic:
             torch.manual_seed(22)
-        Z = init_random_vecs(M.shape[0], t, dtype=X.dtype, device=X.device, gaussian_random=gaussian_random)
+        Z = init_random_vecs(X.shape[0], t, dtype=X.dtype, device=X.device, gaussian_random=gaussian_random)
+        mm_eye = torch.eye(M.shape[0], device=M.device, dtype=M.dtype) * NystromKernelTraceHutch.EPS
         with torch.autograd.enable_grad():
+            kmn_z = diff_kernel.mmv(M, X, Z)  # m * t
             kmm = full_rbf_kernel(M, M, kernel_args)
-            L = torch.cholesky(kmm)
-            part1 = torch.triangular_solve(Z, L, upper=False, transpose=True).solution.contiguous()
-            part2 = diff_kernel.mmv(X, M, part1)
+            L = torch.cholesky(kmm + mm_eye)
+
+        with torch.autograd.no_grad():
+            g1 = torch.triangular_solve(kmn_z, L, upper=False, transpose=False).solution  # m * t
+            g2 = torch.triangular_solve(g1, L, upper=False, transpose=True).solution.contiguous()  # m * t
 
         ctx.save_for_backward(kernel_args, M)
-        return part2.square().sum(0).mean()
+        ctx.kmn_z, ctx.L, ctx.g1, ctx.g2 = kmn_z, L, g1, g2
+        return torch.square(g1).sum(0).mean()
 
     @staticmethod
     def backward(ctx, out):
-        with torch.autograd.no_grad():
-            k_linv_linv = ctx.k_linv @ ctx.linv
         with torch.autograd.enable_grad():
             bg = out * (
-                2 * (ctx.k_linv * ctx.k_linv.detach()).sum() -
-                2 * (ctx.k_linv.detach() @ ctx.L.T * k_linv_linv).sum()
+                2 * (ctx.kmn_z * ctx.g2).sum(0).mean()
+                - 2 * (ctx.g2 * (ctx.L @ ctx.g1)).sum(0).mean()
             )
-
         return calc_grads(ctx, bg, 2)
 
     @staticmethod
     def grad_check():
         torch.manual_seed(3)
-        X = torch.randn(50, 10, dtype=torch.float64)
+        X = torch.randn(150, 10, dtype=torch.float64)
         M = X[:20].clone().detach().requires_grad_()
         s = torch.tensor([10.0] * X.shape[1], dtype=X.dtype).requires_grad_()
 
         torch.autograd.gradcheck(
             lambda sigma, centers:
-                NystromKernelTrace.apply(sigma, centers, X),
+                NystromKernelTraceHutch.apply(sigma, centers, X, 20, True, False),
             (s, M))
 
 
-def nystrom_kernel_trace(kernel_args, M, X):
-    return NystromKernelTrace.apply(kernel_args, M, X)
+def nystrom_kernel_trace(kernel_args, M, X, t=None, deterministic=None, gaussian_random=None, use_ste=False):
+    if use_ste:
+        if t is None or deterministic is None or gaussian_random is None:
+            raise RuntimeError("Cannot calculate nystrom-kernel trace with STE if t, deterministic, gaussian_random are not specified.")
+        return NystromKernelTraceHutch.apply(kernel_args, M, X, t, deterministic, gaussian_random, use_ste)
+    else:
+        return NystromKernelTrace.apply(kernel_args, M, X)
 
 
 # noinspection PyMethodOverriding
@@ -869,6 +601,12 @@ class NystromPenalizedDataFit(torch.autograd.Function):
             (s, p, M))
 
 
+def creg_plainfit(kernel_args, penalty, centers, X, Y, num_estimators, deterministic, solve_options, solve_maxiter, gaussian_random, use_stoch_trace):
+    return NoRegLossAndDeff.apply(
+        kernel_args, penalty, centers, X, Y, num_estimators, deterministic, solve_options, solve_maxiter, gaussian_random, use_stoch_trace
+    )
+
+
 # noinspection PyMethodOverriding
 class NoRegLossAndDeff(torch.autograd.Function):
     EPS = 1e-6
@@ -888,6 +626,7 @@ class NoRegLossAndDeff(torch.autograd.Function):
             solve_options: FalkonOptions,
             solve_maxiter: int,
             gaussian_random: bool,
+            use_stoch_trace: bool,
             ):
         data = NoRegLossAndDeffCtx(t)
 
@@ -896,11 +635,12 @@ class NoRegLossAndDeff(torch.autograd.Function):
                 kernel_args, penalty, M, X, Y, t, deterministic, solve_options, solve_maxiter,
                 gaussian_random, data)
             # Trace of the Nystrom kernel: Tr(KNM @ KMM^{-1} @ KNM.T) Prolem here: formation of N*M matrix!
-            data.nys_trace = nystrom_kernel_trace(kernel_args, M, X)
+            data.nys_trace = nystrom_kernel_trace(kernel_args, M, X, use_ste=use_stoch_trace, t=t, deterministic=deterministic, gaussian_random=gaussian_random)
             trace = X.shape[0] - data.nys_trace
             # D-Eff = Tr((KNM @ KMM^{-1} @ KNM.T + lambda I)^{-1} KNM @ KMM^{-1} @ KNM.T)
             data.nys_d_eff = nystrom_effective_dim_wdata(kernel_args, penalty, M, X, data)
 
+        NoRegLossAndDeff.last_alpha = data.solve_y
         ctx.save_for_backward(kernel_args, penalty, M)
         ctx.data = data
         return data.nys_d_eff + data.data_fit + trace
@@ -928,10 +668,18 @@ class NoRegLossAndDeff(torch.autograd.Function):
             (s, p, M))
 
 
+def gcv(kernel_args, penalty, centers, X, Y, num_estimators, deterministic, solve_options, solve_maxiter, gaussian_random):
+    return GCV.apply(
+        kernel_args, penalty, centers, X, Y, num_estimators, deterministic, solve_options, solve_maxiter, gaussian_random
+    )
+
+
 # noinspection PyMethodOverriding
 class GCV(torch.autograd.Function):
+    last_alpha = None
+    NUM_DIFF_ARGS = 3
     """
-    Numerator: Exactly the data-fit term of NoRegLossAndDeff (TODO: Extract into its own function)
+    Numerator: Exactly the data-fit term of NoRegLossAndDeff 
     Denominator: Similar to Nystrom Effective Dim.
     """
     @staticmethod
@@ -955,6 +703,7 @@ class GCV(torch.autograd.Function):
             data.nys_d_eff = nystrom_effective_dim_wdata(kernel_args, penalty, M, X, data)
             data.nys_d_eff = torch.square((1.0 - data.nys_d_eff/X.shape[0]))
 
+        GCV.last_alpha = data.solve_y
         ctx.save_for_backward(kernel_args, penalty, M)
         ctx.data = data
         return data.data_fit / data.nys_d_eff
@@ -964,7 +713,7 @@ class GCV(torch.autograd.Function):
         data = ctx.data
         with torch.autograd.enable_grad():
             bg = out * (data.data_fit / data.nys_d_eff)
-        return calc_grads(ctx, bg, NoRegLossAndDeff.NUM_DIFF_ARGS)
+        return calc_grads(ctx, bg, GCV.NUM_DIFF_ARGS)
 
     @staticmethod
     def grad_check():
@@ -980,6 +729,12 @@ class GCV(torch.autograd.Function):
             lambda sigma, pen, centers:
                 GCV.apply(sigma, pen, centers, X, Y, 20, True, FalkonOptions(), 30, False),
             (s, p, M))
+
+
+def creg_penfit(kernel_args, penalty, centers, X, Y, num_estimators, deterministic, solve_options, solve_maxiter, gaussian_random, use_stoch_trace):
+    return RegLossAndDeffv2.apply(
+        kernel_args, penalty, centers, X, Y, num_estimators, deterministic, solve_options, solve_maxiter, gaussian_random, use_stoch_trace
+    )
 
 
 # noinspection PyMethodOverriding
@@ -1001,6 +756,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
             solve_options: FalkonOptions,
             solve_maxiter: int,
             gaussian_random: bool,
+            use_stoch_trace: bool,
             ):
         data = NoRegLossAndDeffCtx(t)
 
@@ -1012,9 +768,10 @@ class RegLossAndDeffv2(torch.autograd.Function):
             data.data_fit = nystrom_penalized_data_fit(
                 kernel_args, penalty, M, X, Y, solve_options, solve_maxiter, data)
             # Trace of the Nystrom kernel: Tr(KNM @ KMM^{-1} @ KNM.T) Prolem here: formation of N*M matrix!
-            data.nys_trace = nystrom_kernel_trace(kernel_args, M, X)
+            data.nys_trace = nystrom_kernel_trace(kernel_args, M, X, use_ste=use_stoch_trace, t=t, deterministic=deterministic, gaussian_random=gaussian_random)
             trace = X.shape[0] - data.nys_trace
 
+        RegLossAndDeffv2.last_alpha = data.solve_y
         ctx.save_for_backward(kernel_args, penalty, M)
         ctx.data = data
         return data.nys_d_eff + data.data_fit + trace
@@ -1040,183 +797,3 @@ class RegLossAndDeffv2(torch.autograd.Function):
             lambda sigma, pen, centers:
                 RegLossAndDeffv2.apply(sigma, pen, centers, X, Y, 20, True, FalkonOptions(), 30, False),
             (s, p, M))
-
-
-# noinspection PyMethodOverriding
-class RegLossAndDeff(torch.autograd.Function):
-    # TODO: Rewrite this function using re-usable blocks. Use Tri-Inverse for Trace.
-    EPS = 1e-6
-    NUM_DIFF_ARGS = 3
-    last_alpha = None
-
-    @staticmethod
-    def forward(
-            ctx,
-            kernel_args: torch.Tensor,
-            penalty: torch.Tensor,
-            M: torch.Tensor,
-            X: torch.Tensor,
-            Y: torch.Tensor,
-            t: int,
-            deterministic: bool,
-            use_precise_trace: bool,
-            solve_options: FalkonOptions,
-            solve_maxiter: int,
-            gaussian_random: bool,
-            ):
-        if X.shape[0] <= 30_000:
-            keops = "no"
-        else:
-            keops = "force"
-        diff_kernel = DiffGaussianKernel(
-            kernel_args,
-            opt=FalkonOptions(keops_active=keops))
-
-        n = X.shape[0]
-        if deterministic:
-            torch.manual_seed(12)
-        if gaussian_random:
-            Z = torch.randn(n, t, dtype=X.dtype, device=X.device)
-        else:
-            Z = torch.empty(n, t, dtype=X.dtype, device=X.device).bernoulli_().mul_(2).sub_(1)
-        ZY = torch.cat((Z, Y), dim=1)
-        _penalty = torch.exp(-penalty)
-
-        ### Solve Falkon
-        with torch.autograd.no_grad():
-            M_ = M.detach()
-            kernel_args_ = kernel_args.detach()
-            K = GaussianKernel(kernel_args_, opt=solve_options)  # here which opt doesnt matter
-            precond = FalkonPreconditioner(_penalty.item(), K, solve_options)  # here which opt doesnt matter
-            precond.init(M_)
-            optim = FalkonConjugateGradient(K, precond, solve_options)
-            beta = optim.solve(
-                X, M_, ZY, _penalty.item(),
-                initial_solution=None,
-                max_iter=solve_maxiter,
-            )
-            sol_full = precond.apply(beta)  # eta, alpha
-            RegLossAndDeff.last_alpha = sol_full[:, t:].clone()
-        ### End Falkon Solve
-
-        ### K_MN @ vector
-        with torch.autograd.enable_grad():
-            if use_precise_trace:
-                # NOTE: K_MN can be a very large matrix.
-                # We need to store all of it to enable the triangular-solve operation.
-                K_MN = full_rbf_kernel(M, X, kernel_args)
-                k_vec_full = K_MN @ ZY  # d, e
-            else:
-                k_vec_full = diff_kernel.mmv(M, X, ZY)
-                K_MN = None
-        ### End large K-vec product
-
-        ### Trace terms
-        with torch.autograd.enable_grad():
-            K_MM = full_rbf_kernel(M, M, kernel_args)
-
-        mm_eye = torch.eye(K_MM.shape[0], device=K_MM.device, dtype=K_MM.dtype)
-        if use_precise_trace:
-            # This is old-version for when trace is calculated directly.
-            # This trace calculation is very precise.
-            with torch.autograd.enable_grad():
-                T = torch.cholesky(K_MM + mm_eye * RegLossAndDeff.EPS, upper=True)  # T.T @ T = K_MM
-                g = torch.triangular_solve(K_MN, T, transpose=True, upper=True).solution  # g == A  M*N
-        else:
-            # Trace is calculated using hutchinson. Not very accurate!
-            with torch.autograd.no_grad():
-                T = torch.cholesky(K_MM + mm_eye * RegLossAndDeff.EPS, upper=True)  # T.T @ T = K_MM
-                g1 = torch.triangular_solve(k_vec_full[:, :t], T, upper=True, transpose=True).solution
-                g = torch.triangular_solve(g1, T, upper=True, transpose=False).solution
-        ### End Trace
-
-        d_eff = - (k_vec_full[:, :t] * sol_full[:, :t]).sum(0).mean()
-        loss = - torch.square(Y).sum()
-        loss += (k_vec_full[:, t:] * sol_full[:, t:]).sum(0).mean()
-        if use_precise_trace:
-            trace = - (1 / (_penalty) - torch.square(g).sum() / (_penalty * n))
-        else:
-            trace = - (1 / (_penalty) - torch.square(g).sum(0).mean() / (_penalty * n))
-
-        ctx.save_for_backward(kernel_args, penalty, M)
-        ctx.sol_full = sol_full
-        ctx.K_MN = K_MN
-        ctx.k_vec_full = k_vec_full
-        ctx.K_MM = K_MM
-        ctx.T = T
-        ctx.g = g
-        ctx.t = t
-        ctx.diff_kernel = diff_kernel
-        ctx.X = X
-        ctx.use_precise_trace = use_precise_trace
-
-        return d_eff, loss, trace
-
-    @staticmethod
-    def backward(ctx, out_deff, out_loss, out_trace):
-        sol_full, K_MN, k_vec_full, K_MM, T, g, t, diff_kernel, X, use_precise_trace = (
-            ctx.sol_full,
-            ctx.K_MN,
-            ctx.k_vec_full,
-            ctx.K_MM,
-            ctx.T,
-            ctx.g,
-            ctx.t,
-            ctx.diff_kernel,
-            ctx.X,
-            ctx.use_precise_trace,
-        )
-        n = X.shape[0]
-        kernel_args, penalty, M = ctx.saved_tensors
-
-        with torch.autograd.enable_grad():
-            _penalty = torch.exp(-penalty)
-
-            if use_precise_trace:
-                KNM_sol_full = K_MN.T @ sol_full
-            else:
-                KNM_sol_full = diff_kernel.mmv(X, M, sol_full)
-            KMM_sol_full = (_penalty * n * K_MM) @ sol_full
-
-            deff_bg = -out_deff * (
-                2 * (k_vec_full[:, :t] * sol_full[:, :t]).sum(0).mean()
-                - (torch.square(KNM_sol_full[:, :t]).sum(0) + (sol_full[:, :t] * KMM_sol_full[:, :t]).sum(0)).mean()
-            )
-            loss_bg = out_loss * (
-                2 * (k_vec_full[:, t:] * sol_full[:, t:]).sum(0).mean()
-                - (torch.square(KNM_sol_full[:, t:]).sum(0) + (sol_full[:, t:] * KMM_sol_full[:, t:]).sum(0)).mean()
-            )
-            if use_precise_trace:
-                # Normal trace with A @ A.T
-                trace_bg = -out_trace * (
-                    1 / (_penalty) -
-                    torch.square(g).sum() / (_penalty * n)
-                )
-            else:
-                # Trace with stoch trace est
-                trace_bg = -out_trace * (
-                    1 / _penalty -
-                    (
-                        2 * (k_vec_full[:, :t] * g).sum(0).mean()
-                        - torch.square(T @ g).sum(0).mean()
-                    ) / (_penalty * n)
-                )
-
-            bg = deff_bg + loss_bg + trace_bg
-
-        needs_grad = []
-        for i in range(RegLossAndDeff.NUM_DIFF_ARGS):
-            if ctx.needs_input_grad[i]:
-                needs_grad.append(ctx.saved_tensors[i])
-        grads = torch.autograd.grad(bg, needs_grad, retain_graph=True)
-
-        result = []
-        j = 0
-        for i in range(len(ctx.needs_input_grad)):
-            if ctx.needs_input_grad[i]:
-                result.append(grads[j])
-                j += 1
-            else:
-                result.append(None)
-        return tuple(result)
-

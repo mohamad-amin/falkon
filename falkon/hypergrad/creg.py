@@ -1,8 +1,73 @@
-import numpy as np
 import torch
 
+from falkon import FalkonOptions
 from falkon.hypergrad.common import full_rbf_kernel, get_scalar, cholesky
-from falkon.hypergrad.complexity_reg import NystromKRRModelMixinN, KRRModelMixinN, HyperOptimModel
+from falkon.hypergrad.complexity_reg import NystromKRRModelMixinN, HyperOptimModel
+from falkon.hypergrad.leverage_scores import (
+    creg_penfit, RegLossAndDeffv2, creg_plainfit,
+    NoRegLossAndDeff
+)
+from falkon.kernels import GaussianKernel
+
+
+class StochasticDeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
+    def __init__(
+            self,
+            sigma_init,
+            penalty_init,
+            centers_init,
+            opt_centers,
+            opt_sigma,
+            opt_penalty,
+            cuda: bool,
+            flk_opt: FalkonOptions,
+            num_trace_est: int = 20,
+            flk_maxiter: int = 10,
+            nystrace_ste: bool = False,
+    ):
+        super().__init__(
+            penalty=penalty_init,
+            sigma=sigma_init,
+            centers=centers_init,
+            cuda=cuda,
+            verbose=True,
+        )
+        self.opt_sigma, self.opt_centers, self.opt_penalty = opt_sigma, opt_centers, opt_penalty
+        if opt_sigma:
+            self.register_parameter("sigma", self.sigma_.requires_grad_(True))
+        if opt_penalty:
+            self.register_parameter("penalty", self.penalty_.requires_grad_(True))
+        if opt_centers:
+            self.register_parameter("centers", self.centers_.requires_grad_(True))
+
+        self.flk_opt = flk_opt
+        self.num_trace_est = num_trace_est
+        self.flk_maxiter = flk_maxiter
+        self.nystrace_ste = nystrace_ste
+
+    def hp_loss(self, X, Y):
+        loss = creg_penfit(kernel_args=self.sigma, penalty=self.penalty, centers=self.centers,
+                           X=X, Y=Y, num_estimators=self.num_trace_est, deterministic=False,
+                           solve_options=self.flk_opt, solve_maxiter=self.flk_maxiter,
+                           gaussian_random=False, use_stoch_trace=self.nystrace_ste)
+        return loss
+
+    def predict(self, X):
+        if RegLossAndDeffv2.last_alpha is None:
+            raise RuntimeError("Call hp_loss before calling predict.")
+        alpha = RegLossAndDeffv2.last_alpha
+        kernel = GaussianKernel(self.sigma, opt=self.flk_opt)
+        return kernel.mmv(X, self.centers, alpha)
+
+    @property
+    def loss_names(self):
+        return "stoch-creg-penfit"
+
+    def __repr__(self):
+        return f"StochasticDeffPenFitTr(sigma={get_scalar(self.sigma)}, penalty={get_scalar(self.penalty)}, " \
+               f"num_centers={self.centers.shape[0]}, opt_centers={self.opt_centers}, " \
+               f"opt_sigma={self.opt_sigma}, opt_penalty={self.opt_penalty}, t={self.num_trace_est}, " \
+               f"flk_iter={self.flk_maxiter})"
 
 
 class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
@@ -42,7 +107,7 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         kmn = full_rbf_kernel(self.centers, X, self.sigma)
         kmm = (full_rbf_kernel(self.centers, self.centers, self.sigma) +
                torch.eye(m, device=X.device, dtype=X.dtype) * 1e-6)
-        self.L = cholesky(kmm)   # L @ L.T = kmm
+        self.L = cholesky(kmm)  # L @ L.T = kmm
         # A = L^{-1} K_mn / (sqrt(n*pen))
         A = torch.triangular_solve(kmn, self.L, upper=False).solution / sqrt_var
         AAT = A @ A.T  # m*n @ n*m = m*m in O(n * m^2), equivalent to kmn @ knm.
@@ -77,6 +142,66 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
     def __repr__(self):
         return f"DeffPenFitTr(sigma={get_scalar(self.sigma)}, penalty={get_scalar(self.penalty)}, num_centers={self.centers.shape[0]}, " \
                f"opt_centers={self.opt_centers}, opt_sigma={self.opt_sigma}, opt_penalty={self.opt_penalty})"
+
+
+class StochasticDeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
+    def __init__(
+            self,
+            sigma_init,
+            penalty_init,
+            centers_init,
+            opt_centers,
+            opt_sigma,
+            opt_penalty,
+            cuda: bool,
+            flk_opt: FalkonOptions,
+            num_trace_est: int = 20,
+            flk_maxiter: int = 10,
+            nystrace_ste: bool = False,
+    ):
+        super().__init__(
+            penalty=penalty_init,
+            sigma=sigma_init,
+            centers=centers_init,
+            cuda=cuda,
+            verbose=True,
+        )
+        self.opt_sigma, self.opt_centers, self.opt_penalty = opt_sigma, opt_centers, opt_penalty
+        if opt_sigma:
+            self.register_parameter("sigma", self.sigma_.requires_grad_(True))
+        if opt_penalty:
+            self.register_parameter("penalty", self.penalty_.requires_grad_(True))
+        if opt_centers:
+            self.register_parameter("centers", self.centers_.requires_grad_(True))
+
+        self.flk_opt = flk_opt
+        self.num_trace_est = num_trace_est
+        self.flk_maxiter = flk_maxiter
+        self.nystrace_ste = nystrace_ste
+
+    def hp_loss(self, X, Y):
+        loss = creg_plainfit(kernel_args=self.sigma, penalty=self.penalty, centers=self.centers,
+                             X=X, Y=Y, num_estimators=self.num_trace_est, deterministic=False,
+                             solve_options=self.flk_opt, solve_maxiter=self.flk_maxiter,
+                             gaussian_random=False, use_stoch_trace=self.nystrace_ste)
+        return loss
+
+    def predict(self, X):
+        if NoRegLossAndDeff.last_alpha is None:
+            raise RuntimeError("Call hp_loss before calling predict.")
+        alpha = NoRegLossAndDeff.last_alpha
+        kernel = GaussianKernel(self.sigma, opt=self.flk_opt)
+        return kernel.mmv(X, self.centers, alpha)
+
+    @property
+    def loss_names(self):
+        return "stoch-creg-plainfit"
+
+    def __repr__(self):
+        return f"StochasticDeffNoPenFitTr(sigma={get_scalar(self.sigma)}, penalty={get_scalar(self.penalty)}, " \
+               f"num_centers={self.centers.shape[0]}, opt_centers={self.opt_centers}, " \
+               f"opt_sigma={self.opt_sigma}, opt_penalty={self.opt_penalty}, t={self.num_trace_est}, " \
+               f"flk_iter={self.flk_maxiter})"
 
 
 class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
@@ -116,7 +241,7 @@ class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         kmn = full_rbf_kernel(self.centers, X, self.sigma)
         kmm = (full_rbf_kernel(self.centers, self.centers, self.sigma) +
                torch.eye(m, device=X.device, dtype=X.dtype) * 1e-6)
-        L = cholesky(kmm)   # L @ L.T = kmm
+        L = cholesky(kmm)  # L @ L.T = kmm
         # A = L^{-1} K_mn / (sqrt(n*pen))
         A = torch.triangular_solve(kmn, L, upper=False).solution / sqrt_var
         AAT = A @ A.T
@@ -134,9 +259,10 @@ class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
 
         # Complexity (nystrom-deff)
         ndeff = C.square().sum()  # = torch.trace(C.T @ C)
-        datafit = torch.square(Y).sum() - 2 * torch.square(c * sqrt_var).sum() + variance * torch.square(d).sum()
+        datafit = torch.square(Y).sum() - 2 * torch.square(
+            c * sqrt_var).sum() + variance * torch.square(d).sum()
         trace = Kdiag - torch.trace(AAT) * variance
-        #trace = trace / variance  # TODO: This is a temporary addition!
+        # trace = trace / variance  # TODO: This is a temporary addition!
 
         return ndeff, datafit, trace
 

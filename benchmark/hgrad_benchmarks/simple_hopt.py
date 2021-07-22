@@ -56,6 +56,8 @@ def run_grid_search(
         num_centers: int,
         val_pct: float,
         cg_tol: float,
+        flk_maxiter: int,
+        num_trace_vecs: int,
         cuda: bool,
         seed: int):
     torch.manual_seed(seed)
@@ -84,7 +86,11 @@ def run_grid_search(
                        sigma_type=sigma_type,
                        cuda=cuda,
                        val_pct=val_pct,
-                       cg_tol=cg_tol)
+                       cg_tol=cg_tol,
+                       num_trace_vecs=num_trace_vecs,
+                       flk_maxiter=flk_maxiter,
+                       nystrace_ste=False,
+                       )
     logs = run_on_grid(Xtr=Xtr, Ytr=Ytr,
                        Xts=Xts, Yts=Yts,
                        model=model, err_fn=partial(err_fns[0], **metadata),
@@ -107,6 +113,8 @@ def run_optimization(
         learning_rate: float,
         val_pct: float,
         cg_tol: float,
+        flk_maxiter: int,
+        num_trace_vecs: int,
         optimizer: str,
         cuda: bool,
         seed: int
@@ -137,12 +145,17 @@ def run_optimization(
                        sigma_type=sigma_type,
                        cuda=cuda,
                        val_pct=val_pct,
-                       cg_tol=cg_tol)
+                       cg_tol=cg_tol,
+                       num_trace_vecs=num_trace_vecs,
+                       flk_maxiter=flk_maxiter,
+                       nystrace_ste=False,
+                       )
     logs = train_complexity_reg(Xtr=Xtr, Ytr=Ytr,
                                 Xts=Xts, Yts=Yts,
                                 model=model, err_fn=partial(err_fns[0], **metadata),
                                 learning_rate=learning_rate, num_epochs=num_epochs,
-                                cuda=cuda, verbose=False, loss_every=loss_every, optimizer=optimizer)
+                                cuda=cuda, verbose=False, loss_every=loss_every,
+                                optimizer=optimizer)
     save_logs(logs, exp_name=exp_name)
 
 
@@ -178,6 +191,9 @@ if __name__ == "__main__":
     p.add_argument('--optimizer', type=str, default='adam')
     p.add_argument('--grid-spec', type=str, default=None,
                    help="Grid-spec file. Triggers a grid-search run instead of optimization.")
+    p.add_argument('--num-t', type=int, default=20, help="Number of trace-vectors for STE")
+    p.add_argument('--flk-maxiter', type=int, default=20,
+                   help="Maximum number of falkon iterations (for stochastic estimators)")
     p.add_argument('--cuda', action='store_true')
     args = p.parse_args()
     print("-------------------------------------------")
@@ -190,12 +206,19 @@ if __name__ == "__main__":
 
     if args.grid_spec is not None:
         run_grid_search(exp_name=args.name, dataset=args.dataset, model_type=args.model,
-                        penalty_init=args.penalty_init, sigma_type=args.sigma_type, gs_file=args.grid_spec,
-                        sigma_init=args.sigma_init, num_centers=args.num_centers, val_pct=args.val_pct,
-                        cg_tol=args.cg_tol, cuda=args.cuda, seed=args.seed)
+                        penalty_init=args.penalty_init, sigma_type=args.sigma_type,
+                        gs_file=args.grid_spec,
+                        sigma_init=args.sigma_init, num_centers=args.num_centers,
+                        val_pct=args.val_pct,
+                        cg_tol=args.cg_tol, cuda=args.cuda, seed=args.seed,
+                        num_trace_vecs=args.num_t, flk_maxiter=args.flk_maxiter)
     else:
         run_optimization(exp_name=args.name, dataset=args.dataset, model_type=args.model,
-                         penalty_init=args.penalty_init, sigma_type=args.sigma_type, sigma_init=args.sigma_init,
-                         opt_centers=args.oc, opt_sigma=args.os, opt_penalty=args.op, num_centers=args.num_centers,
+                         penalty_init=args.penalty_init, sigma_type=args.sigma_type,
+                         sigma_init=args.sigma_init,
+                         opt_centers=args.oc, opt_sigma=args.os, opt_penalty=args.op,
+                         num_centers=args.num_centers,
                          num_epochs=args.epochs, learning_rate=args.lr, val_pct=args.val_pct,
-                         cg_tol=args.cg_tol, cuda=args.cuda, seed=args.seed, optimizer=args.optimizer)
+                         cg_tol=args.cg_tol, cuda=args.cuda, seed=args.seed,
+                         optimizer=args.optimizer,
+                         num_trace_vecs=args.num_t, flk_maxiter=args.flk_maxiter)
