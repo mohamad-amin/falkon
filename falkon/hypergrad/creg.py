@@ -50,7 +50,7 @@ class StochasticDeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
                            X=X, Y=Y, num_estimators=self.num_trace_est, deterministic=False,
                            solve_options=self.flk_opt, solve_maxiter=self.flk_maxiter,
                            gaussian_random=False, use_stoch_trace=self.nystrace_ste)
-        return loss
+        return [loss]
 
     def predict(self, X):
         if RegLossAndDeffv2.last_alpha is None:
@@ -184,7 +184,7 @@ class StochasticDeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
                              X=X, Y=Y, num_estimators=self.num_trace_est, deterministic=False,
                              solve_options=self.flk_opt, solve_maxiter=self.flk_maxiter,
                              gaussian_random=False, use_stoch_trace=self.nystrace_ste)
-        return loss
+        return [loss]
 
     def predict(self, X):
         if NoRegLossAndDeff.last_alpha is None:
