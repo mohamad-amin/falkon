@@ -153,13 +153,14 @@ def run():
     extra_exp_name = "meanrem"
     flk_maxiter = 20
     num_trace_vecs = 20
+    models = ["stoch-gcv", "stoch-creg-nopenfit", "stoch-creg-penfit", "gcv", "creg-nopenfit", "creg-penfit"]
 
     if True:
         for si, pi in SIGMA_PEN_PAIRS:
             run_for_models(
                 sigma_init=si, pen_init=pi,
                 lr=learning_rate, num_epochs=num_epochs, M=M, dataset=dataset,
-                val_pct=val_pct, models=MODELS, num_rep=5, optim=optim, sigma=sigma,
+                val_pct=val_pct, models=models, num_rep=5, optim=optim, sigma=sigma,
                 opt_centers=opt_m, exp_name=extra_exp_name, flk_maxiter=flk_maxiter,
                 num_trace_vecs=num_trace_vecs)
     if False:
