@@ -17,6 +17,8 @@ from benchmark.common.benchmark_utils import Dataset
 from falkon.center_selection import UniformSelector
 from falkon.hypergrad.training import init_model, train_complexity_reg, HPGridPoint, run_on_grid
 
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
 
 def save_logs(logs: Any, exp_name: str, log_folder: str = "./logs"):
     new_exp_name = exp_name

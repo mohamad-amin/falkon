@@ -136,6 +136,7 @@ class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         ndeff = C.square().sum()  # = torch.trace(C.T @ C)
         datafit = torch.square(Y).sum() - 2 * torch.square(c * sqrt_var).sum() + variance * torch.square(d).sum()
         trace = Kdiag - torch.trace(AAT) * variance
+        #trace = trace / variance  # TODO: This is a temporary addition!
 
         return ndeff, datafit, trace
 

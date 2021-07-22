@@ -33,7 +33,7 @@ def run_simple_hopt(sigma_init: float,
         f"--optimizer {optim} "
         f"--op "
         f"--os "
-        f"--oc "
+        #f"--oc "
         f"--num-centers {M} "
         f"--dataset {dataset} "
         f"--model {model} "
@@ -94,19 +94,19 @@ SIGMA_PEN_PAIRS = [
 VAL_PCTS = [0.1, 0.2, 0.4, 0.6, 0.8, 0.9]
 MODELS = [
     #"loocv",
-    "sgpr",
+    #"sgpr",
     "gcv",
     #"hgrad-ift",
-    "hgrad-closed",
+    #"hgrad-closed",
     "creg-nopenfit",
     "creg-penfit",
 ]
 if __name__ == "__main__":
     si = 1.0
     pi = 1.0
-    num_epochs = 500
-    learning_rate = 0.01
-    M = 100
+    num_epochs = 200
+    learning_rate = 0.1
+    M = 20
     dataset = "protein"
     val_pct = 0.4
     optim = "adam"
@@ -114,7 +114,7 @@ if __name__ == "__main__":
 
     if True:
         for si, pi in SIGMA_PEN_PAIRS:
-            ename = f"test_hopt_{optim}_m{M}_lr{learning_rate}_pinit{pi}sinit{si}_meanrem_val{val_pct}_{sigma}sig_optM_sec"
+            ename = f"test_hopt_{optim}_m{M}_lr{learning_rate}_pinit{pi}sinit{si}_meanrem_val{val_pct}_{sigma}sig_sec_cregtracewvar"
             run_for_models(
                 sigma_init=si, pen_init=pi,
                 lr=learning_rate, num_epochs=num_epochs, M=M, dataset=dataset, ename=ename,

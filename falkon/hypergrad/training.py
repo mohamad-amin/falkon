@@ -144,8 +144,8 @@ def train_complexity_reg(
         opt_hp = torch.optim.Adam([
             {"params": model.parameters(), "lr": learning_rate},
         ])
-        schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_hp, factor=0.3, patience=20)
-        #schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=200, gamma=0.3)
+        #schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_hp, factor=0.3, patience=20)
+        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=80, gamma=0.3)
     elif optimizer == "lbfgs":
         if model.losses_are_grads:
             raise ValueError("L-BFGS not valid for model %s" % (model))
@@ -187,8 +187,11 @@ def train_complexity_reg(
         loss_dict.update(pred_dict)
         logs.append(loss_dict)
         if schedule is not None:
-            if 'train_NRMSE' in loss_dict:
-                schedule.step(loss_dict['train_NRMSE'])
+            if isinstance(schedule, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                if 'train_NRMSE' in loss_dict:
+                    schedule.step(loss_dict['train_NRMSE'])
+            else:
+                schedule.step()
     return logs
 
 
