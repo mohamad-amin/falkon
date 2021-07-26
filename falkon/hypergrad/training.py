@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from falkon import FalkonOptions, Falkon
 from falkon.hypergrad.creg import (
     DeffNoPenFitTr, DeffPenFitTr, StochasticDeffPenFitTr,
-    StochasticDeffNoPenFitTr
+    StochasticDeffNoPenFitTr, CompDeffPenFitTr, CompDeffNoPenFitTr,
 )
 from falkon.hypergrad.hgrad import NystromClosedFormHgrad, NystromIFTHgrad
 from falkon.hypergrad.common import get_start_sigma, get_scalar
@@ -244,7 +244,8 @@ def init_model(model_type, data, penalty_init, sigma_init, centers_init, opt_pen
         print(f"Validation split ({val_pct}): {len(tr_idx)} training points, "
               f"{len(val_idx)} validation points")
 
-    flk_opt = FalkonOptions(cg_tolerance=cg_tol, use_cpu=not torch.cuda.is_available(), cg_full_gradient_every=10)
+    flk_opt = FalkonOptions(cg_tolerance=cg_tol, use_cpu=not torch.cuda.is_available(),
+                            cg_full_gradient_every=10, cg_epsilon_32=1e-6)
 
     if model_type == "gpr":
         model = GPR(sigma_init=start_sigma, penalty_init=penalty_init,
@@ -290,12 +291,24 @@ def init_model(model_type, data, penalty_init, sigma_init, centers_init, opt_pen
                                        opt_penalty=opt_penalty, opt_centers=opt_centers, cuda=cuda,
                                        flk_opt=flk_opt, num_trace_est=num_trace_vecs,
                                        flk_maxiter=flk_maxiter, nystrace_ste=nystrace_ste)
+    elif model_type == "comp-creg-penfit":
+        model = CompDeffPenFitTr(sigma_init=start_sigma, penalty_init=penalty_init,
+                                 centers_init=centers_init, opt_sigma=opt_sigma,
+                                 opt_penalty=opt_penalty, opt_centers=opt_centers, cuda=cuda,
+                                 flk_opt=flk_opt, num_trace_est=num_trace_vecs,
+                                 flk_maxiter=flk_maxiter, nystrace_ste=nystrace_ste)
     elif model_type == "stoch-creg-nopenfit":
         model = StochasticDeffNoPenFitTr(sigma_init=start_sigma, penalty_init=penalty_init,
                                          centers_init=centers_init, opt_sigma=opt_sigma,
                                          opt_penalty=opt_penalty, opt_centers=opt_centers,
                                          cuda=cuda, flk_opt=flk_opt, num_trace_est=num_trace_vecs,
                                          flk_maxiter=flk_maxiter, nystrace_ste=nystrace_ste)
+    elif model_type == "comp-creg-nopenfit":
+        model = CompDeffNoPenFitTr(sigma_init=start_sigma, penalty_init=penalty_init,
+                                   centers_init=centers_init, opt_sigma=opt_sigma,
+                                   opt_penalty=opt_penalty, opt_centers=opt_centers, cuda=cuda,
+                                   flk_opt=flk_opt, num_trace_est=num_trace_vecs,
+                                   flk_maxiter=flk_maxiter, nystrace_ste=nystrace_ste)
     elif model_type == "stoch-gcv":
         model = StochasticNystromGCV(sigma_init=start_sigma, penalty_init=penalty_init,
                                      centers_init=centers_init, opt_sigma=opt_sigma,

@@ -10,6 +10,99 @@ from falkon.hypergrad.leverage_scores import (
 from falkon.kernels import GaussianKernel
 
 
+class CompDeffPenFitTr(HyperOptimModel):
+    def __init__(
+            self,
+            sigma_init,
+            penalty_init,
+            centers_init,
+            opt_centers,
+            opt_sigma,
+            opt_penalty,
+            cuda: bool,
+            flk_opt: FalkonOptions,
+            num_trace_est: int = 20,
+            flk_maxiter: int = 10,
+            nystrace_ste: bool = False,
+    ):
+        self.stoch_model = StochasticDeffPenFitTr(sigma_init.clone(), penalty_init, centers_init.clone(), opt_centers, opt_sigma, opt_penalty, cuda, flk_opt, num_trace_est, flk_maxiter, nystrace_ste)
+        self.det_model = DeffPenFitTr(sigma_init.clone(), penalty_init, centers_init.clone(), opt_centers, opt_sigma, opt_penalty, cuda)
+        self.use_model = "stoch"
+
+    def parameters(self):
+        if self.use_model == "stoch":
+            return self.stoch_model.parameters()
+        else:
+            return self.det_model.parameters()
+
+    def named_parameters(self):
+        if self.use_model == "stoch":
+            return self.stoch_model.named_parameters()
+        else:
+            return self.det_model.named_parameters()
+
+    def cuda(self):
+        self.stoch_model.cuda()
+        self.det_model.cuda()
+
+    def train(self):
+        self.stoch_model.train()
+        self.det_model.train()
+
+    def eval(self):
+        self.stoch_model.eval()
+        self.det_model.eval()
+
+    def hp_loss(self, X, Y):
+        if self.use_model == "stoch":
+            self.det_model.centers = self.stoch_model.centers
+            self.det_model.penalty = self.stoch_model.penalty
+            self.det_model.sigma = self.stoch_model.sigma
+        else:
+            self.stoch_model.centers = self.det_model.centers
+            self.stoch_model.penalty = self.det_model.penalty
+            self.stoch_model.sigma = self.det_model.sigma
+
+        ndeff, datafit, trace = self.det_model.hp_loss(X, Y)
+        stoch_loss = self.stoch_model.hp_loss(X, Y)
+        print(f"Deterministic: D-eff {ndeff:.2e} Data-Fit {datafit:.2e} Trace {trace:.2e}")
+
+        if self.use_model == "stoch":
+            return stoch_loss
+        else:
+            return [ndeff + datafit + trace]
+
+    def predict(self, X):
+        return self.det_model.predict(X)
+        return self.stoch_model.predict(X)
+
+    @property
+    def centers(self):
+        if self.use_model == "stoch":
+            return self.stoch_model.centers
+        return self.det_model.centers
+
+    @property
+    def sigma(self):
+        if self.use_model == "stoch":
+            return self.stoch_model.sigma
+        return self.det_model.sigma
+
+    @property
+    def penalty(self):
+        if self.use_model == "stoch":
+            return self.stoch_model.penalty
+        return self.det_model.penalty
+    @property
+    def loss_names(self):
+        if self.use_model == "stoch":
+            return ["stoch-creg-penfit"]
+        return ["det-creg-penfit"]
+
+    def __repr__(self):
+        return f"CompDeffPenFitTr()"
+
+
 class StochasticDeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
     def __init__(
             self,
@@ -142,6 +235,99 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
     def __repr__(self):
         return f"DeffPenFitTr(sigma={get_scalar(self.sigma)}, penalty={get_scalar(self.penalty)}, num_centers={self.centers.shape[0]}, " \
                f"opt_centers={self.opt_centers}, opt_sigma={self.opt_sigma}, opt_penalty={self.opt_penalty})"
+
+
+class CompDeffNoPenFitTr(HyperOptimModel):
+    def __init__(
+            self,
+            sigma_init,
+            penalty_init,
+            centers_init,
+            opt_centers,
+            opt_sigma,
+            opt_penalty,
+            cuda: bool,
+            flk_opt: FalkonOptions,
+            num_trace_est: int = 20,
+            flk_maxiter: int = 10,
+            nystrace_ste: bool = False,
+    ):
+        self.stoch_model = StochasticDeffNoPenFitTr(sigma_init.clone(), penalty_init, centers_init.clone(), opt_centers, opt_sigma, opt_penalty, cuda, flk_opt, num_trace_est, flk_maxiter, nystrace_ste)
+        self.det_model = DeffNoPenFitTr(sigma_init.clone(), penalty_init, centers_init.clone(), opt_centers, opt_sigma, opt_penalty, cuda)
+        self.use_model = "stoch"
+
+    def parameters(self):
+        if self.use_model == "stoch":
+            return self.stoch_model.parameters()
+        else:
+            return self.det_model.parameters()
+
+    def named_parameters(self):
+        if self.use_model == "stoch":
+            return self.stoch_model.named_parameters()
+        else:
+            return self.det_model.named_parameters()
+
+    def cuda(self):
+        self.stoch_model.cuda()
+        self.det_model.cuda()
+
+    def train(self):
+        self.stoch_model.train()
+        self.det_model.train()
+
+    def eval(self):
+        self.stoch_model.eval()
+        self.det_model.eval()
+
+    def hp_loss(self, X, Y):
+        if self.use_model == "stoch":
+            self.det_model.centers = self.stoch_model.centers
+            self.det_model.penalty = self.stoch_model.penalty
+            self.det_model.sigma = self.stoch_model.sigma
+        else:
+            self.stoch_model.centers = self.det_model.centers
+            self.stoch_model.penalty = self.det_model.penalty
+            self.stoch_model.sigma = self.det_model.sigma
+
+        ndeff, datafit, trace = self.det_model.hp_loss(X, Y)
+        stoch_loss = self.stoch_model.hp_loss(X, Y)
+        print(f"Deterministic: D-eff {ndeff:.2e} Data-Fit {datafit:.2e} Trace {trace:.2e}")
+
+        if self.use_model == "stoch":
+            return stoch_loss
+        else:
+            return [ndeff + datafit + trace]
+
+    def predict(self, X):
+        return self.det_model.predict(X)
+        return self.stoch_model.predict(X)
+
+    @property
+    def centers(self):
+        if self.use_model == "stoch":
+            return self.stoch_model.centers
+        return self.det_model.centers
+
+    @property
+    def sigma(self):
+        if self.use_model == "stoch":
+            return self.stoch_model.sigma
+        return self.det_model.sigma
+
+    @property
+    def penalty(self):
+        if self.use_model == "stoch":
+            return self.stoch_model.penalty
+        return self.det_model.penalty
+    @property
+    def loss_names(self):
+        if self.use_model == "stoch":
+            return ["stoch-creg-plainfit"]
+        return ["det-creg-plainfit"]
+
+    def __repr__(self):
+        return f"CompDeffNoPenFitTr()"
 
 
 class StochasticDeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):

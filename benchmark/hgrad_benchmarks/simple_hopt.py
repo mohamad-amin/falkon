@@ -59,6 +59,7 @@ def run_grid_search(
         cg_tol: float,
         flk_maxiter: int,
         num_trace_vecs: int,
+        nystrace_ste: bool,
         cuda: bool,
         seed: int):
     torch.manual_seed(seed)
@@ -90,7 +91,7 @@ def run_grid_search(
                        cg_tol=cg_tol,
                        num_trace_vecs=num_trace_vecs,
                        flk_maxiter=flk_maxiter,
-                       nystrace_ste=False,
+                       nystrace_ste=nystrace_ste,
                        )
     logs = run_on_grid(Xtr=Xtr, Ytr=Ytr,
                        Xts=Xts, Yts=Yts,
@@ -116,6 +117,7 @@ def run_optimization(
         cg_tol: float,
         flk_maxiter: int,
         num_trace_vecs: int,
+        nystrace_ste: bool,
         optimizer: str,
         cuda: bool,
         seed: int
@@ -149,7 +151,7 @@ def run_optimization(
                        cg_tol=cg_tol,
                        num_trace_vecs=num_trace_vecs,
                        flk_maxiter=flk_maxiter,
-                       nystrace_ste=False,
+                       nystrace_ste=nystrace_ste,
                        )
     logs = train_complexity_reg(Xtr=Xtr, Ytr=Ytr,
                                 Xts=Xts, Yts=Yts,
@@ -195,6 +197,8 @@ if __name__ == "__main__":
     p.add_argument('--num-t', type=int, default=20, help="Number of trace-vectors for STE")
     p.add_argument('--flk-maxiter', type=int, default=20,
                    help="Maximum number of falkon iterations (for stochastic estimators)")
+    p.add_argument('--approx-trace', action='store_true',
+                   help="Pass this flag to use STE for the Nystrom trace term.")
     p.add_argument('--cuda', action='store_true')
     args = p.parse_args()
     print("-------------------------------------------")
@@ -215,7 +219,7 @@ if __name__ == "__main__":
                         penalty_init=args.penalty_init, sigma_type=args.sigma_type,
                         gs_file=args.grid_spec,
                         sigma_init=args.sigma_init, num_centers=args.num_centers,
-                        val_pct=args.val_pct,
+                        val_pct=args.val_pct, nystrace_ste=args.approx_trace,
                         cg_tol=args.cg_tol, cuda=args.cuda, seed=args.seed,
                         num_trace_vecs=args.num_t, flk_maxiter=args.flk_maxiter)
     else:
@@ -226,5 +230,5 @@ if __name__ == "__main__":
                          num_centers=args.num_centers,
                          num_epochs=args.epochs, learning_rate=args.lr, val_pct=args.val_pct,
                          cg_tol=args.cg_tol, cuda=args.cuda, seed=args.seed,
-                         optimizer=args.optimizer,
+                         optimizer=args.optimizer, nystrace_ste=args.approx_trace,
                          num_trace_vecs=args.num_t, flk_maxiter=args.flk_maxiter)
