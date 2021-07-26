@@ -61,7 +61,7 @@ class StochasticDeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
 
     @property
     def loss_names(self):
-        return "stoch-creg-penfit"
+        return ["stoch-creg-penfit"]
 
     def __repr__(self):
         return f"StochasticDeffPenFitTr(sigma={get_scalar(self.sigma)}, penalty={get_scalar(self.penalty)}, " \
@@ -195,7 +195,7 @@ class StochasticDeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
 
     @property
     def loss_names(self):
-        return "stoch-creg-plainfit"
+        return ["stoch-creg-plainfit"]
 
     def __repr__(self):
         return f"StochasticDeffNoPenFitTr(sigma={get_scalar(self.sigma)}, penalty={get_scalar(self.penalty)}, " \
