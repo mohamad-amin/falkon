@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Optional
 
 import scipy.linalg
 import torch
@@ -23,7 +23,10 @@ EPS = 1e-6
 
 
 class NoRegLossAndDeffCtx():
-    __slots__ = ("_flk_solve_zy", "_kmn_zy", "_flk_solve_ytilde", "_len_z",
+    __slots__ = ("_flk_solve_zy", "_flk_solve_zy_prec",
+                 "_kmn_zy",
+                 "_flk_solve_ytilde", "_flk_solve_ytilde_prec",
+                 "_len_z",
                  "_knm_solve_zy", "_kmm_solve_zy", "_nys_trace", "_nys_deff",
                  "_nys_d_eff",
                  "_nys_data_fit",
@@ -37,11 +40,13 @@ class NoRegLossAndDeffCtx():
                  ):
         self._len_z = len_z
 
+        self._flk_solve_zy_prec = None
         self._flk_solve_zy = None
         self._flk_solve_y = None
         self._kmn_zy = None
         self._kmn_y = None
         self._flk_solve_ytilde = None
+        self._flk_solve_ytilde_prec = None
         self._knm_solve_zy = None
         self._kmm_solve_zy = None
         self._nys_trace = None
@@ -57,6 +62,14 @@ class NoRegLossAndDeffCtx():
     @z.setter
     def z(self, val):
         self._z = val
+
+    @property
+    def solve_zy_prec(self):
+        return self._flk_solve_zy_prec
+
+    @solve_zy_prec.setter
+    def solve_zy_prec(self, val):
+        self._flk_solve_zy_prec = val
 
     @property
     def solve_zy(self):
@@ -105,6 +118,14 @@ class NoRegLossAndDeffCtx():
     @kmn_y.setter
     def kmn_y(self, val):
         self._kmn_y = val
+
+    @property
+    def solve_ytilde_prec(self):
+        return self._flk_solve_ytilde_prec
+
+    @solve_ytilde_prec.setter
+    def solve_ytilde_prec(self, val):
+        self._flk_solve_ytilde_prec = val
 
     @property
     def solve_ytilde(self):
@@ -205,7 +226,7 @@ def init_random_vecs(n, t, dtype, device, gaussian_random: bool):
     return Z
 
 
-def solve_falkon(X, centers, penalty, rhs, kernel_args, solve_options, solve_maxiter):
+def solve_falkon(X, centers, penalty, rhs, kernel_args, solve_options, solve_maxiter, init_sol=None):
     penalty = penalty.item()
     M_ = centers.detach()
     kernel_args_ = kernel_args.detach()
@@ -215,11 +236,11 @@ def solve_falkon(X, centers, penalty, rhs, kernel_args, solve_options, solve_max
     optim = FalkonConjugateGradient(K, precond, solve_options)
     beta = optim.solve(
         X, M_, rhs, penalty,
-        initial_solution=None,
+        initial_solution=init_sol,
         max_iter=solve_maxiter,
     )
     sol_full = precond.apply(beta)  # eta, alpha
-    return sol_full
+    return sol_full, beta
 
 
 def calc_grads(ctx, backward, num_diff_args):
@@ -302,7 +323,8 @@ def nystrom_trace_trinv_bwd(linv, k_linv, kmm_chol):
     return bg
 
 
-def nystrom_deff_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxiter, data: NoRegLossAndDeffCtx):
+def nystrom_deff_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxiter,
+                     last_solve_zy: Optional[torch.Tensor], data: NoRegLossAndDeffCtx):
     diff_kernel = DiffGaussianKernel(kernel_args, opt=solve_opt)
 
     ZY = torch.cat((data.z, Y), dim=1)
@@ -311,7 +333,7 @@ def nystrom_deff_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxiter, da
             data.kmn_zy = diff_kernel.mmv(M, X, ZY)
     if data.solve_zy is None:
         with torch.autograd.no_grad():
-            data.solve_zy = solve_falkon(X, M, penalty, ZY, kernel_args, solve_opt, solve_maxiter)
+            data.solve_zy, data.solve_zy_prec = solve_falkon(X, M, penalty, ZY, kernel_args, solve_opt, solve_maxiter, init_sol=last_solve_zy)
 
     with torch.autograd.no_grad():
         d_eff = (data.kmn_z * data.solve_z).sum(0).mean()
@@ -337,25 +359,31 @@ def nystrom_deff_bwd(kernel_args, penalty, M, X, data):
     return deff_bg, data
 
 
-def datafit_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxiter, data: NoRegLossAndDeffCtx):
+def datafit_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxiter,
+                last_solve_zy: Optional[torch.Tensor],
+                last_solve_ytilde: Optional[torch.Tensor],
+                data: NoRegLossAndDeffCtx):
     diff_kernel = DiffGaussianKernel(kernel_args, opt=solve_opt)
 
     ZY = torch.cat((data.z, Y), dim=1)
     if data.solve_zy is None:
         with torch.autograd.no_grad():
             # Solve Falkon part 1
-            data.solve_zy = solve_falkon(X, M, penalty, ZY, kernel_args, solve_opt, solve_maxiter)
+            data.solve_zy, data.solve_zy_prec = solve_falkon(
+                X, M, penalty, ZY, kernel_args, solve_opt, solve_maxiter, init_sol=last_solve_zy)
     if data.kmn_zy is None:
         with torch.autograd.enable_grad():
             data.kmn_zy = diff_kernel.mmv(M, X, ZY)
     if data.knm_solve_zy is None:
         with torch.autograd.enable_grad():
-            # Note that knm @ alpha = y_tilde. This is handled by the data-class
+            # Note that knm @ alpha = y_tilde. This is handled by the data-class, hence we need to run this in fwd.
             data.knm_solve_zy = diff_kernel.mmv(X, M, data.solve_zy)
     if data.solve_ytilde is None:
         with torch.autograd.no_grad():
             # Solve Falkon part 2 (alpha_tilde = H^{-1} @ k_nm.T @ y_tilde
-            data.solve_ytilde = solve_falkon(X, M, penalty, data.y_tilde, kernel_args, solve_opt, solve_maxiter)
+            data.solve_ytilde, data.solve_ytilde_prec = solve_falkon(
+                X, M, penalty, data.y_tilde, kernel_args, solve_opt, solve_maxiter,
+                init_sol=last_solve_ytilde)
 
     with torch.autograd.no_grad():
         # Loss = Y.T @ Y - 2 Y.T @ KNM @ alpha + alpha.T @ KNM.T @ KNM @ alpha
@@ -386,11 +414,12 @@ def datafit_bwd(kernel_args, penalty, M, X, data):
     return loss_bg, data
 
 
-def penalized_datafit_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxiter, data: NoRegLossAndDeffCtx):
+def penalized_datafit_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxiter,
+                          data: NoRegLossAndDeffCtx):
     diff_kernel = DiffGaussianKernel(kernel_args, opt=solve_opt)
     if data.solve_y is None:
         with torch.autograd.no_grad():
-            data.solve_y = solve_falkon(X, M, penalty, Y, kernel_args, solve_opt, solve_maxiter)
+            data.solve_y, _ = solve_falkon(X, M, penalty, Y, kernel_args, solve_opt, solve_maxiter)
     if data.kmn_y is None:
         with torch.autograd.enable_grad():
             data.kmn_y = diff_kernel.mmv(M, X, Y)
@@ -423,17 +452,19 @@ def penalized_datafit_bwd(kernel_args, penalty, M, X, data: NoRegLossAndDeffCtx)
     return loss_bg, data
 
 
-def creg_plainfit(kernel_args, penalty, centers, X, Y, num_estimators, deterministic, solve_options, solve_maxiter, gaussian_random, use_stoch_trace):
+def creg_plainfit(kernel_args, penalty, centers, X, Y, num_estimators, deterministic, solve_options, solve_maxiter, gaussian_random, use_stoch_trace, warm_start: bool = True):
     return NoRegLossAndDeff.apply(
-        kernel_args, penalty, centers, X, Y, num_estimators, deterministic, solve_options, solve_maxiter, gaussian_random, use_stoch_trace
+        kernel_args, penalty, centers, X, Y, num_estimators, deterministic, solve_options, solve_maxiter, gaussian_random, use_stoch_trace, warm_start
     )
 
 
 # noinspection PyMethodOverriding
 class NoRegLossAndDeff(torch.autograd.Function):
-    EPS = 1e-6
     NUM_DIFF_ARGS = 3
+    _last_solve_zy = None
+    _last_solve_ytilde = None
     last_alpha = None
+    _last_t = None
 
     @staticmethod
     def forward(
@@ -449,23 +480,37 @@ class NoRegLossAndDeff(torch.autograd.Function):
             solve_maxiter: int,
             gaussian_random: bool,
             use_stoch_trace: bool,
+            warm_start: bool,
             ):
+        if NoRegLossAndDeff._last_t is not None and NoRegLossAndDeff._last_t != t:
+            NoRegLossAndDeff._last_solve_zy = None
+            NoRegLossAndDeff._last_solve_ytilde = None
+            NoRegLossAndDeff.last_alpha = None
+        NoRegLossAndDeff._last_t = t
+
         data = NoRegLossAndDeffCtx(t)
         if deterministic:
             torch.manual_seed(12)
         data.z = init_random_vecs(X.shape[0], t, dtype=X.dtype, device=X.device, gaussian_random=gaussian_random)
 
-        datafit, data = datafit_fwd(
-            kernel_args=kernel_args, penalty=penalty, M=M, X=X, Y=Y,
-            solve_maxiter=solve_maxiter, solve_opt=solve_options, data=data)
         d_eff, data = nystrom_deff_fwd(
             kernel_args=kernel_args, penalty=penalty, M=M, X=X, Y=Y,
-            solve_opt=solve_options, solve_maxiter=solve_maxiter, data=data)
+            solve_opt=solve_options, solve_maxiter=solve_maxiter,
+            last_solve_zy=NoRegLossAndDeff._last_solve_zy, data=data)
+        datafit, data = datafit_fwd(
+            kernel_args=kernel_args, penalty=penalty, M=M, X=X, Y=Y,
+            solve_maxiter=solve_maxiter, solve_opt=solve_options,
+            last_solve_zy=NoRegLossAndDeff._last_solve_zy,
+            last_solve_ytilde=NoRegLossAndDeff._last_solve_ytilde,
+            data=data)
         with torch.autograd.enable_grad():
             kmn_z = data.kmn_z  # Need to diff through the slicing
         trace, tr_ctx = nystrom_trace_fwd(
             kernel_args=kernel_args, M=M, X=X, kmn_z=kmn_z, use_ste=use_stoch_trace)
 
+        if warm_start:
+            NoRegLossAndDeff._last_solve_zy = data.solve_zy_prec.detach()
+            NoRegLossAndDeff._last_solve_ytilde = data.solve_ytilde_prec.detach()
         NoRegLossAndDeff.last_alpha = data.solve_y.detach()
         ctx.save_for_backward(kernel_args, penalty, M)
         ctx.data, ctx.tr_ctx, ctx.X, ctx.use_stoch_trace = data, tr_ctx, X, use_stoch_trace
@@ -496,29 +541,34 @@ class NoRegLossAndDeff(torch.autograd.Function):
 
         torch.autograd.gradcheck(
             lambda sigma, pen, centers:
-                NoRegLossAndDeff.apply(sigma, pen, centers, X, Y, 20, True, FalkonOptions(), 30, False, True),
+                NoRegLossAndDeff.apply(sigma, pen, centers, X, Y, 20, True, FalkonOptions(), 30, False, True, False),
             (s, p, M))
 
         torch.autograd.gradcheck(
             lambda sigma, pen, centers:
-                NoRegLossAndDeff.apply(sigma, pen, centers, X, Y, 20, True, FalkonOptions(), 30, False, False),
+                NoRegLossAndDeff.apply(sigma, pen, centers, X, Y, 20, True, FalkonOptions(), 30, False, False, False),
             (s, p, M))
 
 
-def gcv(kernel_args, penalty, centers, X, Y, num_estimators, deterministic, solve_options, solve_maxiter, gaussian_random):
+def gcv(kernel_args, penalty, centers, X, Y, num_estimators, deterministic, solve_options, solve_maxiter, gaussian_random, warm_start: bool = True):
     return GCV.apply(
-        kernel_args, penalty, centers, X, Y, num_estimators, deterministic, solve_options, solve_maxiter, gaussian_random
+        kernel_args, penalty, centers, X, Y, num_estimators, deterministic, solve_options, solve_maxiter, gaussian_random, warm_start
     )
 
 
 # noinspection PyMethodOverriding
 class GCV(torch.autograd.Function):
-    last_alpha = None
-    NUM_DIFF_ARGS = 3
     """
     Numerator: Exactly the data-fit term of NoRegLossAndDeff
     Denominator: Similar to Nystrom Effective Dim.
     """
+
+    NUM_DIFF_ARGS = 3
+    _last_solve_zy = None
+    _last_solve_ytilde = None
+    last_alpha = None
+    _last_t = None
+
     @staticmethod
     def forward(ctx,
                 kernel_args: torch.Tensor,
@@ -530,20 +580,32 @@ class GCV(torch.autograd.Function):
                 deterministic: bool,
                 solve_options: FalkonOptions,
                 solve_maxiter: int,
-                gaussian_random: bool,):
+                gaussian_random: bool,
+                warm_start: bool,):
+        if GCV._last_t is not None and GCV._last_t != t:
+            GCV._last_solve_zy = None
+            GCV._last_solve_ytilde = None
+            GCV.last_alpha = None
+        GCV._last_t = t
         data = NoRegLossAndDeffCtx(t)
         if deterministic:
             torch.manual_seed(12)
         data.z = init_random_vecs(X.shape[0], t, dtype=X.dtype, device=X.device, gaussian_random=gaussian_random)
 
-        datafit, data = datafit_fwd(
-            kernel_args=kernel_args, penalty=penalty, M=M, X=X, Y=Y,
-            solve_maxiter=solve_maxiter, solve_opt=solve_options, data=data)
         d_eff, data = nystrom_deff_fwd(
             kernel_args=kernel_args, penalty=penalty, M=M, X=X, Y=Y,
-            solve_opt=solve_options, solve_maxiter=solve_maxiter, data=data)
+            solve_opt=solve_options, solve_maxiter=solve_maxiter,
+            last_solve_zy=GCV._last_solve_zy, data=data)
+        datafit, data = datafit_fwd(
+            kernel_args=kernel_args, penalty=penalty, M=M, X=X, Y=Y,
+            solve_maxiter=solve_maxiter, solve_opt=solve_options,
+            last_solve_zy=GCV._last_solve_zy, last_solve_ytilde=GCV._last_solve_ytilde,
+            data=data)
 
-        GCV.last_alpha = data.solve_y.cpu().detach()
+        if warm_start:
+            NoRegLossAndDeff._last_solve_zy = data.solve_zy_prec.detach()
+            NoRegLossAndDeff._last_solve_ytilde = data.solve_ytilde_prec.detach()
+        NoRegLossAndDeff.last_alpha = data.solve_y.detach()
         ctx.save_for_backward(kernel_args, penalty, M)
         ctx.data = data
         ctx.X = X
@@ -577,21 +639,22 @@ class GCV(torch.autograd.Function):
 
         torch.autograd.gradcheck(
             lambda sigma, pen, centers:
-                GCV.apply(sigma, pen, centers, X, Y, 20, True, FalkonOptions(), 30, False),
+                GCV.apply(sigma, pen, centers, X, Y, 20, True, FalkonOptions(), 30, False, False),
             (s, p, M))
 
 
-def creg_penfit(kernel_args, penalty, centers, X, Y, num_estimators, deterministic, solve_options, solve_maxiter, gaussian_random, use_stoch_trace):
+def creg_penfit(kernel_args, penalty, centers, X, Y, num_estimators, deterministic, solve_options, solve_maxiter, gaussian_random, use_stoch_trace, warm_start=True):
     return RegLossAndDeffv2.apply(
-        kernel_args, penalty, centers, X, Y, num_estimators, deterministic, solve_options, solve_maxiter, gaussian_random, use_stoch_trace
+        kernel_args, penalty, centers, X, Y, num_estimators, deterministic, solve_options, solve_maxiter, gaussian_random, use_stoch_trace, warm_start
     )
 
 
 # noinspection PyMethodOverriding
 class RegLossAndDeffv2(torch.autograd.Function):
-    EPS = 1e-6
     NUM_DIFF_ARGS = 3
+    _last_solve_zy = None
     last_alpha = None
+    _last_t = None
 
     @staticmethod
     def forward(
@@ -607,23 +670,31 @@ class RegLossAndDeffv2(torch.autograd.Function):
             solve_maxiter: int,
             gaussian_random: bool,
             use_stoch_trace: bool,
+            warm_start: bool
             ):
+        if RegLossAndDeffv2._last_t is not None and RegLossAndDeffv2._last_t != t:
+            RegLossAndDeffv2._last_solve_zy = None
+            RegLossAndDeffv2.last_alpha = None
+        RegLossAndDeffv2._last_t = t
         data = NoRegLossAndDeffCtx(t)
         if deterministic:
             torch.manual_seed(12)
         data.z = init_random_vecs(X.shape[0], t, dtype=X.dtype, device=X.device, gaussian_random=gaussian_random)
 
+        d_eff, data = nystrom_deff_fwd(
+            kernel_args=kernel_args, penalty=penalty, M=M, X=X, Y=Y,
+            solve_opt=solve_options, solve_maxiter=solve_maxiter,
+            last_solve_zy=RegLossAndDeffv2._last_solve_zy, data=data)
         datafit, data = penalized_datafit_fwd(
             kernel_args=kernel_args, penalty=penalty, M=M, X=X, Y=Y,
             solve_maxiter=solve_maxiter, solve_opt=solve_options, data=data)
-        d_eff, data = nystrom_deff_fwd(
-            kernel_args=kernel_args, penalty=penalty, M=M, X=X, Y=Y,
-            solve_opt=solve_options, solve_maxiter=solve_maxiter, data=data)
         with torch.autograd.enable_grad():
             kmn_z = data.kmn_z  # Need to diff through the slicing
         trace, tr_ctx = nystrom_trace_fwd(
             kernel_args=kernel_args, M=M, X=X, kmn_z=kmn_z, use_ste=use_stoch_trace)
 
+        if warm_start:
+            RegLossAndDeffv2._last_solve_zy = data.solve_zy_prec.detach().clone()
         RegLossAndDeffv2.last_alpha = data.solve_y.detach()
         ctx.save_for_backward(kernel_args, penalty, M)
         ctx.data, ctx.tr_ctx, ctx.X, ctx.use_stoch_trace = data, tr_ctx, X, use_stoch_trace
@@ -655,9 +726,9 @@ class RegLossAndDeffv2(torch.autograd.Function):
 
         torch.autograd.gradcheck(
             lambda sigma, pen, centers:
-                RegLossAndDeffv2.apply(sigma, pen, centers, X, Y, 20, True, FalkonOptions(), 30, False, True),
+                RegLossAndDeffv2.apply(sigma, pen, centers, X, Y, 20, True, FalkonOptions(), 30, False, True, False),
             (s, p, M))
         torch.autograd.gradcheck(
             lambda sigma, pen, centers:
-                RegLossAndDeffv2.apply(sigma, pen, centers, X, Y, 20, True, FalkonOptions(), 30, False, False),
+                RegLossAndDeffv2.apply(sigma, pen, centers, X, Y, 20, True, FalkonOptions(), 30, False, False, False),
             (s, p, M))
