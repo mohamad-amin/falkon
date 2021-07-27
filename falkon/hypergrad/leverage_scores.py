@@ -213,6 +213,42 @@ def calc_grads(ctx, backward, num_diff_args):
     return tuple(result)
 
 
+def nystrom_trace_hutch_fwd(kernel_args, M, X, t, deterministic, gaussian_random, data: NoRegLossAndDeffCtx):
+    diff_kernel = DiffGaussianKernel(
+        kernel_args, opt=FalkonOptions(keops_active="no"))
+    if deterministic:
+        torch.manual_seed(22)
+
+    if data.kmn_z is None:
+        Z = init_random_vecs(X.shape[0], t, dtype=X.dtype, device=X.device, gaussian_random=gaussian_random)
+        with torch.autograd.enable_grad():
+            kmn_z = diff_kernel.mmv(M, X, Z)  # m * t
+    else:
+        kmn_z = data.kmn_z
+
+    mm_eye = torch.eye(M.shape[0], device=M.device, dtype=M.dtype) * NystromKernelTraceHutch.EPS
+    with torch.autograd.enable_grad():
+        kmm = full_rbf_kernel(M, M, kernel_args)
+        kmm_chol = torch.cholesky(kmm + mm_eye)
+
+    with torch.autograd.no_grad():
+        l_solve_1 = torch.triangular_solve(kmn_z, kmm_chol, upper=False, transpose=False).solution  # m * t
+        l_solve_2 = torch.triangular_solve(l_solve_1, kmm_chol, upper=False, transpose=True).solution.contiguous()  # m * t
+        output = torch.square(l_solve_1).sum(0).mean()
+
+    ctx = dict(kmn_z=kmn_z, kmm_chol=kmm_chol, l_solve_1=l_solve_1, l_solve_2=l_solve_2)
+    return output, ctx
+
+
+def nystrom_trace_hutch_bwd(kmn_z, kmm_chol, l_solve_1, l_solve_2):
+    with torch.autograd.enable_grad():
+        bg = (
+            2 * (kmn_z * l_solve_2).sum(0).mean()
+            - 2 * (l_solve_2 * (kmm_chol @ l_solve_1)).sum(0).mean()
+        )
+    return bg
+
+
 # noinspection PyMethodOverriding
 class NystromKernelTraceHutch(torch.autograd.Function):
     EPS = 1e-6
@@ -430,6 +466,92 @@ class NystromEffectiveDimension(torch.autograd.Function):
             (s, p, M))
 
 
+def nystrom_deff_fwd(kernel_args, penalty, M, X, Y, t, deterministic, gaussian_random, solve_opt, solve_maxiter, data: NoRegLossAndDeffCtx):
+    diff_kernel = DiffGaussianKernel(kernel_args, opt=solve_opt)
+    if deterministic:
+        torch.manual_seed(22)
+    if data.kmn_zy is None or data.solve_zy is None:
+        Z = init_random_vecs(X.shape[0], t, dtype=X.dtype, device=X.device, gaussian_random=gaussian_random)
+        ZY = torch.cat((Z, Y), dim=1)
+        with torch.autograd.enable_grad():
+            data.kmn_zy = diff_kernel.mmv(M, X, ZY)
+        with torch.autograd.no_grad():
+            data.solve_zy = solve_falkon(X, M, penalty, ZY, kernel_args, solve_opt, solve_maxiter)
+
+    with torch.autograd.no_grad():
+        d_eff = (data.kmn_z * data.solve_z).sum(0).mean()
+
+    return d_eff, data
+
+
+def nystrom_deff_bwd(kernel_args, penalty, M, X, data):
+    diff_kernel = DiffGaussianKernel(kernel_args)
+    with torch.autograd.enable_grad():
+        if data.knm_solve_zy is None:
+            data.knm_solve_zy = diff_kernel.mmv(X, M, data.solve_zy)  # k_nm @ alpha  and  k_nm @ eta
+        if data.kmm_solve_zy is None:
+            data.kmm_solve_zy = diff_kernel.mmv(M, M, data.solve_zy)
+
+        pen_n = penalty * X.shape[0]
+        # Effective dimension
+        deff_bg = (
+            2 * (data.kmn_z * data.solve_z).sum(0).mean()
+            - (data.knm_solve_z.square().sum(0).mean() +
+               pen_n * (data.solve_z * data.kmm_solve_z).sum(0).mean())
+        )
+    return deff_bg, data
+
+
+def datafit_fwd(kernel_args, penalty, M, X, Y, t, deterministic, gaussian_random, solve_opt, solve_maxiter, data: NoRegLossAndDeffCtx):
+    diff_kernel = DiffGaussianKernel(kernel_args, opt=solve_opt)
+    if deterministic:
+        torch.manual_seed(12)
+    if data.kmn_zy is None or data.solve_zy is None:
+        Z = init_random_vecs(X.shape[0], t, dtype=X.dtype, device=X.device, gaussian_random=gaussian_random)
+        ZY = torch.cat((Z, Y), dim=1)
+
+        with torch.autograd.no_grad():
+            # Solve Falkon part 1
+            data.solve_zy = solve_falkon(X, M, penalty, ZY, kernel_args, solve_opt, solve_maxiter)
+        with torch.autograd.enable_grad():
+            # Note that knm @ alpha = y_tilde. This is handled by the data-class
+            data.knm_solve_zy = diff_kernel.mmv(X, M, data.solve_zy)
+            data.kmn_zy = diff_kernel.mmv(M, X, ZY)
+        with torch.autograd.no_grad():
+            # Solve Falkon part 2 (alpha_tilde = H^{-1} @ k_nm.T @ y_tilde
+            data.solve_ytilde = solve_falkon(X, M, penalty, data.y_tilde, kernel_args, solve_opt, solve_maxiter)
+
+    with torch.autograd.no_grad():
+        # Loss = Y.T @ Y - 2 Y.T @ KNM @ alpha + alpha.T @ KNM.T @ KNM @ alpha
+        loss = Y.square().sum()
+        loss -= 2 * (data.kmn_y * data.solve_y).sum(0).mean()
+        loss += data.y_tilde.square().sum(0).mean()
+        #loss /= X.shape[0]
+
+    return loss, data
+
+
+def datafit_bwd(kernel_args, penalty, M, X, data):
+    diff_kernel = DiffGaussianKernel(kernel_args)
+    with torch.autograd.enable_grad():
+        pen_n = penalty * X.shape[0]
+        if data.kmm_solve_y is None:
+            data.kmm_solve_zy = diff_kernel.mmv(M, M, data.solve_zy)
+
+        # Loss without regularization
+        loss_bg = (
+            -4 * (data.kmn_y * data.solve_y).sum(0).mean()  # -4 * Y.T @ g(k_nm) @ alpha
+            + 2 * (data.knm_solve_y.square().sum(0).mean() +
+                   pen_n * (data.kmm_solve_y * data.solve_y).sum(0).mean())  # 2 * alpha.T @ g(H) @ alpha
+            + 2 * (data.kmn_y * data.solve_ytilde).sum(0).mean()  # 2 * Y.T @ g(k_nm) @ alpha_tilde
+            + 2 * (data.y_tilde * data.y_tilde.detach()).sum(0).mean()  # 2 * alpha.T @ g(k_nm.T) @ y_tilde
+            - 2 * ((data.knm_solve_y * diff_kernel.mmv(X, M, data.solve_ytilde)).sum(0) +
+                   pen_n * (data.kmm_solve_y * data.solve_ytilde).sum(0)).mean()  # -2 alpha @ g(H) @ alpha
+        )# / X.shape[0]
+    return loss_bg, data
+
+
+
 def nystrom_data_fit(kernel_args, penalty, M, X, Y, t, deterministic, solve_options, solve_maxiter, gaussian_random, data):
     return NystromDataFit.apply(
         kernel_args, penalty, M, X, Y, t, deterministic, solve_options, solve_maxiter, gaussian_random, data
@@ -526,6 +648,44 @@ def nystrom_penalized_data_fit(kernel_args, penalty, M, X, Y, solve_options, sol
     return NystromPenalizedDataFit.apply(
         kernel_args, penalty, M, X, Y, solve_options, solve_maxiter, data
     )
+
+
+def penalized_datafit_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxiter, data: NoRegLossAndDeffCtx):
+    diff_kernel = DiffGaussianKernel(kernel_args, opt=solve_opt)
+    if data.solve_y is None:
+        with torch.autograd.no_grad():
+            data.solve_y = solve_falkon(X, M, penalty, Y, kernel_args, solve_opt, solve_maxiter)
+    if data.kmn_y is None:
+        with torch.autograd.enable_grad():
+            data.kmn_y = diff_kernel.mmv(M, X, Y)
+
+    with torch.autograd.no_grad():
+        loss = Y.square().sum()
+        loss -= (data.kmn_y * data.solve_y).sum(0).mean()
+        #loss /= X.shape[0]
+
+    return loss, data
+
+
+def penalized_datafit_bwd(kernel_args, penalty, M, X, data: NoRegLossAndDeffCtx):
+    diff_kernel = DiffGaussianKernel(kernel_args)
+    with torch.autograd.enable_grad():
+        pen_n = penalty * X.shape[0]
+        if data.kmm_solve_y is None:
+            kmm_solve_y = diff_kernel.mmv(M, M, data.solve_y)
+        else:
+            kmm_solve_y = data.kmm_solve_y
+        if data.knm_solve_y is None:
+            knm_solve_y = diff_kernel.mmv(X, M, data.solve_y)
+        else:
+            knm_solve_y = data.knm_solve_y
+
+        loss_bg = (
+            -2 * (data.kmn_y * data.solve_y).sum(0).mean()
+            + (knm_solve_y.square().sum(0).mean() +
+               pen_n * (kmm_solve_y * data.solve_y).sum(0).mean())
+        )# / X.shape[0]
+    return loss_bg, data
 
 
 # noinspection PyMethodOverriding
@@ -642,7 +802,7 @@ class NoRegLossAndDeff(torch.autograd.Function):
             # D-Eff = Tr((KNM @ KMM^{-1} @ KNM.T + lambda I)^{-1} KNM @ KMM^{-1} @ KNM.T)
             data.nys_d_eff = nystrom_effective_dim_wdata(kernel_args, penalty, M, X, data)
 
-        NoRegLossAndDeff.last_alpha = data.solve_y
+        NoRegLossAndDeff.last_alpha = data.solve_y.cpu().detach()
         ctx.save_for_backward(kernel_args, penalty, M)
         ctx.data = data
         return data.nys_d_eff + data.data_fit + trace
@@ -705,7 +865,7 @@ class GCV(torch.autograd.Function):
             data.nys_d_eff = nystrom_effective_dim_wdata(kernel_args, penalty, M, X, data)
             data.nys_d_eff = torch.square((1.0 - data.nys_d_eff/X.shape[0]))
 
-        GCV.last_alpha = data.solve_y
+        GCV.last_alpha = data.solve_y.cpu().detach()
         ctx.save_for_backward(kernel_args, penalty, M)
         ctx.data = data
         return data.data_fit / data.nys_d_eff
@@ -773,7 +933,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
             data.nys_trace = nystrom_kernel_trace(kernel_args, M, X, use_ste=use_stoch_trace, t=t, deterministic=deterministic, gaussian_random=gaussian_random)
             trace = X.shape[0] - data.nys_trace
 
-        RegLossAndDeffv2.last_alpha = data.solve_y
+        RegLossAndDeffv2.last_alpha = data.solve_y.cpu().detach()
         ctx.save_for_backward(kernel_args, penalty, M)
         ctx.data = data
         print(f"Stochastic: D-eff {data.nys_d_eff:.3e} Data-Fit {data.data_fit:.3e} Trace {trace:.3e}")
