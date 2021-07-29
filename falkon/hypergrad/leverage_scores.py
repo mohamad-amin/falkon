@@ -516,6 +516,7 @@ class NoRegLossAndDeff(torch.autograd.Function):
         NoRegLossAndDeff.last_alpha = data.solve_y.detach()
         ctx.save_for_backward(kernel_args, penalty, M)
         ctx.data, ctx.tr_ctx, ctx.X, ctx.use_stoch_trace = data, tr_ctx, X, use_stoch_trace
+        print(f"Stochastic: D-eff {d_eff:.3e} Data-Fit {datafit:.3e} Trace {X.shape[0] - trace:.3e}")
         return d_eff + datafit + (X.shape[0] - trace)
 
     @staticmethod
@@ -605,9 +606,9 @@ class GCV(torch.autograd.Function):
             data=data)
 
         if warm_start:
-            NoRegLossAndDeff._last_solve_zy = data.solve_zy_prec.detach()
-            NoRegLossAndDeff._last_solve_ytilde = data.solve_ytilde_prec.detach()
-        NoRegLossAndDeff.last_alpha = data.solve_y.detach()
+            GCV._last_solve_zy = data.solve_zy_prec.detach()
+            GCV._last_solve_ytilde = data.solve_ytilde_prec.detach()
+        GCV.last_alpha = data.solve_y.detach()
         ctx.save_for_backward(kernel_args, penalty, M)
         ctx.data = data
         ctx.X = X
