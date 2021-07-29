@@ -2,12 +2,83 @@ from functools import partial
 from typing import Iterable
 
 import torch
+from falkon.hypergrad.leverage_scores import solve_falkon, validation_loss, ValidationLoss
 
 from falkon import FalkonOptions
 from falkon.kernels import GaussianKernel
 from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
 from falkon.hypergrad.common import full_rbf_kernel, get_scalar, cg, cholesky
 from falkon.hypergrad.complexity_reg import NystromKRRModelMixinN, HyperOptimModel
+
+
+class FalkonClosedFormHgrad(NystromKRRModelMixinN, HyperOptimModel):
+    def __init__(
+            self,
+            sigma_init,
+            penalty_init,
+            centers_init,
+            opt_centers,
+            opt_sigma,
+            opt_penalty,
+            cuda: bool,
+            tr_indices,
+            ts_indices,
+            flk_opt: FalkonOptions,
+            flk_maxiter: int = 10,
+    ):
+        super().__init__(
+            penalty=penalty_init,
+            sigma=sigma_init,
+            centers=centers_init,
+            cuda=cuda,
+            verbose=True,
+        )
+        self.opt_sigma, self.opt_centers, self.opt_penalty = opt_sigma, opt_centers, opt_penalty
+        if opt_sigma:
+            self.register_parameter("sigma", self.sigma_.requires_grad_(True))
+        if opt_penalty:
+            self.register_parameter("penalty", self.penalty_.requires_grad_(True))
+        if opt_centers:
+            self.register_parameter("centers", self.centers_.requires_grad_(True))
+
+        self.tr_indices = tr_indices
+        self.ts_indices = ts_indices
+        self.alpha, self.beta = None, None
+        self.flk_opt = flk_opt
+        self.flk_maxiter = flk_maxiter
+
+    def hp_loss(self, X, Y):
+        Xtr = X[self.tr_indices]
+        Xval = X[self.ts_indices]
+        Ytr = Y[self.tr_indices]
+        Yval = Y[self.ts_indices]
+
+        val_loss = validation_loss(
+            kernel_args=self.sigma, penalty=self.penalty, centers=self.centers, Xtr=Xtr, Ytr=Ytr,
+            Xval=Xval, Yval=Yval, solve_options=self.flk_opt, solve_maxiter=self.flk_maxiter,
+            warm_start=True)
+
+        return (val_loss, )
+
+    def predict(self, X):
+        if ValidationLoss.last_alpha is None:
+            raise RuntimeError("Call hp_loss before calling predict.")
+        kernel = GaussianKernel(sigma=self.sigma.detach(), opt=self.flk_opt)
+        with torch.autograd.no_grad():
+            return kernel.mmv(X, self.centers, self.alpha)
+
+    @property
+    def loss_names(self):
+        return ("val-mse", )
+
+    @property
+    def train_pct(self):
+        tot = len(self.tr_indices) + len(self.ts_indices)
+        return len(self.tr_indices) / tot * 100
+
+    def __repr__(self):
+        return f"NystromClosedFormHgrad(sigma={get_scalar(self.sigma)}, penalty={get_scalar(self.penalty)}, num_centers={self.centers.shape[0]}, " \
+               f"opt_centers={self.opt_centers}, opt_sigma={self.opt_sigma}, opt_penalty={self.opt_penalty}, train_pct={self.train_pct})"
 
 
 class NystromClosedFormHgrad(NystromKRRModelMixinN, HyperOptimModel):

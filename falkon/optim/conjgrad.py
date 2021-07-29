@@ -1,3 +1,4 @@
+import functools
 import time
 from typing import Optional
 
@@ -106,10 +107,38 @@ class FalkonConjugateGradient(Optimizer):
         self.optimizer = ConjugateGradient(opt.get_conjgrad_options())
         self.N = N
 
+    def flk_mmv(self,
+                Knm: Optional[torch.Tensor],
+                X: torch.Tensor,
+                M: torch.Tensor,
+                s1: Optional[torch.cuda.Stream],
+                N: int,
+                _lambda: float,
+                sol: torch.Tensor):
+        prec = self.preconditioner
+        with TicToc("MMV", False):
+            v = prec.invA(sol)
+            v_t = prec.invT(v)
+
+            if Knm is not None:
+                cc = incore_fdmmv(Knm, v_t, None, opt=self.params)
+            else:
+                cc = self.kernel.dmmv(X, M, v_t, None, opt=self.params)
+
+            if X.is_cuda:
+                with torch.cuda.stream(s1), torch.cuda.device(X.device):
+                    # We must sync before calls to prec.inv* which use a different stream
+                    cc_ = cc.div_(N)
+                    v_ = v.mul_(_lambda)
+                    s1.synchronize()
+                    cc_ = prec.invTt(cc_).add_(v_)
+                    s1.synchronize()
+                    return prec.invAt(cc_)
+            else:
+                return prec.invAt(prec.invTt(cc / N) + _lambda * v)
+
     def solve(self, X, M, Y, _lambda, initial_solution, max_iter, callback=None):
-        N = self.N
-        if self.N is None:
-            N = X.size(0)
+        N = self.N or X.size(0)
         prec = self.preconditioner
 
         with TicToc("ConjGrad preparation", False):
@@ -121,36 +150,27 @@ class FalkonConjugateGradient(Optimizer):
             if Knm is not None:
                 B = incore_fmmv(Knm, Y / N, None, transpose=True, opt=self.params)
             else:
-                B = self.kernel.dmmv(X, M, None, Y / N, opt=self.params)
-
+                B = self.kernel.mmv(M, X, Y / N, opt=self.params)
             B = prec.apply_t(B)
 
             # Define the Matrix-vector product iteration
-            if X.is_cuda:
-                s1 = torch.cuda.Stream(X.device)
-
-            def mmv(sol):
-                with TicToc("MMV", False):
-                    v = prec.invA(sol)
-                    v_t = prec.invT(v)
-
-                    if Knm is not None:
-                        cc = incore_fdmmv(Knm, v_t, None, opt=self.params)
-                    else:
-                        cc = self.kernel.dmmv(X, M, v_t, None, opt=self.params)
-
-                    if X.is_cuda:
-                        with torch.cuda.stream(s1), torch.cuda.device(X.device):
-                            # We must sync before calls to prec.inv* which use a different stream
-                            cc_ = cc.div_(N)
-                            v_ = v.mul_(_lambda)
-                            s1.synchronize()
-                            cc_ = prec.invTt(cc_).add_(v_)
-                            s1.synchronize()
-                            return prec.invAt(cc_)
-                    else:
-                        return prec.invAt(prec.invTt(cc / N) + _lambda * v)
+            s1 = torch.cuda.Stream(X.device) if X.is_cuda else None
+            capture_mmv = functools.partial(self.flk_mmv, Knm, X, M, s1, N, _lambda)
 
         # Run the conjugate gradient solver
-        beta = self.optimizer.solve(initial_solution, B, mmv, max_iter, callback)
-        return beta
+        return self.optimizer.solve(initial_solution, B, capture_mmv, max_iter, callback)
+
+    def solve_val_rhs(self, Xtr, Xval, M, Y, _lambda, initial_solution, max_iter, callback=None):
+        N = self.N or Xtr.size(0)
+        prec = self.preconditioner
+
+        with TicToc("ConjGrad preparation", False):
+            B = self.kernel.mmv(M, Xval, Y / N, opt=self.params)
+            B = prec.apply_t(B)
+
+            # Define the Matrix-vector product iteration
+            s1 = torch.cuda.Stream(Xtr.device) if Xtr.is_cuda else None
+            capture_mmv = functools.partial(self.flk_mmv, None, Xtr, M, s1, N, _lambda)
+
+        # Run the conjugate gradient solver
+        return self.optimizer.solve(initial_solution, B, capture_mmv, max_iter, callback)

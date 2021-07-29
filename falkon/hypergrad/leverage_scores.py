@@ -17,6 +17,8 @@ __all__ = (
     "creg_plainfit",
     "gcv",
     "creg_penfit",
+    "validation_loss",
+    "ValidationLoss",
 )
 
 EPS = 1e-6
@@ -731,4 +733,112 @@ class RegLossAndDeffv2(torch.autograd.Function):
         torch.autograd.gradcheck(
             lambda sigma, pen, centers:
                 RegLossAndDeffv2.apply(sigma, pen, centers, X, Y, 20, True, FalkonOptions(), 30, False, False, False),
+            (s, p, M))
+
+
+def validation_loss(kernel_args, penalty, centers, Xtr, Ytr, Xval, Yval, solve_options, solve_maxiter, warm_start=True):
+    return ValidationLoss.apply(kernel_args, penalty, centers, Xtr, Ytr, Xval, Yval,
+                                solve_options, solve_maxiter, warm_start)
+
+
+# noinspection PyMethodOverriding
+class ValidationLoss(torch.autograd.Function):
+    last_alpha = None
+    _last_alpha_prec = None
+    _last_alpha2_prec = None
+
+    @staticmethod
+    def forward(
+            ctx,
+            kernel_args: torch.Tensor,
+            penalty: torch.Tensor,
+            M: torch.Tensor,
+            Xtr: torch.Tensor,
+            Ytr: torch.Tensor,
+            Xval: torch.Tensor,
+            Yval: torch.Tensor,
+            solve_options: FalkonOptions,
+            solve_maxiter: int,
+            warm_start: bool,
+            ):
+        with torch.autograd.no_grad():
+            diff_kernel = DiffGaussianKernel(kernel_args, opt=solve_options)
+            nondiff_kernel = GaussianKernel(kernel_args, opt=solve_options)
+            pc = FalkonPreconditioner(penalty.item(), nondiff_kernel, opt=solve_options)
+            pc.init(M.detach())
+            optim = FalkonConjugateGradient(nondiff_kernel, pc, opt=solve_options)
+            beta1 = optim.solve(Xtr, M.detach(), Ytr, penalty.item(), ValidationLoss._last_alpha_prec, solve_maxiter)
+            alpha1 = pc.apply(beta1)
+
+        with torch.autograd.enable_grad():
+            kvm_alpha = diff_kernel.mmv(Xval, M, alpha1)
+
+        if warm_start:
+            ValidationLoss._last_alpha_prec = beta1
+        ValidationLoss.last_alpha = alpha1
+
+        ctx.save_for_backward(kernel_args, penalty, M)
+        ctx.alpha1, ctx.kvm_alpha = alpha1, kvm_alpha
+        ctx.pc, ctx.solve_maxiter, ctx.diff_kernel, ctx.optim = pc, solve_maxiter, diff_kernel, optim
+        ctx.Xtr, ctx.Xval, ctx.Ytr, ctx.Yval = Xtr, Xval, Ytr, Yval
+        ctx.warm_start = warm_start
+
+        with torch.autograd.no_grad():
+            val_loss = torch.sum(torch.square(kvm_alpha - Yval))
+        return (val_loss, )
+
+    @staticmethod
+    def backward(ctx, out):
+        kernel_args, penalty, M = ctx.saved_tensors
+        alpha1, kvm_alpha = ctx.alpha1, ctx.kvm_alpha
+        pc, solve_maxiter, diff_kernel, optim = ctx.pc, ctx.solve_maxiter, ctx.diff_kernel, ctx.optim
+        Xtr, Xval, Ytr, Yval = ctx.Xtr, ctx.Xval, ctx.Ytr, ctx.Yval
+
+        with torch.autograd.no_grad():
+            # 2 right-hand-sides: kvm_alpha and y_val
+            slv_shape = kvm_alpha.shape[1]
+            solve2rhs = torch.cat((kvm_alpha.detach(), Yval), dim=1)
+
+            beta_slv2 = optim.solve_val_rhs(Xtr, Xval, M.detach(), solve2rhs, penalty.item(), ValidationLoss._last_alpha2_prec, solve_maxiter)
+            alpha_slv2 = pc.apply(beta_slv2)
+            if ctx.warm_start:
+                ValidationLoss._last_alpha2_prec = beta_slv2
+
+            all_alphas = torch.cat((alpha1, alpha_slv2), dim=1)
+            a2, a3 = torch.split(alpha_slv2, slv_shape, dim=1)
+
+        with torch.autograd.enable_grad():
+            kmn_y = diff_kernel.mmv(M, Xtr, Ytr)
+            kmv_yv = diff_kernel.mmv(M, Xval, Yval)
+            knm_slv_all = diff_kernel.mmv(Xtr, M, all_alphas)
+            knm_a1, knm_a2, knm_a3 = torch.split(knm_slv_all, slv_shape, dim=1)
+            kmm_a1 = diff_kernel.mmv(M, M, alpha1)
+
+            pen_n = penalty * Xtr.shape[0]
+            bg = out * (
+                + 2 * (kmn_y * a2).sum()
+                + 2 * (kvm_alpha.detach() * kvm_alpha).sum()
+                - 2 * ((knm_a1 * knm_a2.detach()).sum() + (knm_a1.detach() * knm_a2).sum() + pen_n * (kmm_a1 * a2).sum())
+                - 2 * (kmn_y * a3).sum()
+                - 2 * (alpha1 * kmv_yv).sum()
+                + 2 * ((knm_a1 * knm_a3.detach()).sum() + (knm_a1.detach() * knm_a3).sum() + pen_n * (kmm_a1 * a3).sum())
+            )
+        return calc_grads(ctx, bg, 3)
+
+    @staticmethod
+    def grad_check():
+        torch.manual_seed(3)
+        X = torch.randn(100, 6, dtype=torch.float64)
+        Xtr = X[:50].clone()
+        Xval = X[50:].clone()
+        w = torch.randn(X.shape[1], 1, dtype=torch.float64)
+        Ytr = Xtr @ w
+        Yval = Xval @ w
+        M = Xtr[:10].clone().detach().requires_grad_()
+        s = torch.tensor([10.0], dtype=X.dtype).requires_grad_()
+        p = torch.tensor(1e-2, dtype=X.dtype).requires_grad_()
+
+        torch.autograd.gradcheck(
+            lambda sigma, pen, centers:
+                ValidationLoss.apply(sigma, pen, centers, Xtr, Ytr, Xval, Yval, FalkonOptions(), 30, False),
             (s, p, M))
