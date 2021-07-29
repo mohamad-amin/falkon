@@ -127,8 +127,8 @@ def pred_reporting(model: HyperOptimModel,
     train_err, err_name = err_fn(Ytr.detach().cpu(), train_preds)
     out_str = (f"Epoch {epoch} ({cum_time:5.2f}s) - "
                f"Sigma {get_scalar(sigma):.3f} - Penalty {get_scalar(penalty):.2e} - "
-               f"Tr  {err_name} = {train_err:6.4f} - "
-               f"Ts  {err_name} = {test_err:6.4f}")
+               f"Tr  {err_name} = {train_err:7.5f} - "
+               f"Ts  {err_name} = {test_err:7.5f}")
     writer.add_scalar(f'error/{err_name}/train', train_err, epoch)
     writer.add_scalar(f'error/{err_name}/test', test_err, epoch)
 
@@ -167,10 +167,13 @@ def train_complexity_reg(
     schedule = None
     if optimizer == "adam":
         opt_hp = torch.optim.Adam([
-            {"params": model.parameters(), "lr": learning_rate},
+            {"params": model.named_parameters()['centers'], 'lr': learning_rate / 10},
+            {"params": model.named_parameters()['penalty'], 'lr': learning_rate},
+            {"params": model.named_parameters()['sigma'], 'lr': learning_rate},
+            #{"params": model.parameters(), "lr": learning_rate},
         ])
-        # schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_hp, factor=0.3, patience=20)
-        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=80, gamma=0.3)
+        #schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_hp, factor=0.5, patience=1)
+        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=20, gamma=0.5)
     elif optimizer == "lbfgs":
         if model.losses_are_grads:
             raise ValueError("L-BFGS not valid for model %s" % (model))
@@ -218,6 +221,7 @@ def train_complexity_reg(
                     schedule.step(loss_dict['train_NRMSE'])
             else:
                 schedule.step()
+        del grads, losses
     if retrain_nkrr:
         print(f"Final retrain after {num_epochs} epochs:")
         pred_dict = pred_reporting(

@@ -148,9 +148,10 @@ class StochasticDeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
     def predict(self, X):
         if RegLossAndDeffv2.last_alpha is None:
             raise RuntimeError("Call hp_loss before calling predict.")
-        alpha = RegLossAndDeffv2.last_alpha
-        kernel = GaussianKernel(self.sigma, opt=self.flk_opt)
-        return kernel.mmv(X, self.centers, alpha)
+        with torch.autograd.no_grad():
+            alpha = RegLossAndDeffv2.last_alpha
+            kernel = GaussianKernel(self.sigma, opt=self.flk_opt)
+            return kernel.mmv(X, self.centers, alpha)
 
     @property
     def loss_names(self):
@@ -223,10 +224,11 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         if self.L is None or self.LB is None or self.c is None:
             raise RuntimeError("Call hp_loss before calling predict.")
 
-        tmp1 = torch.triangular_solve(self.c, self.LB, upper=False, transpose=True).solution
-        tmp2 = torch.triangular_solve(tmp1, self.L, upper=False, transpose=True).solution
-        kms = full_rbf_kernel(self.centers, X, self.sigma)
-        return kms.T @ tmp2
+        with torch.autograd.no_grad():
+            tmp1 = torch.triangular_solve(self.c, self.LB, upper=False, transpose=True).solution
+            tmp2 = torch.triangular_solve(tmp1, self.L, upper=False, transpose=True).solution
+            kms = full_rbf_kernel(self.centers, X, self.sigma)
+            return kms.T @ tmp2
 
     @property
     def loss_names(self):
@@ -369,15 +371,16 @@ class StochasticDeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         loss = creg_plainfit(kernel_args=self.sigma, penalty=self.penalty, centers=self.centers,
                              X=X, Y=Y, num_estimators=self.num_trace_est, deterministic=False,
                              solve_options=self.flk_opt, solve_maxiter=self.flk_maxiter,
-                             gaussian_random=False, use_stoch_trace=self.nystrace_ste)
+                             gaussian_random=False, use_stoch_trace=self.nystrace_ste, warm_start=True)
         return [loss]
 
     def predict(self, X):
         if NoRegLossAndDeff.last_alpha is None:
             raise RuntimeError("Call hp_loss before calling predict.")
-        alpha = NoRegLossAndDeff.last_alpha
-        kernel = GaussianKernel(self.sigma, opt=self.flk_opt)
-        return kernel.mmv(X, self.centers, alpha)
+        with torch.autograd.no_grad():
+            alpha = NoRegLossAndDeff.last_alpha
+            kernel = GaussianKernel(self.sigma, opt=self.flk_opt)
+            return kernel.mmv(X, self.centers, alpha)
 
     @property
     def loss_names(self):
@@ -456,8 +459,9 @@ class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         if self.alpha is None:
             raise RuntimeError("Call hp_loss before calling predict.")
 
-        kms = full_rbf_kernel(self.centers, X, self.sigma)
-        return kms.T @ self.alpha
+        with torch.autograd.no_grad():
+            kms = full_rbf_kernel(self.centers, X, self.sigma)
+            return kms.T @ self.alpha
 
     @property
     def loss_names(self):
