@@ -148,10 +148,10 @@ class StochasticDeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
     def predict(self, X):
         if RegLossAndDeffv2.last_alpha is None:
             raise RuntimeError("Call hp_loss before calling predict.")
+
+        kernel = GaussianKernel(sigma=self.sigma.detach(), opt=self.flk_opt)
         with torch.autograd.no_grad():
-            alpha = RegLossAndDeffv2.last_alpha
-            kernel = GaussianKernel(self.sigma, opt=self.flk_opt)
-            return kernel.mmv(X, self.centers, alpha)
+            return kernel.mmv(X, self.centers, RegLossAndDeffv2.last_alpha)
 
     @property
     def loss_names(self):
@@ -377,10 +377,9 @@ class StochasticDeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
     def predict(self, X):
         if NoRegLossAndDeff.last_alpha is None:
             raise RuntimeError("Call hp_loss before calling predict.")
+        kernel = GaussianKernel(self.sigma.detach(), opt=self.flk_opt)
         with torch.autograd.no_grad():
-            alpha = NoRegLossAndDeff.last_alpha
-            kernel = GaussianKernel(self.sigma, opt=self.flk_opt)
-            return kernel.mmv(X, self.centers, alpha)
+            return kernel.mmv(X, self.centers, NoRegLossAndDeff.last_alpha)
 
     @property
     def loss_names(self):

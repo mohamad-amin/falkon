@@ -65,7 +65,7 @@ class FalkonClosedFormHgrad(NystromKRRModelMixinN, HyperOptimModel):
             raise RuntimeError("Call hp_loss before calling predict.")
         kernel = GaussianKernel(sigma=self.sigma.detach(), opt=self.flk_opt)
         with torch.autograd.no_grad():
-            return kernel.mmv(X, self.centers, self.alpha)
+            return kernel.mmv(X, self.centers, ValidationLoss.last_alpha)
 
     @property
     def loss_names(self):
@@ -77,7 +77,7 @@ class FalkonClosedFormHgrad(NystromKRRModelMixinN, HyperOptimModel):
         return len(self.tr_indices) / tot * 100
 
     def __repr__(self):
-        return f"NystromClosedFormHgrad(sigma={get_scalar(self.sigma)}, penalty={get_scalar(self.penalty)}, num_centers={self.centers.shape[0]}, " \
+        return f"FalkonClosedFormHgrad(sigma={get_scalar(self.sigma)}, penalty={get_scalar(self.penalty)}, num_centers={self.centers.shape[0]}, " \
                f"opt_centers={self.opt_centers}, opt_sigma={self.opt_sigma}, opt_penalty={self.opt_penalty}, train_pct={self.train_pct})"
 
 

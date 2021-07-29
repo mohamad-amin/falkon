@@ -10,7 +10,7 @@ from falkon.hypergrad.creg import (
     DeffNoPenFitTr, DeffPenFitTr, StochasticDeffPenFitTr,
     StochasticDeffNoPenFitTr, CompDeffPenFitTr, CompDeffNoPenFitTr,
 )
-from falkon.hypergrad.hgrad import NystromClosedFormHgrad, NystromIFTHgrad
+from falkon.hypergrad.hgrad import NystromClosedFormHgrad, NystromIFTHgrad, FalkonClosedFormHgrad
 from falkon.hypergrad.common import get_start_sigma, get_scalar
 from falkon.hypergrad.complexity_reg import HyperOptimModel, hp_grad
 from falkon.hypergrad.gcv import NystromGCV, StochasticNystromGCV
@@ -170,9 +170,9 @@ def train_complexity_reg(
             {"params": model.named_parameters()['centers'], 'lr': learning_rate / 10},
             {"params": model.named_parameters()['penalty'], 'lr': learning_rate},
             {"params": model.named_parameters()['sigma'], 'lr': learning_rate},
-            #{"params": model.parameters(), "lr": learning_rate},
+            # {"params": model.parameters(), "lr": learning_rate},
         ])
-        #schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_hp, factor=0.5, patience=1)
+        # schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_hp, factor=0.5, patience=1)
         schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=20, gamma=0.5)
     elif optimizer == "lbfgs":
         if model.losses_are_grads:
@@ -237,7 +237,7 @@ def init_model(model_type, data, penalty_init, sigma_init, centers_init, opt_pen
                opt_centers, sigma_type, cuda, val_pct, cg_tol, num_trace_vecs=20, flk_maxiter=10,
                nystrace_ste=False):
     start_sigma = get_start_sigma(sigma_init, sigma_type, data['X'].shape[1])
-    if model_type in {"hgrad-closed", "hgrad-ift"}:
+    if model_type in {"hgrad-closed", "hgrad-ift", "flk-hgrad-closed"}:
         if val_pct <= 0 or val_pct >= 100:
             raise RuntimeError("val_pct must be between 1 and 99")
         tot = data['X'].shape[0]
@@ -319,6 +319,13 @@ def init_model(model_type, data, penalty_init, sigma_init, centers_init, opt_pen
                                      opt_penalty=opt_penalty, opt_centers=opt_centers, cuda=cuda,
                                      flk_opt=flk_opt, num_trace_est=num_trace_vecs,
                                      flk_maxiter=flk_maxiter)
+    elif model_type == "flk-hgrad-closed":
+        # noinspection PyUnboundLocalVariable
+        model = FalkonClosedFormHgrad(sigma_init=sigma_init, penalty_init=penalty_init,
+                                      centers_init=centers_init, opt_centers=opt_centers,
+                                      opt_sigma=opt_sigma, opt_penalty=opt_penalty, cuda=cuda,
+                                      tr_indices=tr_idx, ts_indices=val_idx, flk_opt=flk_opt,
+                                      flk_maxiter=flk_maxiter)
     else:
         raise RuntimeError(f"{model_type} model type not recognized!")
 

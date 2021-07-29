@@ -51,10 +51,9 @@ class StochasticNystromGCV(NystromKRRModelMixinN, HyperOptimModel):
     def predict(self, X):
         if GCV.last_alpha is None:
             raise RuntimeError("Call hp_loss before calling predict.")
+        kernel = GaussianKernel(self.sigma.detach(), opt=self.flk_opt)
         with torch.autograd.no_grad():
-            alpha = GCV.last_alpha
-            kernel = GaussianKernel(self.sigma, opt=self.flk_opt)
-            return kernel.mmv(X, self.centers, alpha)
+            return kernel.mmv(X, self.centers, GCV.last_alpha)
 
     @property
     def loss_names(self):
