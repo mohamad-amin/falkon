@@ -123,7 +123,7 @@ class NystromClosedFormHgrad(NystromKRRModelMixinN, HyperOptimModel):
         Ytr = Y[self.tr_indices]
         Yval = Y[self.ts_indices]
 
-        variance = self.penalty
+        variance = self.penalty * Xtr.shape[0]
         sqrt_var = torch.sqrt(variance)
 
         m = self.centers.shape[0]

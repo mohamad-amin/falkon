@@ -786,7 +786,7 @@ class ValidationLoss(torch.autograd.Function):
 
         with torch.autograd.no_grad():
             val_loss = torch.sum(torch.square(kvm_alpha - Yval))
-        return (val_loss, )
+        return val_loss
 
     @staticmethod
     def backward(ctx, out):

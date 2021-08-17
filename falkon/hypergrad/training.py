@@ -5,7 +5,7 @@ from typing import Optional, Dict, List, Any
 import torch
 from dataclasses import dataclass
 
-from falkon import FalkonOptions, Falkon
+from falkon import FalkonOptions, Falkon, InCoreFalkon
 from falkon.hypergrad.creg import (
     DeffNoPenFitTr, DeffPenFitTr, StochasticDeffPenFitTr,
     StochasticDeffNoPenFitTr, CompDeffPenFitTr, CompDeffNoPenFitTr,
@@ -104,16 +104,22 @@ def pred_reporting(model: HyperOptimModel,
     sigma, penalty, centers = model.sigma, model.penalty, model.centers
 
     if resolve_model:
-        if hasattr(model, "flk_opt"):
-            flk_opt = model.flk_opt
-        else:
-            flk_opt = FalkonOptions(use_cpu=not torch.cuda.is_available())
+        #if hasattr(model, "flk_opt"):
+        #    flk_opt = model.flk_opt
+        #else:
+        flk_opt = FalkonOptions(use_cpu=not torch.cuda.is_available(), cg_tolerance=1e-4)
         from falkon.kernels import GaussianKernel
-        kernel = GaussianKernel(sigma, flk_opt)
         from falkon.center_selection import FixedSelector
-        flk_model = Falkon(kernel, penalty, M=centers.shape[0],
-                           center_selection=FixedSelector(centers), maxiter=30,
-                           seed=1312, error_fn=err_fn, error_every=1, options=flk_opt)
+        kernel = GaussianKernel(sigma.detach(), flk_opt)
+        center_selector = FixedSelector(centers.detach())
+        if Xtr.is_cuda:
+            flk_model = InCoreFalkon(kernel, penalty.item(), M=centers.shape[0],
+                                     center_selection=center_selector, maxiter=30,
+                                     seed=1312, error_fn=err_fn, error_every=None, options=flk_opt)
+        else:
+            flk_model = Falkon(kernel, penalty.item(), M=centers.shape[0],
+                               center_selection=center_selector, maxiter=30,
+                               seed=1312, error_fn=err_fn, error_every=None, options=flk_opt)
         if Xval is not None and Yval is not None:
             Xtr_full, Ytr_full = torch.cat((Xtr, Xval), dim=0), torch.cat((Ytr, Yval), dim=0)
         else:
@@ -166,14 +172,15 @@ def train_complexity_reg(
         Xtr, Ytr, Xts, Yts = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
     schedule = None
     if optimizer == "adam":
-        opt_hp = torch.optim.Adam([
-            {"params": model.named_parameters()['centers'], 'lr': learning_rate / 10},
+        opt_modules = [
             {"params": model.named_parameters()['penalty'], 'lr': learning_rate},
             {"params": model.named_parameters()['sigma'], 'lr': learning_rate},
-            # {"params": model.parameters(), "lr": learning_rate},
-        ])
+        ]
+        if 'centers' in model.named_parameters():
+            opt_modules.append({"params": model.named_parameters()['centers'], 'lr': learning_rate / 10})
+        opt_hp = torch.optim.Adam(opt_modules)
         # schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_hp, factor=0.5, patience=1)
-        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=20, gamma=0.5)
+        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=100, gamma=0.4)
     elif optimizer == "lbfgs":
         if model.losses_are_grads:
             raise ValueError("L-BFGS not valid for model %s" % (model))
@@ -209,7 +216,7 @@ def train_complexity_reg(
             pred_dict = pred_reporting(
                 model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
                 err_fn=err_fn, epoch=epoch, time_start=e_start, cum_time=cum_time,
-                resolve_model=retrain_nkrr)
+                resolve_model=True)
             cum_time = pred_dict["cum_time"]
         loss_dict = grad_loss_reporting(model.named_parameters(), grads, losses, model.loss_names,
                                         verbose, epoch, losses_are_grads=model.losses_are_grads)
