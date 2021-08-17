@@ -69,7 +69,13 @@ class FalkonBase(base.BaseEstimator, ABC):
             initialization.init(self._base_opt)
             self.num_gpus = devices.num_gpus(self.options)
 
-    def _get_callback_fn(self, X, Y, Xts, Yts, ny_points, precond):
+    def _get_callback_fn(self,
+                         X: _tensor_type,
+                         Y: torch.Tensor,
+                         Xts: _tensor_type,
+                         Yts: torch.Tensor,
+                         ny_points: _tensor_type,
+                         precond: falkon.preconditioner.Preconditioner):
         """Returns the callback function for CG iterations.
 
         The callback computes and displays the validation error.
@@ -77,11 +83,11 @@ class FalkonBase(base.BaseEstimator, ABC):
         def val_cback(it, beta, train_time):
             self.fit_times_.append(self.fit_times_[0] + train_time)
             if it % self.error_every != 0:
-                print("Iteration %3d - Elapsed %.1fs" % (it, self.fit_times_[-1]), flush=True)
+                print(f"Iteration {it:3d} - Elapsed {self.fit_times_[-1]:.2f}s", flush=True)
                 return
             err_str = "training" if Xts is None or Yts is None else "validation"
-            alpha = precond.apply(beta)
-            # Compute error: can be train or test;
+            alpha = self._params_to_original_space(beta, precond)
+            # Compute error: can be train or test
             if Xts is not None and Yts is not None:
                 pred = self._predict(Xts, ny_points, alpha)
                 err = self.error_fn(Yts, pred)
@@ -91,8 +97,8 @@ class FalkonBase(base.BaseEstimator, ABC):
             err_name = "error"
             if isinstance(err, tuple) and len(err) == 2:
                 err, err_name = err
-            print("Iteration %3d - Elapsed %.1fs - %s %s: %.8f" %
-                  (it, self.fit_times_[-1], err_str, err_name, err), flush=True)
+            print(f"Iteration {it:3d} - Elapsed {self.fit_times_[-1]:.2f}s - "
+                  f"{err_str} {err_name}: {err:.8f}", flush=True)
 
         return val_cback
 
@@ -176,6 +182,10 @@ class FalkonBase(base.BaseEstimator, ABC):
 
     @abstractmethod
     def _predict(self, X, ny_points_, alpha_):
+        pass
+
+    @abstractmethod
+    def _params_to_original_space(self, params, preconditioner):
         pass
 
     def predict(self, X: torch.Tensor) -> torch.Tensor:

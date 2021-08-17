@@ -1,3 +1,7 @@
+*.png
+notebooks/data/
+notebooks/logs/
+
 *.xml
 
 *.csv

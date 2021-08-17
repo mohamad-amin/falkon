@@ -1,6 +1,6 @@
 import functools
 import time
-from typing import Optional
+from typing import Optional, Callable
 
 import torch
 
@@ -40,7 +40,46 @@ class ConjugateGradient(Optimizer):
         super().__init__()
         self.params = opt or ConjugateGradientOptions()
 
-    def solve(self, X0, B, mmv, max_iter, callback=None):
+    def solve(self,
+              X0: Optional[torch.Tensor],
+              B: torch.Tensor,
+              mmv: Callable[[torch.Tensor], torch.Tensor],
+              max_iter: int,
+              callback: Optional[Callable[[int, torch.Tensor, float], None]] = None) -> torch.Tensor:
+        """Conjugate-gradient solver with optional support for preconditioning via generic MMV.
+
+        This solver can be used for iterative solution of linear systems of the form $AX = B$ with
+        respect to the `X` variable. Knowledge of `A` is only needed through matrix-vector
+        multiplications with temporary solutions (must be provided through the `mmv` function).
+
+        Preconditioning can be achieved by incorporating the preconditioner matrix in the `mmv`
+        function.
+
+        Parameters
+        ----------
+        X0 : Optional[torch.Tensor]
+            Initial solution for the solver. If not provided it will be a zero-tensor.
+        B : torch.Tensor
+            Right-hand-side of the linear system to be solved.
+        mmv
+            User-provided function to perform matrix-vector multiplications with the design matrix
+            `A`. The function must accept a single argument (the vector to be multiplied), and
+            return the result of the matrix-vector multiplication.
+        max_iter : int
+            Maximum number of iterations the solver will perform. Early stopping is implemented
+            via the options passed in the constructor of this class (in particular look at
+            `cg_tolerance` options)
+            i + 1, X, e_train
+        callback
+            An optional, user-provided function which shall be called at the end of each iteration
+            with the current solution. The arguments to the function are the iteration number,
+            a tensor containing the current solution, and the total time elapsed from the beginning
+            of training (note that this time explicitly excludes any time taken by the callback
+            itself).
+        Returns
+        -------
+        The solution to the linear system `X`.
+        """
         t_start = time.time()
 
         if X0 is None:

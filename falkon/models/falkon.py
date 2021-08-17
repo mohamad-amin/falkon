@@ -100,7 +100,6 @@ class Falkon(FalkonBase):
                  kernel: falkon.kernels.Kernel,
                  penalty: float,
                  M: int,
-                 N: Optional[int] = None,
                  center_selection: Union[str, falkon.center_selection.CenterSelector] = 'uniform',
                  maxiter: int = 20,
                  seed: Optional[int] = None,
@@ -113,7 +112,6 @@ class Falkon(FalkonBase):
         self.maxiter = maxiter
         self._init_cuda()
         self.beta_ = None
-        self.N = None
 
     def fit(self,
             X: torch.Tensor,
@@ -200,10 +198,9 @@ class Falkon(FalkonBase):
         k_opt = dataclasses.replace(self.options, use_cpu=True)
         cpu_info = get_device_info(k_opt)
         available_ram = min(k_opt.max_cpu_mem, cpu_info[-1].free_memory) * 0.9
+        Knm = None
         if self._can_store_knm(X, ny_points, available_ram):
             Knm = self.kernel(X, ny_points, opt=self.options)
-        else:
-            Knm = None
         self.fit_times_.append(time.time() - t_s)  # Preparation time
 
         # Here we define the callback function which will run at the end
@@ -219,7 +216,7 @@ class Falkon(FalkonBase):
             if o_opt.debug:
                 print("Optimizer will run on %s" %
                       ("CPU" if o_opt.use_cpu else ("%d GPUs" % self.num_gpus)), flush=True)
-            optim = falkon.optim.FalkonConjugateGradient(self.kernel, precond, o_opt, self.N)
+            optim = falkon.optim.FalkonConjugateGradient(self.kernel, precond, o_opt)
             if Knm is not None:
                 beta = optim.solve(
                     Knm, None, Y, self.penalty, initial_solution=warm_start,
@@ -247,6 +244,9 @@ class Falkon(FalkonBase):
         )
         mmv_opt = dataclasses.replace(self.options, use_cpu=not _use_cuda_mmv)
         return self.kernel.mmv(X, ny_points, alpha, opt=mmv_opt)
+
+    def _params_to_original_space(self, params, preconditioner):
+        return preconditioner.apply(params)
 
     def to(self, device):
         self.alpha_ = self.alpha_.to(device)

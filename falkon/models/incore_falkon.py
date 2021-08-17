@@ -188,10 +188,9 @@ class InCoreFalkon(FalkonBase):
         # K_NM storage decision
         gpu_info = get_device_info(self.options)[X.device.index]
         available_ram = min(self.options.max_gpu_mem, gpu_info.free_memory) * 0.9
+        Knm = None
         if self._can_store_knm(X, ny_points, available_ram):
             Knm = self.kernel(X, ny_points, opt=self.options)
-        else:
-            Knm = None
         self.fit_times_.append(time.time() - t_s)  # Preparation time
 
         # Here we define the callback function which will run at the end
@@ -223,3 +222,6 @@ class InCoreFalkon(FalkonBase):
             # Then X is the kernel itself
             return X @ alpha
         return self.kernel.mmv(X, ny_points, alpha, opt=self.options)
+
+    def _params_to_original_space(self, params, preconditioner):
+        return preconditioner.apply(params)
