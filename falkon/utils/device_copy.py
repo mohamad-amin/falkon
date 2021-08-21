@@ -5,22 +5,22 @@ from falkon.cuda.cublas_gpu import (cublasSetMatrix, cublasSetMatrixAsync,
                                     cublasGetMatrix, cublasGetMatrixAsync)
 
 
-def check_copy(H, D):
+def check_copy(origin, dest):
     # Data-types
-    if H.dtype != D.dtype:
-        raise ValueError("Data types of H and D (%s, %s) do not match." % (H.dtype, D.dtype))
+    if origin.dtype != dest.dtype:
+        raise ValueError("Data types of origin and destination (%s, %s) do not match." % (origin.dtype, dest.dtype))
     # Sizes
-    if H.size() != D.size():
-        raise ValueError("Size of H (%s) does not match size of D (%s)" % (H.size(), D.size()))
+    if origin.size() != dest.size():
+        raise ValueError("Size of origin (%s) does not match size of destination (%s)" % (origin.size(), dest.size()))
     # Contiguity
-    if is_f_contig(H, strict=False):
-        if not is_f_contig(D, strict=False):
-            raise ValueError("H is F-contig (strides %s), while D is not (strides %s)" % (H.stride(), D.stride()))
-    elif is_contig(H):
-        if not is_contig(D):
-            raise ValueError("H is C-contig (strides %s), while D is not (strides %s)" % (H.stride(), D.stride()))
+    if is_f_contig(origin, strict=False):
+        if not is_f_contig(dest, strict=False):
+            raise ValueError("origin is F-contig (strides %s), while destination is not (strides %s)" % (origin.stride(), dest.stride()))
+    elif is_contig(origin):
+        if not is_contig(dest):
+            raise ValueError("origin is C-contig (strides %s), while destination is not (strides %s)" % (origin.stride(), dest.stride()))
     else:
-        raise ValueError("H is not memory-contiguous (strides %s)" % (H.stride(), ))
+        raise ValueError("origin is not memory-contiguous (strides %s)" % (origin.stride(),))
 
 
 def copy(origin, dest, s=None):
