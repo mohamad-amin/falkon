@@ -1,34 +1,14 @@
+#include "lauum.h"
+
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
-
-#include <c10/cuda/CUDAGuard.h>
 #include <ATen/cuda/Exceptions.h>
 
-
-#include "lauum.cuh"
-int ceildiv(int dividend, int divisor);
+#include "utils.cuh"
 
 
 #define BLOCK_SIZE 32
 //#define DEBUG
-
-
-__device__ int2 tri_index_lower(const int linear_index) {
-    const int row = (int)((-1 + sqrt((double)(8*linear_index + 1))) / 2.0);
-    return make_int2(
-        linear_index - row * (row + 1) / 2,
-        row
-    );
-}
-
-__device__ int2 tri_index_upper(const int linear_index) {
-    const int row = (int)((-1 + sqrt((double)(8*linear_index + 1))) / 2.0);
-    return make_int2(
-        row,
-        linear_index - row * (row + 1) / 2
-    );
-}
-
 
 
 template<typename scalar_t>
@@ -159,16 +139,10 @@ void lower_cuda_lauum_ker(const scalar_t* __restrict__ in,
 }
 
 
-int ceildiv(int dividend, int divisor) {
-    int res = dividend / divisor;
-    if (dividend % divisor != 0)
-        res++;
-    return res;
-}
-
-
-torch::Tensor lauum(const int n, const torch::Tensor &A, const int lda, torch::Tensor &B, const int ldb, const bool lower) {
+torch::Tensor lauum_cuda(const int n, const torch::Tensor &A, const int lda, torch::Tensor &B, const int ldb, const bool lower) {
     // TODO: Consistency checks
+    CHECK_CUDA(A);
+    CHECK_CUDA(B);
     const auto scalar_type = A.scalar_type();
     const auto size = n;
     const auto in_stride = lda;
@@ -178,21 +152,20 @@ torch::Tensor lauum(const int n, const torch::Tensor &A, const int lda, torch::T
     // grid is 1D, so that we can only consider triangularly-appropriate tiles
     // blocks are 2D, with a fixed block size
     const int grid_height = ceildiv(size, BLOCK_SIZE);
-
     const dim3 dimGrid(grid_height * (grid_height + 1) / 2, 1);
     const dim3 dimBlock(BLOCK_SIZE, BLOCK_SIZE);
 
-    AT_DISPATCH_FLOATING_TYPES(scalar_type, "cuda_lauum", [&] {
+    AT_DISPATCH_FLOATING_TYPES(scalar_type, "dispatch_lauum_cuda", [&] {
         at::DeviceGuard g(A.device());
         at::cuda::CUDAStream stream = at::cuda::getCurrentCUDAStream();
-	if (lower) {
+        if (lower) {
             lower_cuda_lauum_ker<scalar_t><<<dimGrid, dimBlock, 0, stream.stream()>>>(
                 A.data_ptr<scalar_t>(), B.data_ptr<scalar_t>(), size, in_stride, out_stride, grid_height);
-	}
+	      }
        	else {
             upper_cuda_lauum_ker<scalar_t><<<dimGrid, dimBlock, 0, stream.stream()>>>(
                 A.data_ptr<scalar_t>(), B.data_ptr<scalar_t>(), size, in_stride, out_stride, grid_height);
-	}
+	      }
     });
     return B;
 }

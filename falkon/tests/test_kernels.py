@@ -15,10 +15,10 @@ from falkon.utils.switches import decide_keops
 
 
 # Global data dimensions
-n = 2000
-m = 1500
-d = 10
-t = 5
+n = 1800
+m = 1300
+d = 3
+t = 2
 
 
 def _run_test(fn, exp, tensors, out, rtol, opt):
@@ -34,22 +34,22 @@ def _run_test(fn, exp, tensors, out, rtol, opt):
 
 @pytest.fixture(scope="module")
 def A() -> torch.Tensor:
-    return torch.from_numpy(gen_random(n, d, 'float64', False, seed=92))
+    return torch.from_numpy(gen_random(n, d, 'float32', False, seed=92))
 
 
 @pytest.fixture(scope="module")
 def B() -> torch.Tensor:
-    return torch.from_numpy(gen_random(m, d, 'float64', False, seed=92))
+    return torch.from_numpy(gen_random(m, d, 'float32', False, seed=92))
 
 
 @pytest.fixture(scope="module")
 def v() -> torch.Tensor:
-    return torch.from_numpy(gen_random(m, t, 'float64', False, seed=92))
+    return torch.from_numpy(gen_random(m, t, 'float32', False, seed=92))
 
 
 @pytest.fixture(scope="module")
 def w() -> torch.Tensor:
-    return torch.from_numpy(gen_random(n, t, 'float64', False, seed=92))
+    return torch.from_numpy(gen_random(n, t, 'float32', False, seed=92))
 
 
 @pytest.fixture(scope="module")
@@ -124,7 +124,6 @@ class AbstractKernelTester(abc.ABC):
 
 # @pytest.mark.parametrize("nu", [0.5, 1.5, 2.5, np.inf])
 class TestMaternKernel(AbstractKernelTester):
-
     @pytest.fixture(params=[0.5, 1.5, 2.5, np.inf], scope="class")
     def nu(self, request) -> float:
         return request.param
@@ -145,15 +144,16 @@ class TestMaternKernel(AbstractKernelTester):
     def exp_k(self, A: torch.Tensor, B: torch.Tensor, single_sigma: float, nu: float) -> np.ndarray:
         return naive_matern_kernel(A.numpy(), B.numpy(), single_sigma, nu)
 
-    @pytest.fixture(params=[1, 2, 3], ids=[
-        "single-sigma", "vec-sigma", "vec-sigma-flat"],
-        scope="class")
+    @pytest.fixture(params=[
+        pytest.param("single-sigma", marks=pytest.mark.full()),
+        "vec-sigma",
+        pytest.param("vec-sigma-flat", marks=pytest.mark.full())], scope="class")
     def kernel(self, single_sigma, vector_sigma, nu, request):
-        if request.param == 1:
+        if request.param == "single-sigma":
             return MaternKernel(single_sigma, nu)
-        elif request.param == 2:
+        elif request.param == "vec-sigma":
             return MaternKernel(vector_sigma, nu)
-        elif request.param == 3:
+        elif request.param == "vec-sigma-flat":
             return MaternKernel(vector_sigma.reshape(-1, 1), nu)
 
     @pytest.fixture(scope="class")
@@ -195,17 +195,20 @@ class TestGaussianKernel(AbstractKernelTester):
     def exp_k(self, A: torch.Tensor, B: torch.Tensor, single_sigma: float) -> np.ndarray:
         return naive_gaussian_kernel(A.numpy(), B.numpy(), single_sigma)
 
-    @pytest.fixture(params=[1, 2, 3, 4], ids=[
-        "single-sigma", "vec-sigma", "vec-sigma-flat", "mat-sigma"],
-        scope="class")
+    @pytest.fixture(params=[
+        "single-sigma",
+        "vec-sigma",
+        pytest.param("vec-sigma-flat", marks=pytest.mark.full()),
+        pytest.param("mat-sigma", marks=pytest.mark.full()),
+    ], scope="class")
     def kernel(self, single_sigma, vector_sigma, mat_sigma, request):
-        if request.param == 1:
+        if request.param == "single-sigma":
             return GaussianKernel(single_sigma)
-        elif request.param == 2:
+        elif request.param == "vec-sigma":
             return GaussianKernel(vector_sigma)
-        elif request.param == 3:
+        elif request.param == "vec-sigma-flat":
             return GaussianKernel(vector_sigma.reshape(-1, 1))
-        elif request.param == 4:
+        elif request.param == "mat-sigma":
             return GaussianKernel(mat_sigma)
 
     def test_wrong_sigma_dims(self, A, B, cpu, rtol):
@@ -222,6 +225,7 @@ class TestGaussianKernel(AbstractKernelTester):
         # by PropagatingThread) but I'm not sure how to fetch it.
 
 
+@pytest.mark.full
 @pytest.mark.skipif(not decide_cuda(), reason="No GPU found.")
 def test_gaussian_pd():
     X = gen_random(10000, 2, 'float32', F=True, seed=12)
@@ -274,11 +278,12 @@ class TestSigmoidKernel(AbstractKernelTester):
 
 
 class TestPolynomialKernel(AbstractKernelTester):
-    @pytest.fixture(scope="class", params=[1, 2], ids=["poly1.4", "poly2.0"])
+    @pytest.fixture(scope="class",
+                    params=["poly1.4", pytest.param("poly2.0", marks=pytest.mark.full())])
     def kernel(self, request) -> PolynomialKernel:
-        if request.param == 1:
+        if request.param == "poly1.4":
             return PolynomialKernel(alpha=2.0, beta=3, degree=1.4)
-        elif request.param == 2:
+        elif request.param == "poly2.0":
             return PolynomialKernel(alpha=2.0, beta=3, degree=2.0)
 
     @pytest.fixture(scope="class")

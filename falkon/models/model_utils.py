@@ -134,7 +134,7 @@ class FalkonBase(base.BaseEstimator, ABC):
 
         return X
 
-    def _can_store_knm(self, X, ny_points, available_ram, store_threshold=1200):
+    def _can_store_knm(self, X, ny_points, available_ram):
         """Decide whether it's worthwile to pre-compute the k_NM kernel.
 
         Notes
@@ -155,6 +155,7 @@ class FalkonBase(base.BaseEstimator, ABC):
         if self.options.never_store_kernel:
             return False
         dts = sizeof_dtype(X.dtype)
+        store_threshold = self.options.store_kernel_d_threshold
         if X.size(1) > store_threshold:
             necessary_ram = X.size(0) * ny_points.size(0) * dts
             if available_ram > necessary_ram:
