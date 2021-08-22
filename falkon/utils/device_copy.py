@@ -16,8 +16,8 @@ def check_copy(H, D):
     if is_f_contig(H, strict=False):
         if not is_f_contig(D, strict=False):
             raise ValueError("H is F-contig (strides %s), while D is not (strides %s)" % (H.stride(), D.stride()))
-    elif is_contig(H):
-        if not is_contig(D):
+    elif is_contig(H):  # H is C-contiguous
+        if not is_contig(D) or is_f_contig(D, strict=True):
             raise ValueError("H is C-contig (strides %s), while D is not (strides %s)" % (H.stride(), D.stride()))
     else:
         raise ValueError("H is not memory-contiguous (strides %s)" % (H.stride(), ))
