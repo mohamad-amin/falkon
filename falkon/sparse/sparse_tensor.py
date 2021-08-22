@@ -156,7 +156,7 @@ class SparseTensor():
         return SparseTensor(
             indexptr=new_indexptr, index=new_index, data=new_data, size=(length, self.size(1)))
 
-    def to(self, dtype=None, device=None) -> 'SparseTensor':
+    def to(self, dtype=None, device=None, non_blocking=False) -> 'SparseTensor':
         new_data = self.data
         new_indexptr = self.indexptr
         new_index = self.index
@@ -169,10 +169,10 @@ class SparseTensor():
         change_device = device != self.device
 
         if change_dtype or change_device:
-            new_data = self.data.to(dtype=dtype, device=device)
+            new_data = self.data.to(dtype=dtype, device=device, non_blocking=non_blocking)
         if change_device:
-            new_indexptr = self.indexptr.to(device=device)
-            new_index = self.index.to(device=device)
+            new_indexptr = self.indexptr.to(device=device, non_blocking=non_blocking)
+            new_index = self.index.to(device=device, non_blocking=non_blocking)
         return SparseTensor(
             indexptr=new_indexptr, index=new_index, data=new_data,
             size=self.shape, sparse_type=self.sparse_type)

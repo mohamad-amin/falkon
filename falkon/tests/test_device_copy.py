@@ -69,9 +69,9 @@ def test_diff_sizes(mat, order, in_dev, size, out_size):
     in_mat = in_mat[:size[0], :size[1]]
 
     if order == "F":
-        output = torch.empty_strided(out_size, (1, out_size[0]), dtype=in_mat.dtype, device=out_dev) * 100.
+        output = torch.empty_strided(out_size, (1, out_size[0]), dtype=in_mat.dtype, device=out_dev) #* 100.
     else:
-        output = torch.empty_strided(out_size, (out_size[0], 1), dtype=in_mat.dtype, device=out_dev) * 100.
+        output = torch.empty_strided(out_size, (out_size[0], 1), dtype=in_mat.dtype, device=out_dev) #* 100.
     output = output[:size[0], :size[1]]
 
     opt = FalkonOptions(max_gpu_mem=0.0)
@@ -91,13 +91,13 @@ def test_wrong_stride(mat, order, in_dev):
         out_dev = "cuda"
     in_mat: torch.Tensor = fix_mat(mat, np.float64, order=order, device=in_dev, copy=True, numpy=False)
 
-    if order == "F":
-        output = torch.empty_strided(in_mat.size(), (in_mat.stride(0), 1), dtype=in_mat.dtype, device=out_dev) * 100.
-    else:
-        output = torch.empty_strided(in_mat.size(), (1, in_mat.stride(1)), dtype=in_mat.dtype, device=out_dev) * 100.
+    if order == "F":  # Then output should be row-contiguous
+        output = torch.empty_strided(in_mat.size(), (in_mat.shape[1], 1), dtype=in_mat.dtype, device=out_dev) #* 100.
+    else:  # Then output should be col-contiguous
+        output = torch.empty_strided(in_mat.size(), (1, in_mat.shape[0]), dtype=in_mat.dtype, device=out_dev) #* 100.
 
     opt = FalkonOptions(max_gpu_mem=0.0)
     with memory_checker(opt) as new_opt:
-        copy(in_mat, output)
+        with pytest.raises(ValueError):
+            copy(in_mat, output)
 
-    torch.testing.assert_allclose(in_mat.cpu(), output.cpu(), rtol=1e-15, atol=1e-15)
