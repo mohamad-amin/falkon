@@ -259,7 +259,7 @@ torch::Tensor trtri_cuda(torch::Tensor &A, const bool lower, const bool unitdiag
     const int lda = A.stride(1);
     const auto cublas_handle = at::cuda::getCurrentCUDABlasHandle();
 
-    AT_DISPATCH_FLOATING_TYPES(scalar_type, "dispatch_lauum_cuda", [&] {
+    AT_DISPATCH_FLOATING_TYPES(scalar_type, "dispatch_trtri_cuda", [&] {
         at::DeviceGuard g(A.device());
         _trtri_upper<scalar_t>(A.size(0), A, BLOCK_SIZE, lda, cublas_handle);
     });

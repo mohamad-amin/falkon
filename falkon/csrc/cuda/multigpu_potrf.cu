@@ -19,7 +19,6 @@
 
 //#define DEBUG 1
 
-#ifndef TORCH_CUSOLVER_CHECK
 #define TORCH_CUSOLVER_CHECK(EXPR)                              \
   do {                                                          \
     cusolverStatus_t __err = EXPR;                              \
@@ -56,7 +55,6 @@ const char* cusolverGetErrorString(cusolverStatus_t error) {
   }
   return "<unknown>";
 }
-#endif
 
 
 #define TORCH_CUDABLAS_CHECK(EXPR)                                      \
