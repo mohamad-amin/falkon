@@ -17,11 +17,11 @@ def check_copy(origin, dest, check_dtypes=True):
     if origin.size() != dest.size():
         raise ValueError("Size of origin (%s) does not match size of destination (%s)" % (origin.size(), dest.size()))
     # Contiguity
-    if is_f_contig(H, strict=False):
-        if not is_f_contig(D, strict=False):
+    if is_f_contig(origin, strict=False):
+        if not is_f_contig(dest, strict=False):
             raise ValueError("origin is F-contig (strides %s), while destination is not (strides %s)" % (origin.stride(), dest.stride()))
-    elif is_contig(H):  # H is C-contiguous
-        if not is_contig(D) or is_f_contig(D, strict=True):
+    elif is_contig(origin):  # H is C-contiguous
+        if not is_contig(dest) or is_f_contig(dest, strict=True):
             raise ValueError("origin is C-contig (strides %s), while destination is not (strides %s)" % (origin.stride(), dest.stride()))
     else:
         raise ValueError("origin is not memory-contiguous (strides %s)" % (origin.stride(),))
@@ -47,7 +47,7 @@ def copy_to_host(rows, cols, D, Di, Dj, H, Hi, Hj, s=None):
     if H.dtype != D.dtype:
         # First copy `D_narrow` to a matrix with the same dtype on the host
         # then copy this last matrix to `H_narrow` (at the end of this function).
-        H_temp = torch.empty_like(D_narrow, device=D.device)
+        H_temp = torch.empty_like(D_narrow, device=H.device)
         H_narrow_final = H_narrow
         H_narrow = H_temp
 
@@ -70,7 +70,7 @@ def copy_to_host(rows, cols, D, Di, Dj, H, Hi, Hj, s=None):
             cuda_memcpy2d_async(
                 dst=H_narrow.data_ptr(), dpitch=H_narrow.stride(0) * dts,
                 src=D_narrow.data_ptr(), spitch=D_narrow.stride(0) * dts,
-                width=cols * dts, height=rows, stream=s._as_parameter)
+                width=cols * dts, height=rows, stream=s._as_parameter_)
         else:
             cuda_memcpy2d(
                 dst=H_narrow.data_ptr(), dpitch=H_narrow.stride(0) * dts,
@@ -112,7 +112,7 @@ def copy_to_device(rows, cols, H, Hi, Hj, D, Di, Dj, s=None):
             cuda_memcpy2d_async(
                 src=H_narrow.data_ptr(), spitch=H_narrow.stride(0) * dts,
                 dst=D_narrow.data_ptr(), dpitch=D_narrow.stride(0) * dts,
-                width=cols * dts, height=rows, stream=s._as_parameter)
+                width=cols * dts, height=rows, stream=s._as_parameter_)
         else:
             cuda_memcpy2d(
                 src=H_narrow.data_ptr(), spitch=H_narrow.stride(0) * dts,

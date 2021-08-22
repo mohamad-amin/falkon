@@ -17,7 +17,7 @@ from falkon.utils.helpers import (
     sizeof_dtype, select_dim_over_nm, calc_gpu_block_sizes
 )
 from falkon.utils.tensor_helpers import extract_same_stride, create_same_stride, create_fortran
-from utils.device_copy import copy
+from falkon.utils.device_copy import copy
 
 
 def _extract_flat(flat_tn, size, other, offset):
@@ -179,7 +179,6 @@ def mm_run_thread(m1: torch.Tensor, m2: torch.Tensor, out: torch.Tensor,
     flat_offset = 0
     total_memory = 0
     has_gpu_bufs = is_ooc or change_dtype
-    print("has gpu bufs", has_gpu_bufs)
     if has_gpu_bufs:
         total_memory += n * m + n * D + m * D
     flat_dev_t = torch.empty(size=(total_memory,), dtype=comp_dt, device=dev)
@@ -232,7 +231,6 @@ def fmm(X1: Union[torch.Tensor, SparseTensor],
     """
     performs fnc(X1*X2', X1, X2) in blocks on multiple GPUs
     """
-    opt = _setup_opt(opt)
     is_sparse = isinstance(X1, SparseTensor)
 
     if not is_sparse:
@@ -255,6 +253,7 @@ def fmm(X1: Union[torch.Tensor, SparseTensor],
     if sizeof_dtype(comp_dtype) < 8 and opt.no_single_kernel:
         comp_dtype = torch.float64
 
+    print("comp", comp_dev_type, "data", data_dev.type)
     if comp_dev_type == 'cpu' and data_dev.type == 'cpu':
         args = ArgsFmm(X1=X1, X2=X2, out=out, kernel=kernel, gpu_dtype=comp_dtype,
                        max_mem=opt.max_cpu_mem, num_streams=1)
@@ -276,7 +275,7 @@ def fmm(X1: Union[torch.Tensor, SparseTensor],
             if is_sparse:
                 X1_block = X1.narrow_rows(block_sizes[i], bwidth)
             else:
-                X1_block = X1.narrow(0, block_sizes, bwidth)
+                X1_block = X1.narrow(0, block_sizes[i], bwidth)
             args.append((ArgsFmm(X1=X1_block, X2=X2, out=out.narrow(0, block_sizes[i], bwidth),
                                  kernel=kernel, gpu_dtype=comp_dtype, max_mem=g.usable_ram,
                                  num_streams=opt.num_fmm_streams), g.Id))

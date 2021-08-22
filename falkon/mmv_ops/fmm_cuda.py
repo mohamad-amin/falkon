@@ -140,8 +140,15 @@ def _generic_fmm(proc_idx, queue, device_id):
 
     # Create buffers
     if use_gpu_bufs:
+        print(f"Chosen n={n}, d={d}, m={m}")
+        print("Before gX1")
+        print(torch.cuda.memory_snapshot())
         gX1 = create_same_stride((n, d), X1, gpu_dtype, tc_device)
+        print("After gX1")
+        print(torch.cuda.memory_snapshot())
         gX2_list = [create_same_stride((m, d), X2, gpu_dtype, tc_device) for _ in range(num_streams)]
+        print("After gX2_list")
+        print(torch.cuda.memory_snapshot())
         gout_list = [create_same_stride((n, m), out, gpu_dtype, tc_device) for _ in range(num_streams)]
     if not cuda_inputs:
         cpu_buf_list = [create_same_stride((n, m), out, gpu_dtype, 'cpu', pin_memory=True) for _ in range(num_streams)]
