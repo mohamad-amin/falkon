@@ -5,10 +5,11 @@ from abc import ABC, abstractmethod
 from typing import Optional, Union, Tuple, Dict
 
 import torch
+from falkon.utils.tensor_helpers import batchify_tensors
 
+from falkon import sparse
 from falkon.kernels import Kernel, KeopsKernelMixin
 from falkon.options import BaseOptions, FalkonOptions
-from falkon.sparse import sparse_ops
 from falkon.sparse.sparse_tensor import SparseTensor
 from falkon.c_ext import square_norm
 
@@ -64,9 +65,9 @@ class L2DistanceKernel(Kernel, ABC):
 
     def _prepare_sparse(self, X1: SparseTensor, X2: SparseTensor) -> DistKerContainer:
         sq1 = torch.empty(X1.size(0), dtype=X1.dtype, device=X1.device)
-        sparse_ops.sparse_square_norm(X1, sq1)
+        sparse.sparse_square_norm(X1, sq1)
         sq2 = torch.empty(X2.size(0), dtype=X1.dtype, device=X1.device)
-        sparse_ops.sparse_square_norm(X2, sq2)
+        sparse.sparse_square_norm(X2, sq2)
         return DistKerContainer(
             sq1=sq1.reshape(-1, 1), sq2=sq2.reshape(-1, 1)
         )
@@ -75,7 +76,7 @@ class L2DistanceKernel(Kernel, ABC):
         out.addmm_(X1, X2)
 
     def _apply_sparse(self, X1: SparseTensor, X2: SparseTensor, out: torch.Tensor) -> torch.Tensor:
-        return sparse_ops.sparse_matmul(X1, X2, out)
+        return sparse.sparse_matmul(X1, X2, out)
 
     def _finalize(self, A: torch.Tensor, d: DistKerContainer) -> torch.Tensor:
         A.mul_(-2.0)
@@ -296,20 +297,6 @@ class GaussianKernel(L2DistanceKernel, KeopsKernelMixin):
             'm': 1,
             'n': 1,
         }
-        if False and self.gaussian_type == 'single':
-            # Only norms in prepare
-            return {'m': 1, 'n': 1}
-        elif self.gaussian_type in {'diag', 'full'}:
-            return {
-                # Data-matrix / sigma in prepare + Data-matrix / sigma in apply
-                'nd': 2,
-                'md': 1,
-                # Norm results in prepare
-                'm': 1,
-                'n': 1,
-            }
-        else:
-            raise ValueError(f"Gaussian type '{self.gaussian_type}' invalid.")
 
     def _apply_sparse(self, X1: SparseTensor, X2: SparseTensor, out: torch.Tensor):
         if self.gaussian_type == "single":
@@ -331,13 +318,33 @@ class GaussianKernel(L2DistanceKernel, KeopsKernelMixin):
 
     def compute(self, X1, X2, out):
         sigma = self.sigma.to(X1)
-        return rbf_core(sigma, X1, X2, out)
+        X1_b, X2_b, out_b = batchify_tensors(X1, X2, out)
+        out_b = rbf_core(sigma, X1_b, X2_b, out_b)
+        if out_b.dim() != out.dim():
+            return out_b[0]
+        return out_b
 
     def __repr__(self):
         return f"GaussianKernel(sigma={self.sigma})"
 
     def __str__(self):
         return f"Gaussian kernel<{self.sigma}>"
+
+
+# noinspection DuplicatedCode
+def laplacian_core(sigmas, mat1, mat2, out):
+    mat1_div_sig = mat1 / sigmas
+    mat2_div_sig = mat2 / sigmas
+    norm_sq_mat1 = square_norm(mat1_div_sig, -1, True)  # b*n*1
+    norm_sq_mat2 = square_norm(mat2_div_sig, -1, True)  # b*m*1
+
+    torch.baddbmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1, out=out)  # b*n*m
+    out.add_(norm_sq_mat2.transpose(-2, -1))
+    out.clamp_min_(1e-20)
+    out.sqrt_()  # Laplacian: sqrt of squared-difference
+    out.neg_()
+    out.exp_()
+    return out
 
 
 class LaplacianKernel(GaussianKernel):
@@ -391,11 +398,50 @@ class LaplacianKernel(GaussianKernel):
         A.sqrt_()
         return self._transform(A)
 
+    def compute(self, X1, X2, out):
+        sigma = self.sigma.to(X1)
+        X1_b, X2_b, out_b = batchify_tensors(X1, X2, out)
+        out_b = laplacian_core(sigma, X1_b, X2_b, out_b)
+        if out_b.dim() != out.dim():
+            return out_b[0]
+        return out_b
+
     def __repr__(self):
         return f"LaplacianKernel(sigma={self.sigma})"
 
     def __str__(self):
         return f"Laplaciankernel<{self.sigma}>"
+
+
+# noinspection DuplicatedCode
+def matern_core(sigmas, mat1, mat2, out, nu):
+    mat1_div_sig = mat1 / sigmas
+    mat2_div_sig = mat2 / sigmas
+    norm_sq_mat1 = square_norm(mat1_div_sig, -1, True)  # b*n*1
+    norm_sq_mat2 = square_norm(mat2_div_sig, -1, True)  # b*m*1
+
+    torch.baddbmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1, out=out)  # b*n*m
+    out.add_(norm_sq_mat2.transpose(-2, -1))
+    out.clamp_min_(1e-20)
+    if nu == 0.5:
+        out.sqrt_().neg_().exp_()  # Laplacian
+    elif nu == 1.5:
+        # (1 + sqrt(3)*D) * exp(-sqrt(3)*D))
+        out.sqrt_().mul_(math.sqrt(3.0))
+        out_neg = torch.neg(out)  # extra n*m block
+        out_neg.exp_()
+        out.add_(1.0).mul_(out_neg)
+    elif nu == 2.5:
+        # (1 + sqrt(5)*D + (sqrt(5)*D)^2 / 3 ) * exp(-sqrt(5)*D)
+        out_sqrt = torch.sqrt(out)
+        out_sqrt.mul_(math.sqrt(5))
+        out.mul_(5.0 / 3.0).add_(out_sqrt).add_(1.0)
+        out_sqrt.neg_().exp_()
+        out.mul_(out_sqrt)
+    elif nu == float('inf'):
+        out.mul_(-0.5).exp_()  # Gaussian
+
+    return out
 
 
 class MaternKernel(GaussianKernel):
@@ -498,8 +544,8 @@ class MaternKernel(GaussianKernel):
 
     def extra_mem(self) -> Dict[str, float]:
         extra_mem = {
-            # Data-matrix / sigma in prepare + Data-matrix / sigma in apply
-            'nd': 2,
+            # Data-matrix / sigma
+            'nd': 1,
             'md': 1,
             # Norm results in prepare
             'm': 1,
@@ -543,6 +589,14 @@ class MaternKernel(GaussianKernel):
             A.mul_(-0.5)
             A.exp_()
         return A
+
+    def compute(self, X1, X2, out):
+        sigma = self.sigma.to(X1)
+        X1_b, X2_b, out_b = batchify_tensors(X1, X2, out)
+        out_b = matern_core(sigma, X1_b, X2_b, out_b, self.nu)
+        if out_b.dim() != out.dim():
+            return out_b[0]
+        return out_b
 
     def __repr__(self):
         return f"MaternKernel(sigma={self.sigma}, nu={self.nu:.1f})"

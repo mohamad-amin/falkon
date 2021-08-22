@@ -3,6 +3,8 @@ import warnings
 from abc import ABC, abstractmethod
 from typing import Optional, Any, Dict
 
+from falkon.mmv_ops.fmm import fmm
+
 from falkon.mmv_ops.fmm_cpu import fmm_cpu_sparse, fmm_cpu
 from falkon.mmv_ops.fmmv_cpu import fdmmv_cpu_sparse, fmmv_cpu_sparse, fmmv_cpu, fdmmv_cpu
 from falkon.utils.helpers import check_same_dtype, check_sparse, check_same_device
@@ -211,14 +213,14 @@ class Kernel(ABC):
         if use_cuda:
             from falkon.mmv_ops.fmm_cuda import fmm_cuda, fmm_cuda_sparse
             if sparsity:
-                return fmm_cuda_sparse
+                return fmm#fmm_cuda_sparse
             else:
-                return fmm_cuda
+                return fmm#fmm_cuda
         else:
             if sparsity:
-                return fmm_cpu_sparse
+                return fmm#fmm_cpu_sparse
             else:
-                return fmm_cpu
+                return fmm#fmm_cpu
 
     def mmv(self, X1, X2, v, out=None, opt: Optional[FalkonOptions] = None):
         # noinspection PyShadowingNames
@@ -544,6 +546,10 @@ class Kernel(ABC):
         """
         raise NotImplementedError("_apply_sparse not implemented for kernel %s" %
                                   (self.kernel_type))
+
+    @abstractmethod
+    def compute(self, X1, X2, out):
+        pass
 
     def extra_mem(self) -> Dict[str, float]:
         """Compute the amount of extra memory which will be needed when computing this kernel.

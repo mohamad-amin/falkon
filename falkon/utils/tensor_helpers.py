@@ -1,5 +1,5 @@
 import warnings
-from typing import Union, Tuple
+from typing import Union, Tuple, Any, Generator
 
 import numpy as np
 import torch
@@ -226,3 +226,9 @@ def move_tensor(tensor: torch.Tensor, device: Union[torch.device, str]) -> torch
     new_tensor = create_same_stride(tensor.size(), tensor, tensor.dtype, device)
     new_tensor.copy_(tensor)
     return new_tensor
+
+
+def batchify_tensors(*tensors: torch.Tensor) -> Generator[torch.Tensor, Any, None]:
+    for t in tensors:
+        if t.dim() == 2:
+            yield t.unsqueeze(0)

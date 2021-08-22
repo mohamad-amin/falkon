@@ -27,12 +27,10 @@ def _sparse_matmul_cpu(A, B, out):
     try:
         # For some reason assigning the 'to_scipy' to their own variables
         # is **absolutely fundamental** for the mkl bindings to work
-        A = A.transpose_csc()
-        As = A.to_scipy()  # D * N (csc)
-        Bs = B.to_scipy()
+        A = A.transpose_csc()  # D * N (csc)
+        mkl_sp_1 = mkl.mkl_create_sparse(A)
+        mkl_sp_2 = mkl.mkl_create_sparse(B)
 
-        mkl_sp_1 = mkl.mkl_create_sparse_from_scipy(As)
-        mkl_sp_2 = mkl.mkl_create_sparse_from_scipy(Bs)
         mkl.mkl_spmmd(mkl_sp_1, mkl_sp_2, out, transposeA=True)
         return out
     finally:
