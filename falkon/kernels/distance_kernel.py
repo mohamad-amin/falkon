@@ -298,7 +298,7 @@ class GaussianKernel(L2DistanceKernel, KeopsKernelMixin):
             'n': 1,
         }
 
-    def _apply_sparse(self, X1: SparseTensor, X2: SparseTensor, out: torch.Tensor):
+    def _apply_sparse(self, X1: SparseTensor, X2: SparseTensor, out: torch.Tensor) -> torch.Tensor:
         if self.gaussian_type == "single":
             return super()._apply_sparse(X1, X2, out)
         else:
@@ -509,6 +509,9 @@ class MaternKernel(GaussianKernel):
                        '(Exp(-Sqrt(IntCst(5)) * Norm2(x1 / s - x2 / s)) * v)')
         elif self.nu == float('inf'):
             formula = 'Exp(IntInv(-2) * SqDist(x1 / s, x2 / s)) * v'
+        else:
+            raise RuntimeError(f"Unrecognized value of nu ({self.nu}). "
+                               f"The onnly allowed values are 0.5, 1.5, 2.5, inf.")
         aliases = [
             'x1 = Vi(%d)' % (X1.shape[1]),
             'x2 = Vj(%d)' % (X2.shape[1]),
