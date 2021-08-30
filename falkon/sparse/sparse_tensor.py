@@ -221,6 +221,14 @@ class SparseTensor():
             indexptr=self.indexptr, index=self.index, data=self.data, size=new_size,
             sparse_type=SparseType.CSC)
 
+    def transpose_csr(self):
+        if self.is_csr:
+            raise RuntimeError("Cannot transpose_csr since data is already in csr format")
+        new_size = (self.shape[1], self.shape[0])
+        return SparseTensor(
+            indexptr=self.indexptr, index=self.index, data=self.data, size=new_size,
+            sparse_type=SparseType.CSR)
+
     @staticmethod
     def from_scipy(mat: Union[scipy.sparse.csr_matrix, scipy.sparse.csc_matrix]) -> 'SparseTensor':
         if isinstance(mat, scipy.sparse.csr_matrix):

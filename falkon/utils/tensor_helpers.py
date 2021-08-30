@@ -8,7 +8,7 @@ __all__ = (
     "create_same_stride", "copy_same_stride", "extract_same_stride",
     "extract_fortran", "extract_C",
     "create_fortran", "create_C", "is_f_contig", "is_contig",
-    "cast_tensor", "move_tensor",
+    "cast_tensor", "move_tensor", "batchify_tensors",
 )
 
 
