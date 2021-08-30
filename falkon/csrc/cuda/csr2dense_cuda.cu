@@ -96,7 +96,7 @@ void run_csr2dense(
   TORCH_CUDASPARSE_CHECK(cusparseDestroyDnMat(dn_mat));
 }
 
-#else // Non-generic implementation (using legacy cuSOLVER API)
+#else // Non-generic implementation (using legacy cuSPARSE API)
 template<typename value_t>
 cusparseStatus_t cusparseXcsr2dense(cusparseHandle_t handle,
                                     int m,
