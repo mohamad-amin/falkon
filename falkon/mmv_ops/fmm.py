@@ -2,15 +2,11 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from typing import Union, Optional
 
-import numpy as np
 import torch
 import torch.cuda as tcd
 
 import falkon
-from falkon.mmv_ops.utils import (
-    _setup_opt, _check_contiguity, _get_gpu_info, _call_direct,
-    _start_wait_processes
-)
+from falkon.mmv_ops.utils import *
 from falkon.options import BaseOptions
 from falkon.sparse.sparse_tensor import SparseTensor
 from falkon.utils.helpers import (
@@ -18,12 +14,6 @@ from falkon.utils.helpers import (
 )
 from falkon.utils.tensor_helpers import extract_same_stride, create_same_stride, create_fortran
 from falkon.utils.device_copy import copy
-
-
-def _extract_flat(flat_tn, size, other, offset):
-    struct_tn = extract_same_stride(flat_tn, size=size, other=other, offset=offset)
-    offset += np.prod(struct_tn.shape)
-    return struct_tn, offset
 
 
 @dataclass(frozen=True)
@@ -133,10 +123,10 @@ def sparse_mm_run_thread(m1: SparseTensor, m2: SparseTensor, out: torch.Tensor,
             lenj = min(m, M - j)
 
             c_m2 = m2.narrow_rows(j, lenj).to(dtype=comp_dt)
-            # On CUDA the second argument to apply (a Sparse*Sparse multiplicaation) must be
+            # On CUDA the second argument to apply (a Sparse*Sparse multiplication) must be
             # in CSR format, which is generally inefficient (given D might be large). On CPU this
             # is not necessary, so we avoid it.
-            if dev.type == 'cuda':
+            if dev.type == 'cuda':  # Note that CUDA-incore is not allowed to happen.
                 c_dev_m2 = SparseTensor.from_scipy(
                     c_m2.transpose_csc().to_scipy().tocsr(copy=False)) \
                     .index_to_int() \
@@ -253,12 +243,14 @@ def fmm(X1: Union[torch.Tensor, SparseTensor],
     if sizeof_dtype(comp_dtype) < 8 and opt.no_single_kernel:
         comp_dtype = torch.float64
 
-    print("comp", comp_dev_type, "data", data_dev.type)
     if comp_dev_type == 'cpu' and data_dev.type == 'cpu':
         args = ArgsFmm(X1=X1, X2=X2, out=out, kernel=kernel, gpu_dtype=comp_dtype,
                        max_mem=opt.max_cpu_mem, num_streams=1)
         _call_direct(mm_run_starter, (args, -1))
     elif comp_dev_type == 'cuda' and data_dev.type == 'cuda':
+        if is_sparse:
+            raise NotImplementedError("In-core, sparse fmm not implemented. "
+                                      "Use the out-of-core version instead.")
         gpu_info = _get_gpu_info(opt, slack=0.9)
         single_gpu_info = [g for g in gpu_info if g.Id == data_dev.index][0]
         args = ArgsFmm(X1=X1, X2=X2, out=out, kernel=kernel, gpu_dtype=comp_dtype,
@@ -281,6 +273,5 @@ def fmm(X1: Union[torch.Tensor, SparseTensor],
                                  num_streams=opt.num_fmm_streams), g.Id))
         _start_wait_processes(mm_run_starter, args)
     else:
-        raise RuntimeError("Requested CPU computations with CUDA data. "
-                           "This should not happen.")
+        raise RuntimeError("Requested CPU computations with CUDA data. This should not happen.")
     return out
