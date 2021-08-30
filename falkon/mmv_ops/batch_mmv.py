@@ -1,44 +1,25 @@
 from contextlib import ExitStack
 from typing import Optional
 
-import numpy as np
 import torch
 import torch.cuda as tcd
-from falkon.kernels import GaussianKernel
 
+from falkon.kernels import Kernel
+from falkon.mmv_ops.fmmv_cuda import ArgsFmmv
+from falkon.mmv_ops.utils import *
 from falkon.options import BaseOptions
-from falkon.utils.tensor_helpers import (
-    create_same_stride,
-    extract_same_stride,
-)
 from falkon.utils.helpers import (
     calc_gpu_block_sizes,
     sizeof_dtype,
     select_dim_over_bnm,
 )
-from falkon.mmv_ops.utils import (
-    _get_gpu_info,
-    _call_direct,
-    _start_wait_processes,
-    _setup_opt,
-    _check_contiguity,
-    ensure_batch_dim,
+from falkon.utils.tensor_helpers import (
+    create_same_stride,
 )
-from falkon.mmv_ops.fmmv_cuda import ArgsFmmv
-
-
-def _extract_flat(flat_tn, size, other, offset):
-    struct_tn = extract_same_stride(flat_tn, size=size, other=other, offset=offset)
-    offset += np.prod(struct_tn.shape)
-    return struct_tn, offset
-
-
-def _is_incore(computation_device: torch.device, data_device: torch.device) -> bool:
-    return computation_device.type == data_device.type
 
 
 def mmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor, vout: torch.Tensor,
-                   kernel: GaussianKernel, b0: int, b1: int, b2: int, dev: torch.device):
+                   kernel: Kernel, b0: int, b1: int, b2: int, dev: torch.device):
     dt = m1.dtype
     # data(CUDA), dev(CUDA) or data(CPU), dev(CPU)
     incore = _is_incore(dev, m1.device)
@@ -116,7 +97,7 @@ def mmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor, vout: to
 def mmv_run_starter(proc_idx, queue, device_id):
     a: ArgsFmmv = queue.get()
     X1, X2, v, out = a.X1, a.X2, a.v, a.out
-    kernel: GaussianKernel = a.kernel
+    kernel: Kernel = a.kernel
     max_mem = a.max_mem
     if device_id < 0:
         dev = torch.device('cpu')

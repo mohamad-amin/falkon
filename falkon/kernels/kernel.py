@@ -211,16 +211,15 @@ class Kernel(ABC):
                           "desired, check your options (i.e. set 'use_cpu=False').")
             use_cuda = True
         if use_cuda:
-            from falkon.mmv_ops.fmm_cuda import fmm_cuda, fmm_cuda_sparse
             if sparsity:
-                return fmm#fmm_cuda_sparse
+                return fmm
             else:
-                return fmm#fmm_cuda
+                return fmm
         else:
             if sparsity:
-                return fmm#fmm_cpu_sparse
+                return fmm
             else:
-                return fmm#fmm_cpu
+                return fmm
 
     def mmv(self, X1, X2, v, out=None, opt: Optional[FalkonOptions] = None):
         # noinspection PyShadowingNames
@@ -308,6 +307,8 @@ class Kernel(ABC):
                           "desired, check your options (i.e. set 'use_cpu=False').")
             use_cuda = True
         sparsity = all(sparsity)
+        from falkon.mmv_ops.fmmv import fmmv
+        return fmmv
         if use_cuda:
             from falkon.mmv_ops.fmmv_cuda import fmmv_cuda, fmmv_cuda_sparse
             if sparsity:
@@ -528,7 +529,7 @@ class Kernel(ABC):
                                   (self.kernel_type))
 
     @abstractmethod
-    def _apply_sparse(self, X1, X2, out) -> None:
+    def _apply_sparse(self, X1, X2, out):
         """Main kernel computation for sparse tensors.
 
         Unlike the :meth`_apply` method, the `X1` and `X2` tensors are only subsampled along

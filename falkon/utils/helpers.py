@@ -9,6 +9,7 @@ from falkon.sparse.sparse_tensor import SparseTensor
 
 
 __all__ = (
+    "select_dim_over_n",
     "select_dim_over_bnm",
     "select_dim_over_nm",
     "select_dim_over_nd",
@@ -68,6 +69,20 @@ def select_dim_over_bnm(max_b, max_n, max_m, d, coef_bnd, coef_bmd, coef_bnm, co
     if out_b <= 0 or out_n <= 0 or out_m <= 0:
         raise MemoryError("Available memory %.2fMB is not enough." % (max_mem / 2 ** 20))
     return out_b, out_n, out_m
+
+
+def select_dim_over_n(max_n, m, d, coef_nm, coef_nd, coef_md, coef_n, coef_m, coef_d, rest, max_mem):
+    """
+    n * (m * coef_nm + d * coef_nd + coef_n) + rest <= max_mem
+    """
+    n_coef = (m * coef_nm + d * coef_nd + coef_n)
+    rest_mem = rest + coef_md * m * d + coef_m * m + coef_d * d
+    v_n = (max_mem - rest_mem) / n_coef
+
+    out_n = int(min(v_n, max_n))
+    if out_n <= 0:
+        raise MemoryError("Available memory %.2fMB is not enough." % (max_mem / 2**20))
+    return out_n
 
 
 def select_dim_over_nm(max_n, max_m, d, coef_nd, coef_md, coef_nm, coef_n, coef_m, rest, max_mem):

@@ -269,9 +269,9 @@ class TestKeops:
         pytest.param("C", np.float64, "C", np.float64, "C", np.float64,
                      marks=[pytest.mark.full()]),
         pytest.param("F", np.float32, "F", np.float32, "F", np.float32,
-                     marks=[pytest.mark.xfail(reason="KeOps only C"), pytest.mark.full()]),
+                     marks=[pytest.mark.full()]),
         pytest.param("F", np.float32, "C", np.float32, "C", np.float32,
-                     marks=[pytest.mark.xfail(reason="KeOps only C"), pytest.mark.full()]),
+                     marks=[pytest.mark.full()]),
     ], ids=["AC32-BC32-vC32", "AC64-BC64-vC64", "AF32-BF32-vF32", "AF32-BC32-vC32"])
     @pytest.mark.parametrize("cpu", cpu_params, ids=["cpu", "gpu"])
     def test_fmmv(self, A, B, v, Ao, Adt, Bo, Bdt, vo, vdt, kernel,
@@ -471,17 +471,19 @@ class TestSparse:
 
 
 @pytest.mark.benchmark
-@pytest.mark.skipif(not decide_cuda(), reason="No GPU found.")
 @pytest.mark.parametrize("data_order", ["C", "F"])
-@pytest.mark.parametrize("data_device", ["cpu", "cuda:0"])
-def test_distk_vs_generic(A, B, v, data_order, data_device):
+@pytest.mark.parametrize("data_dev,comp_dev", [
+    pytest.param("cpu", "cuda", marks=[mark.skipif(not decide_cuda(), reason="No GPU found.")]),
+    ("cpu", "cpu"),
+    pytest.param("cuda", "cuda", marks=[mark.skipif(not decide_cuda(), reason="No GPU found.")])])
+def test_distk_vs_generic(A, B, v, data_order, data_dev, comp_dev):
     kernel = GaussianKernel(3.0)
-    num_rep = 100
-    A = fix_mat(A, order=data_order, dtype=np.float32, device=data_device)
-    B = fix_mat(B, order=data_order, dtype=np.float32, device=data_device)
-    v = fix_mat(v, order=data_order, dtype=np.float32, device=data_device)
-    out = torch.empty(A.shape[0], v.shape[1], dtype=A.dtype, device=data_device)
-    opt = FalkonOptions(keops_active="no", use_cpu=False)
+    num_rep = 200
+    A = fix_mat(A, order=data_order, dtype=np.float32, device=data_dev)
+    B = fix_mat(B, order=data_order, dtype=np.float32, device=data_dev)
+    v = fix_mat(v, order=data_order, dtype=np.float32, device=data_dev)
+    out = torch.empty(A.shape[0], v.shape[1], dtype=A.dtype, device=data_dev)
+    opt = FalkonOptions(keops_active="no", use_cpu=comp_dev == "cpu")
 
     # Run with distk
     kernel.kernel_type = "l2distance"
@@ -490,7 +492,7 @@ def test_distk_vs_generic(A, B, v, data_order, data_device):
         t_s = time.time()
         kernel.mmv(A, B, v, out, opt=opt)
         t_e = time.time()
-        distk_times.append(t_e - t_s)
+        distk_times.append((t_e - t_s) * 1000)
 
     # Run with generic runner
     kernel.kernel_type = "generic"
@@ -499,11 +501,13 @@ def test_distk_vs_generic(A, B, v, data_order, data_device):
         t_s = time.time()
         kernel.mmv(A, B, v, out, opt=opt)
         t_e = time.time()
-        generic_times.append(t_e - t_s)
+        generic_times.append((t_e - t_s) * 1000)
 
-    print("%s-contig float32 on %s, \ndistk took %.2fs +- %.2fs" % (
-        data_order, data_device, np.mean(distk_times), np.std(distk_times)))
-    print("generic took %.2fs +- %.2f" % (np.mean(generic_times), np.std(generic_times)))
+    # noinspection PyStringFormat
+    print("%s-contig float32 on %s, computations on %s \ndistk took %.2fms +- %.2f" % (
+        data_order, data_dev, comp_dev, np.mean(distk_times[-100:]), np.std(distk_times[-100:])))
+    # noinspection PyStringFormat
+    print("generic took %.2fms +- %.2f" % (np.mean(generic_times[-100:]), np.std(generic_times[-100:])))
 
 
 if __name__ == "__main__":
