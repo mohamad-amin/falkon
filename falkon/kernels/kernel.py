@@ -300,6 +300,7 @@ class Kernel(ABC):
         if not all(sparsity) and any(sparsity):
             raise ValueError("Either all or none of 'X1', 'X2' must be sparse.")
         if (X1.device.type == 'cuda') and (not use_cuda):
+            # TODO: This doesn't work correctly.
             warnings.warn("kernel-vector product backend was chosen to be CPU, but GPU input "
                           "tensors found. Defaulting to use the GPU (note this may "
                           "cause issues later). To force usage of the CPU backend, "
@@ -418,6 +419,8 @@ class Kernel(ABC):
                           "desired, check your options (i.e. set 'use_cpu=False').")
             use_cuda = True
         sparsity = all(sparsity)
+        from falkon.mmv_ops.fmmv import fdmmv
+        return fdmmv
         if use_cuda:
             from falkon.mmv_ops.fmmv_cuda import fdmmv_cuda, fdmmv_cuda_sparse
             if sparsity:
