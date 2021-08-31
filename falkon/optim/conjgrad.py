@@ -213,7 +213,7 @@ class FalkonConjugateGradient(Optimizer):
             if Knm is not None:
                 B = incore_fmmv(Knm, y_over_n, None, transpose=True, opt=self.params)
             else:
-                B = self.kernel.dmmv(X, M, None, y_over_n, opt=self.params)
+                B = self.kernel.mmv(M, X, y_over_n, opt=self.params)
             B = self.preconditioner.apply_t(B)
 
             if self.is_weighted:

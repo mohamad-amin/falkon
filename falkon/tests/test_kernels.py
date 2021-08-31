@@ -78,10 +78,6 @@ class AbstractKernelTester(abc.ABC):
         return exp_k.T @ (exp_k @ v.numpy())
 
     @pytest.fixture(scope="class")
-    def exp_dw(self, exp_k: np.ndarray, w: torch.Tensor) -> np.ndarray:
-        return exp_k.T @ w.numpy()
-
-    @pytest.fixture(scope="class")
     def exp_dvw(self, exp_k: np.ndarray, v: torch.Tensor, w: torch.Tensor) -> np.ndarray:
         return exp_k.T @ (exp_k @ v.numpy() + w.numpy())
 
@@ -104,14 +100,6 @@ class AbstractKernelTester(abc.ABC):
     def test_dv(self, kernel, keops, A, B, v, exp_dv, cpu, rtol):
         opt = dataclasses.replace(self.basic_options, use_cpu=cpu, keops_active=keops)
         _run_test(kernel.dmmv, exp_dv, (A, B, v, None), out=None, rtol=rtol[A.dtype], opt=opt)
-
-    @pytest.mark.parametrize("keops", [
-        pytest.param("force", marks=pytest.mark.skipif(not decide_keops(), reason="no KeOps found.")),
-        "no"
-    ], ids=["KeOps", "No KeOps"])
-    def test_dw(self, kernel, keops, A, B, w, exp_dw, cpu, rtol):
-        opt = dataclasses.replace(self.basic_options, use_cpu=cpu, keops_active=keops)
-        _run_test(kernel.dmmv, exp_dw, (A, B, None, w), out=None, rtol=rtol[A.dtype], opt=opt)
 
     @pytest.mark.parametrize("keops", [
         pytest.param("force", marks=pytest.mark.skipif(not decide_keops(), reason="no KeOps found.")),
