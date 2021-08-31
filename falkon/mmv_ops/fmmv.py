@@ -192,10 +192,10 @@ def mmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Tensor]
                 lenj = min(blk_m, M - j)
                 if incore:
                     c_dev_m2 = m2[j: j + lenj, :]
-                    c_dev_v = v[j: j + lenj]
+                    c_dev_v = v[j: j + lenj, :]
                 else:
                     c_dev_m2 = copy(m2[j: j + lenj, :], dev_m2[:lenj, :], s=s1)
-                    c_dev_v = copy(v[j: j + lenj], dev_v[:lenj], s=s2)
+                    c_dev_v = copy(v[j: j + lenj, :], dev_v[:lenj, :], s=s2)
                 c_dev_ker = ker_gpu[:leni, :lenj].fill_(0.0)
 
                 c_dev_ker = kernel.compute(c_dev_m1, c_dev_m2, c_dev_ker)
@@ -219,14 +219,13 @@ def _sparse_dmmv_blk_sizes(n, d, m, t, avail_mem, extra_mem: dict, incore: bool,
     # And the dense matrices: kernel(m*n), w(n*t), v(m*t), output(m*t)
     coef_nm = 3  # Both dense and sparse spspmm output must be allocated.
     coef_nd, coef_md, coef_nt, coef_mt = 0, 0, 0, 0
+    coef_nt += 1  # for dev_w allocation
     if not incore:
         coef_nd += 2 * m1_density  # for x1-chunk
         coef_md += 2 * m2_density  # for x2
         coef_mt += 1  # for v
         if not dev_out_exists:
             coef_mt += 1  # for output
-    if not has_w or not incore:
-        coef_nt += 1  # for dev_w allocation
     blk_n = select_dim_over_n(
         max_n=n, m=m, d=d, max_mem=avail_mem,
         coef_nm=coef_nm + extra_mem.get('nm', 0),
@@ -237,8 +236,7 @@ def _sparse_dmmv_blk_sizes(n, d, m, t, avail_mem, extra_mem: dict, incore: bool,
         coef_d=1 + extra_mem.get('d', 0), rest=0)
 
     mem_needed = blk_n * m
-    if not has_w or not incore:
-        mem_needed += blk_n * t
+    mem_needed += blk_n * t  # dev_w
     if not incore:
         mem_needed += m * t
         if not dev_out_exists:
@@ -249,8 +247,7 @@ def _sparse_dmmv_blk_sizes(n, d, m, t, avail_mem, extra_mem: dict, incore: bool,
 
 def _dense_dmmv_blk_sizes(n, d, m, t, avail_mem: float, extra_mem: dict, incore: bool, dev_out_exists: bool, has_w: bool):
     coef_nm, coef_nd, coef_md, coef_nt, coef_mt = 1, 0, 0, 0, 0
-    if not has_w or not incore:
-        coef_nt += 1  # for dev_w allocation
+    coef_nt += 1  # for dev_w allocation
     if not incore:
         coef_nd += 1  # x1
         coef_md += 1  # x2
@@ -270,8 +267,7 @@ def _dense_dmmv_blk_sizes(n, d, m, t, avail_mem: float, extra_mem: dict, incore:
         mem_needed += m * t + m * d + blk_n * d
         if not dev_out_exists:
             mem_needed += m * t
-    if not has_w or not incore:
-        mem_needed += blk_n * t
+    mem_needed += blk_n * t  # dev_w
     return blk_n, mem_needed
 
 
@@ -282,7 +278,7 @@ def dmmv_run_starter(proc_idx, queue, device_id):
     max_mem = a.max_mem
     dev = _dev_from_id(device_id)
     incore = _is_incore(dev, X1.device)
-    dev_out_exists = out.device() == dev  # out has already been allocated on the computation device
+    dev_out_exists = out.device == dev  # out has already been allocated on the computation device
     is_sparse = isinstance(X1, SparseTensor) and isinstance(X2, SparseTensor)
 
     # Choose batch sizes
@@ -308,7 +304,7 @@ def sparse_dmmv_run_thread(m1: SparseTensor, m2: SparseTensor, v: torch.Tensor,
                            w: Optional[torch.Tensor], out: torch.Tensor, kernel: 'Kernel',
                            blk_n: int, mem_needed: int, dev: torch.device):
     incore = _is_incore(dev, m1.device)
-    dev_out_exists = out.device() == dev  # out has already been allocated on the computation device
+    dev_out_exists = out.device == dev  # out has already been allocated on the computation device
     N, D = m1.shape
     M, T = v.shape
 
@@ -318,16 +314,16 @@ def sparse_dmmv_run_thread(m1: SparseTensor, m2: SparseTensor, v: torch.Tensor,
     # ker_gpu must be fortran-ordered due to cusparse csr2dense function (TODO: only on CUDA)
     ker_gpu = extract_fortran(flat_gpu, size=(blk_n, M), offset=flat_offset)
     flat_offset += np.prod(ker_gpu.shape)
-    dev_w, dev_out, dev_v, dev_m2 = None, out, v, m2
-    if w is None or not incore:
-        dev_w, flat_offset = _extract_flat(flat_gpu, size=(blk_n, T), other=v or w, offset=flat_offset)
+    dev_w, flat_offset = _extract_flat(flat_gpu, size=(blk_n, T), other=v if w is None else w, offset=flat_offset)
+    dev_out, dev_v, dev_m2 = out, v, m2
     if not incore:
         if not dev_out_exists:
             dev_out, flat_offset = _extract_flat(flat_gpu, size=(M, T), other=out, offset=flat_offset)
-        dev_v = _extract_flat(flat_gpu, size=(M, T), other=v, offset=flat_offset)
+        dev_v, flat_offset = _extract_flat(flat_gpu, size=(M, T), other=v, offset=flat_offset)
     dev_out.fill_(0.0)
 
     with ExitStack() as stack:
+        s1, s2 = None, None
         if dev.type == 'cuda':
             s1 = tcd.current_stream(dev)
             s2 = tcd.Stream(dev)
@@ -339,6 +335,8 @@ def sparse_dmmv_run_thread(m1: SparseTensor, m2: SparseTensor, v: torch.Tensor,
                 m2.transpose_csc().to_scipy().tocsr(copy=False)) \
                 .index_to_int() \
                 .to(device=dev)
+        else:
+            dev_m2 = m2.transpose_csc()
 
         for i in range(0, N, blk_n):
             leni = min(blk_n, N - i)
@@ -346,14 +344,12 @@ def sparse_dmmv_run_thread(m1: SparseTensor, m2: SparseTensor, v: torch.Tensor,
             c_m1 = m1.narrow_rows(i, leni)
             if incore:  # Note that CUDA-incore is not allowed to happen (so this is CPU->CPU)
                 c_dev_m1 = c_m1
-                if w is not None:
-                    c_dev_w = w[i: i + leni, :]
             else:  # CPU -> CUDA
                 c_dev_m1 = c_m1.index_to_int().to(device=dev, non_blocking=True)
-                if w is not None:
-                    c_dev_w = copy(w[i: i + leni, :], dev_w[:leni, :], s=s1)
             if w is None:
                 c_dev_w = dev_w[:leni, :].fill_(0.0)
+            else:
+                c_dev_w = copy(w[i: i + leni, :], dev_w[:leni, :], s=s1)
 
             c_dev_ker = ker_gpu[:leni].fill_(0.0)
             ddd = kernel._prepare_sparse(c_m1, m2)
@@ -372,17 +368,16 @@ def dmmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor,
     # k(x2, x1) @ (k(x1, x2) @ v + w)
     # data(CUDA), dev(CUDA) or data(CPU), dev(CPU)
     incore = _is_incore(dev, m1.device)
-    dev_out_exists = out.device() == dev  # out has already been allocated on the computation device
+    dev_out_exists = out.device == dev  # out has already been allocated on the computation device
     N, D = m1.shape
     M, T = v.shape
 
     # Initialize extra buffers
     flat_gpu = torch.empty(size=(mem_needed,), dtype=m1.dtype, device=dev)
     flat_offset = 0
-    ker_gpu, flat_offset = _extract_flat(flat_gpu, size=(blk_n, M), other=out, offset=flat_offset)
-    dev_m1, dev_m2, dev_out, dev_v, dev_w = None, m2, out, v, None
-    if w is None or not incore:
-        dev_w, flat_offset = _extract_flat(flat_gpu, size=(blk_n, T), other=v or w, offset=flat_offset)
+    dev_ker, flat_offset = _extract_flat(flat_gpu, size=(blk_n, M), other=out, offset=flat_offset)
+    dev_w, flat_offset = _extract_flat(flat_gpu, size=(blk_n, T), other=v if w is None else w, offset=flat_offset)
+    dev_m1, dev_m2, dev_out, dev_v = None, m2, out, v
     if not incore:
         dev_m1, flat_offset = _extract_flat(flat_gpu, size=(blk_n, D), other=m1, offset=flat_offset)
         dev_m2, flat_offset = _extract_flat(flat_gpu, size=(M, D), other=m2, offset=flat_offset)
@@ -392,6 +387,7 @@ def dmmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor,
     dev_out.fill_(0.0)
 
     with ExitStack() as stack:
+        s1, s2 = None, None
         if dev.type == 'cuda':
             s1 = tcd.current_stream(dev)
             s2 = tcd.Stream(dev)
@@ -404,23 +400,23 @@ def dmmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor,
             leni = min(blk_n, N - i)
             if incore:
                 c_dev_m1 = m1[i: i + leni, :]
-                if w is not None:
-                    c_dev_w = w[i: i + leni, :]
             else:
                 c_dev_m1 = copy(m1[i: i + leni, :], dev_m1[:leni, :], s=s1)
-                if w is not None:
-                    c_dev_w = copy(w[i: i + leni, :], dev_w[:leni, :], s=s2)
-            if w is None:
+            if w is not None:
+                c_dev_w = copy(w[i: i + leni, :], dev_w[:leni, :], s=s2)
+            else:
                 c_dev_w = dev_w[:leni, :].fill_(0.0)
 
-            c_dev_ker = kernel.compute(c_dev_m1, dev_m2, ker_gpu[:leni, :])
-            # noinspection PyUnboundLocalVariable
-            c_dev_w.addmm_(c_dev_ker, dev_v)
+            c_dev_ker = kernel.compute(c_dev_m1, dev_m2, dev_ker[:leni, :])
             if not incore:
                 s2.synchronize()
+            # noinspection PyUnboundLocalVariable
+            c_dev_w.addmm_(c_dev_ker, dev_v)
             dev_out.addmm_(c_dev_ker.T, c_dev_w)
         if not incore and not dev_out_exists:
             copy(dev_out, out, s=s1)
+        if s1 is not None:
+            s1.synchronize()
 
 
 def fmmv(X1: Union[torch.Tensor, SparseTensor],
@@ -540,7 +536,7 @@ def fdmmv(X1: Union[torch.Tensor, SparseTensor], X2: Union[torch.Tensor, SparseT
                 w=w.narrow(0, block_sizes[i], bwidth) if w is not None else None,
                 out=cur_out_gpu,
                 kernel=kernel, max_mem=g.usable_ram), g.Id))
-        _start_wait_processes(mmv_run_starter, args)
+        _start_wait_processes(dmmv_run_starter, args)
         if len(wrlk) > 1:  # Sum up all subprocess outputs and copy to `out` on host.
             # noinspection PyTypeChecker
             fastest_device: int = np.argmax([d.speed for d in gpu_info])

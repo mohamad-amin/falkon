@@ -53,7 +53,7 @@ def copy_to_host(rows, cols, D, Di, Dj, H, Hi, Hj, s=None):
 
     dts = sizeof_dtype(D.dtype)
 
-    if is_f_contig(D, strict=False):
+    if is_f_contig(D, strict=True):
         if s is not None:
             cublasGetMatrixAsync(
                 rows=rows, cols=cols, elem_size=dts,
@@ -95,7 +95,7 @@ def copy_to_device(rows, cols, H, Hi, Hj, D, Di, Dj, s=None):
     dts = sizeof_dtype(D.dtype)
     # strict needs to be False since cublas deals with row/column matrices just fine,
     # while cuda errors-out in certain cases (width > dpitch or width > spitch...)
-    if is_f_contig(H, strict=False):
+    if is_f_contig(H, strict=True):
         if s is not None:
             cublasSetMatrixAsync(
                 rows=rows, cols=cols, elem_size=dts,
