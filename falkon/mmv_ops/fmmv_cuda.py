@@ -172,7 +172,6 @@ def generic_fmmv(proc_idx, queue, device_id):
 
     ddev = torch.device('cuda:%d' % int(device_id))
     s1 = tcd.current_stream(ddev)
-    print("Usage before start, chosen n=%d, d=%d - dev %s: %.5fMB" % (n, d, ddev, torch.cuda.max_memory_allocated(ddev) / 2**20))
     with tcd.device(ddev), tcd.stream(s1):
         # First collect necessary memory
         mem_needed = n * M
@@ -180,9 +179,7 @@ def generic_fmmv(proc_idx, queue, device_id):
             mem_needed += M * T + n * d + M * d + n * T
         # Create flat tensor
         #torch.cuda.synchronize()
-        print("Usage before big alloc, chosen n=%d, d=%d, m=%d, t=%d - dev %s: %.5fMB" % (n, d, M, T, ddev, torch.cuda.max_memory_allocated(ddev) / 2**20))
         flat_gpu_tn = torch.empty(size=(mem_needed,), dtype=dtype, device=ddev)
-        print("After big Alloc %s: %.5fMB" % (ddev, torch.cuda.max_memory_allocated(ddev) / 2**20))
         # Extract the sub-tensors
         flat_offset = 0
         ker_gpu, flat_offset = _extract_flat(flat_gpu_tn, size=(n, M), other=X1, offset=flat_offset)
@@ -194,7 +191,6 @@ def generic_fmmv(proc_idx, queue, device_id):
             copy_to_device_noorder(M, T, v, 0, 0, v_gpu, 0, 0, s=s1)
         else:
             v_gpu = v
-        print("After extractions %s: %.5fMB" % (ddev, torch.cuda.max_memory_allocated(ddev) / 2**20))
 
         for i in range(0, ntot, n):
             ic = min(n, ntot - i)
@@ -226,7 +222,6 @@ def generic_fmmv(proc_idx, queue, device_id):
                 copy_to_host_noorder(ic, T, c_g_mmv, 0, 0, out, i, 0, s=s1)
             #print("After copy %s: %.5fMB" % (ddev, torch.cuda.max_memory_allocated(ddev) / 2**20))
         s1.synchronize()
-    print("returning %s: %.5fMB" % (ddev, torch.cuda.max_memory_allocated(ddev) / 2**20))
     return out
 
 

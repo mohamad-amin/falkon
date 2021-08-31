@@ -415,8 +415,6 @@ def dmmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor,
             dev_out.addmm_(c_dev_ker.T, c_dev_w)
         if not incore and not dev_out_exists:
             copy(dev_out, out, s=s1)
-        if s1 is not None:
-            s1.synchronize()
 
 
 def fmmv(X1: Union[torch.Tensor, SparseTensor],
