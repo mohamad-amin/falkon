@@ -7,7 +7,7 @@ import torch
 __all__ = (
     "create_same_stride", "copy_same_stride", "extract_same_stride",
     "extract_fortran", "extract_C",
-    "create_fortran", "create_C", "is_f_contig", "is_contig",
+    "create_fortran", "create_C", "is_f_contig", "is_contig", "is_contig_vec",
     "cast_tensor", "move_tensor", "batchify_tensors",
 )
 
@@ -186,6 +186,22 @@ def is_f_contig(tensor: torch.Tensor, strict: bool = False) -> bool:
     return True
 
 
+def is_contig_vec(tensor: torch.Tensor) -> bool:
+    # noinspection PyArgumentList
+    strides = tensor.stride()
+    sizes = tensor.shape
+
+    num_not_1 = 0
+    for sz, st in zip(sizes, strides):
+        if sz != 1:
+            num_not_1 += 1
+            if st != 1:
+                return False
+        if num_not_1 > 1:
+            return False
+    return True
+
+
 def is_contig(tensor: torch.Tensor) -> bool:
     # noinspection PyArgumentList
     stride = tensor.stride()
@@ -232,3 +248,5 @@ def batchify_tensors(*tensors: torch.Tensor) -> Generator[torch.Tensor, Any, Non
     for t in tensors:
         if t.dim() == 2:
             yield t.unsqueeze(0)
+        else:
+            yield t
