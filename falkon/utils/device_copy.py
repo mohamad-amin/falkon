@@ -1,9 +1,10 @@
 import torch.cuda
 
 from .helpers import sizeof_dtype
-from .tensor_helpers import is_f_contig, is_contig
+from .tensor_helpers import is_f_contig, is_contig, is_contig_vec
 if torch.cuda.is_available():
-    from falkon.cuda.cudart_gpu import cuda_memcpy2d, cuda_memcpy2d_async
+    from falkon.cuda.cudart_gpu import (cuda_memcpy2d, cuda_memcpy2d_async,
+                                        cuda_memcpy, cuda_memcpy_async)
     from falkon.cuda.cublas_gpu import (cublasSetMatrix, cublasSetMatrixAsync,
                                         cublasGetMatrix, cublasGetMatrixAsync)
 
@@ -53,7 +54,15 @@ def copy_to_host(rows, cols, D, Di, Dj, H, Hi, Hj, s=None):
 
     dts = sizeof_dtype(D.dtype)
 
-    if is_f_contig(D, strict=True):
+    if is_contig_vec(H_narrow) and is_contig_vec(D_narrow):
+        if s is not None:
+            cuda_memcpy_async(
+                src=D_narrow.data_ptr(), dst=H_narrow.data_ptr(),
+                count=(rows * cols) * dts, stream=s._as_parameter_)
+        else:
+            cuda_memcpy(
+                src=D_narrow.data_ptr(), dst=H_narrow.data_ptr(), count=(rows * cols) * dts)
+    elif is_f_contig(D, strict=True):
         if s is not None:
             cublasGetMatrixAsync(
                 rows=rows, cols=cols, elem_size=dts,
@@ -93,9 +102,19 @@ def copy_to_device(rows, cols, H, Hi, Hj, D, Di, Dj, s=None):
         H_narrow = H_right_dt
 
     dts = sizeof_dtype(D.dtype)
-    # strict needs to be False since cublas deals with row/column matrices just fine,
-    # while cuda errors-out in certain cases (width > dpitch or width > spitch...)
-    if is_f_contig(H, strict=True):
+    if is_contig_vec(H_narrow) and is_contig_vec(D_narrow):
+        #if not is_contig_vec(D_narrow):
+        #    raise RuntimeError(f"H is contiguous vector (shape {H_narrow.shape}, "
+        #                       f"strides {H_narrow.stride()}) but D is not (shape "
+        #                       f"{D_narrow.shape}, strides {D_narrow.stride()}).")
+        if s is not None:
+            cuda_memcpy_async(
+                src=H_narrow.data_ptr(), dst=D_narrow.data_ptr(),
+                count=(rows * cols) * dts, stream=s._as_parameter_)
+        else:
+            cuda_memcpy(
+                src=H_narrow.data_ptr(), dst=D_narrow.data_ptr(), count=(rows * cols) * dts)
+    elif is_f_contig(H, strict=True):
         if s is not None:
             cublasSetMatrixAsync(
                 rows=rows, cols=cols, elem_size=dts,
