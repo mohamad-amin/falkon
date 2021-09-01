@@ -198,14 +198,9 @@ class GaussianKernel(L2DistanceKernel, KeopsKernelMixin):
             # Sigma is a vector ('diag')
             if sigma.dim() == 1 or sigma.shape[1] == 1:
                 return sigma.reshape(-1), "diag"
-            # Check correctness for 'full' sigma
-            if sigma.dim() != 2:
-                raise TypeError("Sigma can be specified as a 1D or a 2D tensor. "
-                                "Found %dD tensor" % (sigma.dim()))
-            if sigma.shape[0] != sigma.shape[1]:
-                raise TypeError("Sigma passed as a 2D matrix must be square. "
-                                "Found dimensions %s" % (sigma.size()))
-            return sigma, "full"
+            else:
+                # TODO: Better error
+                raise ValueError("sigma must be a scalar or a vector.")
         else:
             try:
                 return torch.tensor([float(sigma)], dtype=torch.float64), "single"

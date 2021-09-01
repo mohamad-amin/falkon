@@ -202,6 +202,8 @@ def mmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Tensor]
                 if not incore:
                     s2.synchronize()
                 c_dev_out.addmm_(c_dev_ker, c_dev_v)
+                if not incore:
+                    s1.synchronize()  # sync necessary to avoid s2 overwriting dev_v/dev_w
 
             if not incore:
                 copy(c_dev_out, out[i: i + leni], s=s1)
@@ -395,7 +397,7 @@ def dmmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor,
             stack.enter_context(tcd.stream(s1))
         if not incore:
             copy(m2, dev_m2, s=s1)
-            copy(v, dev_v, s=s1)
+            copy(v, dev_v, s=s2)
         for i in range(0, N, blk_n):
             leni = min(blk_n, N - i)
             if incore:
@@ -410,9 +412,11 @@ def dmmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor,
             c_dev_ker = kernel.compute(c_dev_m1, dev_m2, dev_ker[:leni, :])
             if not incore:
                 s2.synchronize()
-            # noinspection PyUnboundLocalVariable
             c_dev_w.addmm_(c_dev_ker, dev_v)
             dev_out.addmm_(c_dev_ker.T, c_dev_w)
+            if dev.type == 'cuda':
+                s1.synchronize()  # sync necessary to avoid s2 overwriting dev_v/dev_w
+
         if not incore and not dev_out_exists:
             copy(dev_out, out, s=s1)
 

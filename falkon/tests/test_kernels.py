@@ -154,10 +154,8 @@ class TestMaternKernel(AbstractKernelTester):
         return rtol
 
     def test_mat_sigma_fail(self, A, B, cpu, nu, mat_sigma, rtol):
-        with pytest.raises(ValueError) as excinfo:
+        with pytest.raises(ValueError, match='sigma must be a scalar or a vector.') as excinfo:
             MaternKernel(sigma=mat_sigma, nu=nu)
-
-        assert "'full' covariance matrix not allowed for the MaternKernel class." in str(excinfo.value)
 
     def test_nu_fail(self, A, B, cpu, nu, single_sigma):
         nu = 2.1
@@ -187,7 +185,6 @@ class TestGaussianKernel(AbstractKernelTester):
         "single-sigma",
         "vec-sigma",
         pytest.param("vec-sigma-flat", marks=pytest.mark.full()),
-        pytest.param("mat-sigma", marks=pytest.mark.full()),
     ], scope="class")
     def kernel(self, single_sigma, vector_sigma, mat_sigma, request):
         if request.param == "single-sigma":
@@ -196,8 +193,6 @@ class TestGaussianKernel(AbstractKernelTester):
             return GaussianKernel(vector_sigma)
         elif request.param == "vec-sigma-flat":
             return GaussianKernel(vector_sigma.reshape(-1, 1))
-        elif request.param == "mat-sigma":
-            return GaussianKernel(mat_sigma)
 
     def test_wrong_sigma_dims(self, A, B, cpu, rtol):
         sigmas = torch.tensor([2.0] * (d - 1), dtype=torch.float64)
@@ -211,6 +206,10 @@ class TestGaussianKernel(AbstractKernelTester):
             assert f"The size of tensor a ({d}) must match the size of tensor b ({d-1})" in str(excinfo.value)
         # If on GPU the 'size mismatch' message is in the base exception (since it's reraised
         # by PropagatingThread) but I'm not sure how to fetch it.
+
+    def test_mat_sigma_fail(self, A, B, cpu, mat_sigma, rtol):
+        with pytest.raises(ValueError, match='sigma must be a scalar or a vector.') as excinfo:
+            GaussianKernel(sigma=mat_sigma)
 
 
 @pytest.mark.full
