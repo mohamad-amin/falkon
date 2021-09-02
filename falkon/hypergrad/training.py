@@ -1,3 +1,4 @@
+import math
 import time
 from functools import reduce
 from typing import Optional, Dict, List, Any
@@ -75,10 +76,10 @@ def report_grads(named_hparams, grads, losses, loss_names, step) -> Dict[str, fl
 
 def grad_loss_reporting(named_hparams, grads, losses, loss_names, verbose, step, losses_are_grads):
     report_dicts = []
-    if not losses_are_grads:
+    if not losses_are_grads and losses is not None:
         report_dicts.append(report_losses(losses, loss_names, step))
     report_dicts.append(report_hps(named_hparams, step))
-    if verbose:
+    if verbose and grads is not None:
         report_dicts.append(report_grads(named_hparams, grads, losses, loss_names, step))
     report_dict = {}
     for rd in report_dicts:
@@ -229,6 +230,93 @@ def train_complexity_reg(
             else:
                 schedule.step()
         del grads, losses
+    if retrain_nkrr:
+        print(f"Final retrain after {num_epochs} epochs:")
+        pred_dict = pred_reporting(
+            model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
+            err_fn=err_fn, epoch=num_epochs, time_start=time.time(), cum_time=cum_time,
+            resolve_model=retrain_nkrr)
+        logs.append(pred_dict)
+
+    return logs
+
+
+def train_complexity_reg_mb(
+        Xtr: torch.Tensor,
+        Ytr: torch.Tensor,
+        Xts: torch.Tensor,
+        Yts: torch.Tensor,
+        model: HyperOptimModel,
+        err_fn,
+        learning_rate: float,
+        num_epochs: int,
+        cuda: bool,
+        verbose: bool,
+        loss_every: int,
+        optimizer: str,
+        minibatch: int,
+        retrain_nkrr: bool = False,
+) -> List[Dict[str, float]]:
+    if cuda:
+        Xtr, Ytr, Xts, Yts = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
+    schedule = None
+    if optimizer == "adam":
+        opt_modules = [
+            {"params": model.named_parameters()['penalty'], 'lr': learning_rate},
+            {"params": model.named_parameters()['sigma'], 'lr': learning_rate},
+        ]
+        if 'centers' in model.named_parameters():
+            opt_modules.append({"params": model.named_parameters()['centers'], 'lr': learning_rate / 10})
+        opt_hp = torch.optim.Adam(opt_modules)
+        # schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_hp, factor=0.5, patience=1)
+        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=100, gamma=0.4)
+    elif optimizer == "lbfgs":
+        if model.losses_are_grads:
+            raise ValueError("L-BFGS not valid for model %s" % (model))
+        opt_hp = torch.optim.LBFGS(model.parameters(), lr=learning_rate,
+                                   history_size=100, )
+    elif optimizer == "rmsprop":
+        opt_hp = torch.optim.RMSprop(model.parameters(), lr=learning_rate)
+    else:
+        raise ValueError("Optimizer %s not recognized" % (optimizer))
+    print(f"Starting hyperparameter optimization on model {model}.")
+    print(f"Will run for {num_epochs} epochs with {opt_hp} optimizer, "
+          f"mini-batch size {minibatch}.")
+
+    logs = []
+    cum_time = 0
+    for epoch in range(num_epochs):
+        e_start = time.time()
+
+        for mb_start in range(0, Xtr.shape[0], minibatch):
+            Xtr_batch = Xtr[mb_start: mb_start + minibatch, :]
+            Ytr_batch = Xtr[mb_start: mb_start + minibatch, :]
+
+            def closure():
+                opt_hp.zero_grad()
+                losses = model.hp_loss(Xtr_batch, Ytr_batch)
+                hp_grad(model, *losses, accumulate_grads=True,
+                        losses_are_grads=model.losses_are_grads)
+                loss = reduce(torch.add, losses)
+                return float(loss)
+
+            loss = opt_hp.step(closure)
+            print("loss", loss)
+
+        pred_dict = {}
+        if epoch != 0 and (epoch + 1) % loss_every == 0:
+            pred_dict = pred_reporting(
+                model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
+                err_fn=err_fn, epoch=epoch, time_start=e_start, cum_time=cum_time,
+                resolve_model=True)
+            cum_time = pred_dict["cum_time"]
+        logs.append(pred_dict)
+        if schedule is not None:
+            if isinstance(schedule, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                if 'train_NRMSE' in pred_dict or 'train_MSE' in pred_dict or 'train_c-error' in pred_dict:
+                    schedule.step(pred_dict['train_NRMSE'])
+            else:
+                schedule.step()
     if retrain_nkrr:
         print(f"Final retrain after {num_epochs} epochs:")
         pred_dict = pred_reporting(

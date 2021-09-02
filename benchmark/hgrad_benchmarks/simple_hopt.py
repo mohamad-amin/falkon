@@ -16,7 +16,10 @@ from benchmark.common.summary import get_writer
 from benchmark.common.benchmark_utils import Dataset
 from falkon import FalkonOptions
 from falkon.center_selection import UniformSelector
-from falkon.hypergrad.training import init_model, train_complexity_reg, HPGridPoint, run_on_grid
+from falkon.hypergrad.training import (
+    init_model, train_complexity_reg, HPGridPoint, run_on_grid,
+    train_complexity_reg_mb
+)
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
@@ -120,7 +123,8 @@ def run_optimization(
         nystrace_ste: bool,
         optimizer: str,
         cuda: bool,
-        seed: int
+        seed: int,
+        minibatch: int,
 ):
     loss_every = 1
     torch.manual_seed(seed)
@@ -153,12 +157,20 @@ def run_optimization(
                        flk_maxiter=flk_maxiter,
                        nystrace_ste=nystrace_ste,
                        )
-    logs = train_complexity_reg(Xtr=Xtr, Ytr=Ytr,
-                                Xts=Xts, Yts=Yts,
-                                model=model, err_fn=partial(err_fns[0], **metadata),
-                                learning_rate=learning_rate, num_epochs=num_epochs,
-                                cuda=cuda, verbose=False, loss_every=loss_every,
-                                optimizer=optimizer)
+    if minibatch <= 0:
+        logs = train_complexity_reg(Xtr=Xtr, Ytr=Ytr,
+                                    Xts=Xts, Yts=Yts,
+                                    model=model, err_fn=partial(err_fns[0], **metadata),
+                                    learning_rate=learning_rate, num_epochs=num_epochs,
+                                    cuda=cuda, verbose=False, loss_every=loss_every,
+                                    optimizer=optimizer)
+    else:
+        logs = train_complexity_reg_mb(Xtr=Xtr, Ytr=Ytr,
+                                       Xts=Xts, Yts=Yts,
+                                       model=model, err_fn=partial(err_fns[0], **metadata),
+                                       learning_rate=learning_rate, num_epochs=num_epochs,
+                                       cuda=cuda, verbose=False, loss_every=loss_every,
+                                       optimizer=optimizer, minibatch=minibatch)
     save_logs(logs, exp_name=exp_name)
 
 
@@ -199,6 +211,7 @@ if __name__ == "__main__":
                    help="Maximum number of falkon iterations (for stochastic estimators)")
     p.add_argument('--approx-trace', action='store_true',
                    help="Pass this flag to use STE for the Nystrom trace term.")
+    p.add_argument('--mb', type=int, default=0, required=False, help='mini-batch size. If <= 0 will use full-gradient')
     p.add_argument('--cuda', action='store_true')
     args = p.parse_args()
     print("-------------------------------------------")
@@ -212,6 +225,7 @@ if __name__ == "__main__":
     if torch.cuda.is_available():
         torch.cuda.init()
         from falkon.cuda import initialization
+
         initialization.init(FalkonOptions())
 
     if args.grid_spec is not None:
@@ -231,4 +245,5 @@ if __name__ == "__main__":
                          num_epochs=args.epochs, learning_rate=args.lr, val_pct=args.val_pct,
                          cg_tol=args.cg_tol, cuda=args.cuda, seed=args.seed,
                          optimizer=args.optimizer, nystrace_ste=args.approx_trace,
-                         num_trace_vecs=args.num_t, flk_maxiter=args.flk_maxiter)
+                         num_trace_vecs=args.num_t, flk_maxiter=args.flk_maxiter,
+                         minibatch=args.mb)
