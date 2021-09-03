@@ -152,6 +152,40 @@ def pred_reporting(model: HyperOptimModel,
     }
 
 
+def create_optimizer(opt_type: str, model: HyperOptimModel, learning_rate: float):
+    center_lr_div = 1
+    named_params = model.named_parameters()
+    if opt_type == "adam":
+        if 'penalty' not in named_params:
+            opt_modules = [
+                {"params": named_params.values(), 'lr': learning_rate}
+            ]
+        else:
+            opt_modules = [
+                {"params": named_params['penalty'], 'lr': learning_rate},
+                {"params": named_params['sigma'], 'lr': learning_rate},
+            ]
+            if 'centers' in model.named_parameters():
+                opt_modules.append({
+                    "params": named_params['centers'], 'lr': learning_rate / center_lr_div})
+        opt_hp = torch.optim.Adam(opt_modules)
+        # schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_hp, factor=0.5, patience=1)
+        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=100, gamma=0.5)
+    elif opt_type == "lbfgs":
+        if model.losses_are_grads:
+            raise ValueError("L-BFGS not valid for model %s" % (model))
+        opt_hp = torch.optim.LBFGS(model.parameters(), lr=learning_rate,
+                                   history_size=100, )
+        schedule = None
+    elif opt_type == "rmsprop":
+        opt_hp = torch.optim.RMSprop(model.parameters(), lr=learning_rate)
+        schedule = None
+    else:
+        raise ValueError("Optimizer type %s not recognized" % (opt_type))
+
+    return opt_hp, schedule
+
+
 def train_complexity_reg(
         Xtr: torch.Tensor,
         Ytr: torch.Tensor,
@@ -170,32 +204,7 @@ def train_complexity_reg(
     if cuda:
         Xtr, Ytr, Xts, Yts = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
     loss_every = 5
-    schedule = None
-    named_params = model.named_parameters()
-    if optimizer == "adam":
-        if 'penalty' not in named_params:
-            opt_modules = [
-                {"params": named_params.values(), 'lr': learning_rate}
-            ]
-        else:
-            opt_modules = [
-                {"params": named_params['penalty'], 'lr': learning_rate},
-                {"params": named_params['sigma'], 'lr': learning_rate},
-            ]
-            if 'centers' in model.named_parameters():
-                opt_modules.append({"params": named_params['centers'], 'lr': learning_rate / 1})
-        opt_hp = torch.optim.Adam(opt_modules)
-        # schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_hp, factor=0.5, patience=1)
-        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=100, gamma=0.5)
-    elif optimizer == "lbfgs":
-        if model.losses_are_grads:
-            raise ValueError("L-BFGS not valid for model %s" % (model))
-        opt_hp = torch.optim.LBFGS(model.parameters(), lr=learning_rate,
-                                   history_size=100, )
-    elif optimizer == "rmsprop":
-        opt_hp = torch.optim.RMSprop(model.parameters(), lr=learning_rate)
-    else:
-        raise ValueError("Optimizer %s not recognized" % (optimizer))
+    opt_hp, schedule = create_optimizer(optimizer, model, learning_rate)
     print(f"Starting hyperparameter optimization on model {model}.")
     print(f"Will run for {num_epochs} epochs with {opt_hp} optimizer.")
 
@@ -214,7 +223,6 @@ def train_complexity_reg(
                             losses_are_grads=model.losses_are_grads)
             loss = reduce(torch.add, losses)
             return float(loss)
-
         opt_hp.step(closure)
 
         pred_dict = {}
@@ -241,7 +249,7 @@ def train_complexity_reg(
         pred_dict = pred_reporting(
             model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
             err_fn=err_fn, epoch=num_epochs, time_start=time.time(), cum_time=cum_time,
-            resolve_model=retrain_nkrr)
+            resolve_model=True)
         logs.append(pred_dict)
 
     return logs
@@ -265,35 +273,15 @@ def train_complexity_reg_mb(
 ) -> List[Dict[str, float]]:
     if cuda:
         Xtr, Ytr, Xts, Yts = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
-    schedule = None
-    if optimizer == "adam":
-        opt_modules = [
-            {"params": model.named_parameters()['penalty'], 'lr': learning_rate},
-            {"params": model.named_parameters()['sigma'], 'lr': learning_rate},
-        ]
-        if 'centers' in model.named_parameters():
-            opt_modules.append({"params": model.named_parameters()['centers'], 'lr': learning_rate / 2})
-        opt_hp = torch.optim.Adam(opt_modules)
-        # schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_hp, factor=0.5, patience=1)
-        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=200, gamma=0.5)
-    elif optimizer == "lbfgs":
-        if model.losses_are_grads:
-            raise ValueError("L-BFGS not valid for model %s" % (model))
-        opt_hp = torch.optim.LBFGS(model.parameters(), lr=learning_rate,
-                                   history_size=100, )
-    elif optimizer == "rmsprop":
-        opt_hp = torch.optim.RMSprop(model.parameters(), lr=learning_rate)
-    else:
-        raise ValueError("Optimizer %s not recognized" % (optimizer))
+    opt_hp, schedule = create_optimizer(optimizer, model, learning_rate)
     print(f"Starting hyperparameter optimization on model {model}.")
     print(f"Will run for {num_epochs} epochs with {opt_hp} optimizer, "
           f"mini-batch size {minibatch}.")
 
     logs = []
     cum_time = 0
+    t_start = time.time()
     for epoch in range(num_epochs):
-        e_start = time.time()
-
         for mb_start in range(0, Xtr.shape[0], minibatch):
             print("%d " % mb_start, end='', flush=True)
             Xtr_batch = Xtr[mb_start: mb_start + minibatch, :]
@@ -306,16 +294,16 @@ def train_complexity_reg_mb(
                         losses_are_grads=model.losses_are_grads)
                 loss = reduce(torch.add, losses)
                 return float(loss)
-
-            loss = opt_hp.step(closure)
+            opt_hp.step(closure)
 
         pred_dict = {}
         if epoch != 0 and (epoch + 1) % loss_every == 0:
             pred_dict = pred_reporting(
                 model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
-                err_fn=err_fn, epoch=epoch, time_start=e_start, cum_time=cum_time,
+                err_fn=err_fn, epoch=epoch, time_start=t_start, cum_time=cum_time,
                 resolve_model=True)
             cum_time = pred_dict["cum_time"]
+            t_start = time.time()
         logs.append(pred_dict)
         if schedule is not None:
             if isinstance(schedule, torch.optim.lr_scheduler.ReduceLROnPlateau):
@@ -328,7 +316,7 @@ def train_complexity_reg_mb(
         pred_dict = pred_reporting(
             model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
             err_fn=err_fn, epoch=num_epochs, time_start=time.time(), cum_time=cum_time,
-            resolve_model=retrain_nkrr)
+            resolve_model=True)
         logs.append(pred_dict)
 
     return logs
