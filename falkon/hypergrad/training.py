@@ -17,6 +17,7 @@ from falkon.hypergrad.complexity_reg import HyperOptimModel, hp_grad
 from falkon.hypergrad.gcv import NystromGCV, StochasticNystromGCV
 from falkon.hypergrad.loocv import NystromLOOCV
 from falkon.hypergrad.sgpr import GPR, SGPR
+from falkon.hypergrad.svgp import SVGP
 from benchmark.common.summary import get_writer
 
 __all__ = [
@@ -105,22 +106,19 @@ def pred_reporting(model: HyperOptimModel,
     sigma, penalty, centers = model.sigma, model.penalty, model.centers
 
     if resolve_model:
-        #if hasattr(model, "flk_opt"):
-        #    flk_opt = model.flk_opt
-        #else:
         flk_opt = FalkonOptions(use_cpu=not torch.cuda.is_available(), cg_tolerance=1e-4)
         from falkon.kernels import GaussianKernel
         from falkon.center_selection import FixedSelector
-        kernel = GaussianKernel(sigma.detach(), flk_opt)
+        kernel = GaussianKernel(sigma.detach().flatten(), flk_opt)
         center_selector = FixedSelector(centers.detach())
         if Xtr.is_cuda:
-            flk_model = InCoreFalkon(kernel, penalty.item(), M=centers.shape[0],
+            flk_model = InCoreFalkon(kernel, penalty.item() / Xtr.shape[0], M=centers.shape[0],
                                      center_selection=center_selector, maxiter=30,
-                                     seed=1312, error_fn=err_fn, error_every=None, options=flk_opt)
+                                     seed=1312, error_fn=err_fn, error_every=1, options=flk_opt)
         else:
             flk_model = Falkon(kernel, penalty.item(), M=centers.shape[0],
                                center_selection=center_selector, maxiter=30,
-                               seed=1312, error_fn=err_fn, error_every=None, options=flk_opt)
+                               seed=1312, error_fn=err_fn, error_every=1, options=flk_opt)
         if Xval is not None and Yval is not None:
             Xtr_full, Ytr_full = torch.cat((Xtr, Xval), dim=0), torch.cat((Ytr, Yval), dim=0)
         else:
@@ -171,17 +169,24 @@ def train_complexity_reg(
 ) -> List[Dict[str, float]]:
     if cuda:
         Xtr, Ytr, Xts, Yts = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
+    loss_every = 5
     schedule = None
+    named_params = model.named_parameters()
     if optimizer == "adam":
-        opt_modules = [
-            {"params": model.named_parameters()['penalty'], 'lr': learning_rate},
-            {"params": model.named_parameters()['sigma'], 'lr': learning_rate},
-        ]
-        if 'centers' in model.named_parameters():
-            opt_modules.append({"params": model.named_parameters()['centers'], 'lr': learning_rate / 10})
+        if 'penalty' not in named_params:
+            opt_modules = [
+                {"params": named_params.values(), 'lr': learning_rate}
+            ]
+        else:
+            opt_modules = [
+                {"params": named_params['penalty'], 'lr': learning_rate},
+                {"params": named_params['sigma'], 'lr': learning_rate},
+            ]
+            if 'centers' in model.named_parameters():
+                opt_modules.append({"params": named_params['centers'], 'lr': learning_rate / 1})
         opt_hp = torch.optim.Adam(opt_modules)
         # schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_hp, factor=0.5, patience=1)
-        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=100, gamma=0.4)
+        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=100, gamma=0.5)
     elif optimizer == "lbfgs":
         if model.losses_are_grads:
             raise ValueError("L-BFGS not valid for model %s" % (model))
@@ -196,8 +201,8 @@ def train_complexity_reg(
 
     logs = []
     cum_time = 0
+    t_start = time.time()
     for epoch in range(num_epochs):
-        e_start = time.time()
         grads: Any = None
         losses: Any = None
 
@@ -216,9 +221,10 @@ def train_complexity_reg(
         if epoch != 0 and (epoch + 1) % loss_every == 0:
             pred_dict = pred_reporting(
                 model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
-                err_fn=err_fn, epoch=epoch, time_start=e_start, cum_time=cum_time,
+                err_fn=err_fn, epoch=epoch, time_start=t_start, cum_time=cum_time,
                 resolve_model=True)
             cum_time = pred_dict["cum_time"]
+            t_start = time.time()
         loss_dict = grad_loss_reporting(model.named_parameters(), grads, losses, model.loss_names,
                                         verbose, epoch, losses_are_grads=model.losses_are_grads)
         loss_dict.update(pred_dict)
@@ -266,10 +272,10 @@ def train_complexity_reg_mb(
             {"params": model.named_parameters()['sigma'], 'lr': learning_rate},
         ]
         if 'centers' in model.named_parameters():
-            opt_modules.append({"params": model.named_parameters()['centers'], 'lr': learning_rate / 10})
+            opt_modules.append({"params": model.named_parameters()['centers'], 'lr': learning_rate / 2})
         opt_hp = torch.optim.Adam(opt_modules)
         # schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_hp, factor=0.5, patience=1)
-        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=100, gamma=0.4)
+        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=200, gamma=0.5)
     elif optimizer == "lbfgs":
         if model.losses_are_grads:
             raise ValueError("L-BFGS not valid for model %s" % (model))
@@ -289,8 +295,9 @@ def train_complexity_reg_mb(
         e_start = time.time()
 
         for mb_start in range(0, Xtr.shape[0], minibatch):
+            print("%d " % mb_start, end='', flush=True)
             Xtr_batch = Xtr[mb_start: mb_start + minibatch, :]
-            Ytr_batch = Xtr[mb_start: mb_start + minibatch, :]
+            Ytr_batch = Ytr[mb_start: mb_start + minibatch, :]
 
             def closure():
                 opt_hp.zero_grad()
@@ -301,7 +308,6 @@ def train_complexity_reg_mb(
                 return float(loss)
 
             loss = opt_hp.step(closure)
-            print("loss", loss)
 
         pred_dict = {}
         if epoch != 0 and (epoch + 1) % loss_every == 0:
@@ -421,6 +427,10 @@ def init_model(model_type, data, penalty_init, sigma_init, centers_init, opt_pen
                                       opt_sigma=opt_sigma, opt_penalty=opt_penalty, cuda=cuda,
                                       tr_indices=tr_idx, ts_indices=val_idx, flk_opt=flk_opt,
                                       flk_maxiter=flk_maxiter)
+    elif model_type == "svgp":
+        model = SVGP(sigma_init=start_sigma, penalty_init=penalty_init, centers_init=centers_init,
+                     opt_sigma=opt_sigma, opt_penalty=opt_penalty, opt_centers=opt_centers,
+                     cuda=cuda, num_data=data['X'].shape[0])
     else:
         raise RuntimeError(f"{model_type} model type not recognized!")
 
