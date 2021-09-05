@@ -73,7 +73,7 @@ class BaseModel(ApproximateGP):
         return self
 
     def parameters(self):
-        return list(super().parameters()) + list(self.likelihood.parameters())
+        return list(super().parameters())
 
     def train(self, arg=True):
         super().train(arg)
@@ -281,6 +281,9 @@ class RegressionVGP(GPTrainer):
                                 )
         loss_fn = gpytorch.mlls.VariationalELBO(likelihood, model, num_data=num_data)
         params = model.parameters()
+        print("Model parameters:")
+        for k, v in model.named_parameters():
+            print(f"\t{k} : {v.shape}")
         if not learn_ind_pts:
             exclude = set(mean_module.parameters()) | set(kernel.parameters())
             print("Excluding parameters from mean and covariance models:", exclude)
