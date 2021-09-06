@@ -130,7 +130,7 @@ def run_gpytorch_sgpr(dset: Dataset,
                       seed: int,
                       ):
     import torch
-    from models.gpytorch_sgpr import GpytorchSGPR
+    from benchmark.models.gpytorch_sgpr import GpytorchSGPR
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -192,7 +192,8 @@ def run_gpytorch(dset: Dataset,
                  ):
     import torch
     import gpytorch
-    from models.gpytorch_variational_models import TwoClassVGP, RegressionVGP, MultiClassVGP
+    from benchmark.models.gpytorch_variational_models import (
+            TwoClassVGP, RegressionVGP, MultiClassVGP)
     torch.manual_seed(seed)
     np.random.seed(seed)
 

@@ -135,7 +135,7 @@ def hp_grad(model: FakeTorchModelMixin, *loss_terms, accumulate_grads=True, verb
     if not losses_are_grads:
         if verbose:
             for loss in loss_terms:
-                grads.append(torch.autograd.grad(loss, hparams, retain_graph=True))
+                grads.append(torch.autograd.grad(loss, hparams, retain_graph=True, allow_unused=True))
         else:
             loss = reduce(torch.add, loss_terms)
             grads.append(torch.autograd.grad(loss, hparams, retain_graph=False))
@@ -185,6 +185,7 @@ class NystromKRRModelMixinN(FakeTorchModelMixin, abc.ABC):
         self.penalty = penalty
         self.register_buffer("penalty", self.penalty_)
 
+        self.sigma_transform = PositiveTransform(1e-4)
         self.sigma = sigma
         self.register_buffer("sigma", self.sigma_)
 
@@ -199,7 +200,7 @@ class NystromKRRModelMixinN(FakeTorchModelMixin, abc.ABC):
 
     @property
     def sigma(self):
-        return self.sigma_
+        return self.sigma_transform(self.sigma_)
 
     @property
     def centers(self):
@@ -220,7 +221,7 @@ class NystromKRRModelMixinN(FakeTorchModelMixin, abc.ABC):
             value = torch.tensor([value.item()], dtype=value.dtype)
         elif not isinstance(value, torch.Tensor):
             value = torch.tensor(value)
-        self.sigma_ = value.clone().detach().to(device=self.device)
+        self.sigma_ = self.sigma_transform._inverse(value.clone().detach().to(device=self.device))
 
     @penalty.setter
     def penalty(self, value):

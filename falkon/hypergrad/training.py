@@ -3,6 +3,7 @@ import time
 from functools import reduce
 from typing import Optional, Dict, List, Any
 
+import numpy as np
 import torch
 from dataclasses import dataclass
 
@@ -98,6 +99,7 @@ def pred_reporting(model: HyperOptimModel,
                    Xval: Optional[torch.Tensor] = None,
                    Yval: Optional[torch.Tensor] = None,
                    resolve_model: bool = False,
+                   mb_size: Optional[int] = None,
                    ) -> Dict[str, float]:
     writer = get_writer()
     t_elapsed = time.time() - time_start  # Stop the time
@@ -112,13 +114,13 @@ def pred_reporting(model: HyperOptimModel,
         kernel = GaussianKernel(sigma.detach().flatten(), flk_opt)
         center_selector = FixedSelector(centers.detach())
         if Xtr.is_cuda:
-            flk_model = InCoreFalkon(kernel, penalty.item() / Xtr.shape[0], M=centers.shape[0],
+            flk_model = InCoreFalkon(kernel, penalty.item(), M=centers.shape[0],
                                      center_selection=center_selector, maxiter=30,
-                                     seed=1312, error_fn=err_fn, error_every=1, options=flk_opt)
+                                     seed=1312, error_fn=err_fn, error_every=None, options=flk_opt)
         else:
             flk_model = Falkon(kernel, penalty.item(), M=centers.shape[0],
                                center_selection=center_selector, maxiter=30,
-                               seed=1312, error_fn=err_fn, error_every=1, options=flk_opt)
+                               seed=1312, error_fn=err_fn, error_every=None, options=flk_opt)
         if Xval is not None and Yval is not None:
             Xtr_full, Ytr_full = torch.cat((Xtr, Xval), dim=0), torch.cat((Ytr, Yval), dim=0)
         else:
@@ -126,8 +128,16 @@ def pred_reporting(model: HyperOptimModel,
         flk_model.fit(Xtr_full, Ytr_full, Xts, Yts)
         model = flk_model
 
-    test_preds = model.predict(Xts).detach().cpu()
-    train_preds = model.predict(Xtr).detach().cpu()
+    # Predict in mini-batches
+    test_preds, train_preds = [], []
+    c_mb_size = mb_size or Xts.shape[0]
+    for i in range(0, Xts.shape[0], c_mb_size):
+        test_preds.append(model.predict(Xts[i: i + c_mb_size]).detach().cpu())
+    c_mb_size = mb_size or Xtr.shape[0]
+    for i in range(0, Xtr.shape[0], c_mb_size):
+        train_preds.append(model.predict(Xtr[i: i + c_mb_size]).detach().cpu())
+    test_preds = torch.cat(test_preds, dim=0)
+    train_preds = torch.cat(train_preds, dim=0)
     test_err, err_name = err_fn(Yts.detach().cpu(), test_preds)
     train_err, err_name = err_fn(Ytr.detach().cpu(), train_preds)
     out_str = (f"Epoch {epoch} ({cum_time:5.2f}s) - "
@@ -155,6 +165,9 @@ def pred_reporting(model: HyperOptimModel,
 def create_optimizer(opt_type: str, model: HyperOptimModel, learning_rate: float):
     center_lr_div = 1
     named_params = model.named_parameters()
+    print("Creating optimizer with the following parameters:")
+    for k, v in named_params.items():
+        print(f"\t{k} : {v.shape}")
     if opt_type == "adam":
         if 'penalty' not in named_params:
             opt_modules = [
@@ -271,8 +284,9 @@ def train_complexity_reg_mb(
         minibatch: int,
         retrain_nkrr: bool = False,
 ) -> List[Dict[str, float]]:
+    Xtrc, Ytrc, Xtsc, Ytsc = Xtr, Ytr, Xts, Yts
     if cuda:
-        Xtr, Ytr, Xts, Yts = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
+        Xtrc, Ytrc, Xtsc, Ytsc = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
     opt_hp, schedule = create_optimizer(optimizer, model, learning_rate)
     print(f"Starting hyperparameter optimization on model {model}.")
     print(f"Will run for {num_epochs} epochs with {opt_hp} optimizer, "
@@ -281,27 +295,37 @@ def train_complexity_reg_mb(
     logs = []
     cum_time = 0
     t_start = time.time()
+    mb_indices = np.arange(Xtr.shape[0])
     for epoch in range(num_epochs):
+        np.random.shuffle(mb_indices)
         for mb_start in range(0, Xtr.shape[0], minibatch):
             print("%d " % mb_start, end='', flush=True)
-            Xtr_batch = Xtr[mb_start: mb_start + minibatch, :]
-            Ytr_batch = Ytr[mb_start: mb_start + minibatch, :]
+            Xtr_batch = (Xtr[mb_indices[mb_start: mb_start + minibatch], :]).contiguous()
+            Ytr_batch = (Ytr[mb_indices[mb_start: mb_start + minibatch], :]).contiguous()
+            if cuda:
+                Xtr_batch, Ytr_batch = Xtr_batch.cuda(), Ytr_batch.cuda()
 
-            def closure():
-                opt_hp.zero_grad()
-                losses = model.hp_loss(Xtr_batch, Ytr_batch)
-                hp_grad(model, *losses, accumulate_grads=True,
-                        losses_are_grads=model.losses_are_grads)
-                loss = reduce(torch.add, losses)
-                return float(loss)
-            opt_hp.step(closure)
+            #def closure():
+            #    opt_hp.zero_grad()
+            #    losses = model.hp_loss(Xtr_batch, Ytr_batch)
+                #hp_grad(model, *losses, accumulate_grads=True,
+                #        losses_are_grads=model.losses_are_grads)
+            #    loss = reduce(torch.add, losses)
+            #    loss.backward()
+            #    return loss
+            #opt_hp.step(closure)
+
+            opt_hp.zero_grad()
+            loss = model.hp_loss(Xtr_batch, Ytr_batch)[0]
+            loss.backward()
+            opt_hp.step()
 
         pred_dict = {}
         if epoch != 0 and (epoch + 1) % loss_every == 0:
             pred_dict = pred_reporting(
-                model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
+                model=model, Xtr=Xtrc, Ytr=Ytrc, Xts=Xtsc, Yts=Ytsc,
                 err_fn=err_fn, epoch=epoch, time_start=t_start, cum_time=cum_time,
-                resolve_model=True)
+                resolve_model=True, mb_size=minibatch)
             cum_time = pred_dict["cum_time"]
             t_start = time.time()
         logs.append(pred_dict)
@@ -314,7 +338,7 @@ def train_complexity_reg_mb(
     if retrain_nkrr:
         print(f"Final retrain after {num_epochs} epochs:")
         pred_dict = pred_reporting(
-            model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
+            model=model, Xtr=Xtrc, Ytr=Ytrc, Xts=Xtsc, Yts=Ytsc,
             err_fn=err_fn, epoch=num_epochs, time_start=time.time(), cum_time=cum_time,
             resolve_model=True)
         logs.append(pred_dict)

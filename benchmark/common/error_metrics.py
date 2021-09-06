@@ -56,6 +56,11 @@ def rmse_with_std(y_true, y_pred, **kwargs):
 def nrmse(y_true, y_pred, **kwargs):
     Y_mean = kwargs['Y_mean']
     Y_mean, = _ensure_numpy_or_float(Y_mean)
+    Y_std = kwargs.get('Y_std', 1.0)
+    Y_std, = _ensure_numpy_or_float(Y_std)
+
+    y_true = y_true * Y_std + Y_mean
+    y_pred = y_pred * Y_std + Y_mean
 
     pred_rmse = rmse(y_true, y_pred, **kwargs)[0]
     pred_nrmse = pred_rmse / Y_mean

@@ -88,7 +88,7 @@ class SVGP(HyperOptimModel):
     def hp_loss(self, X, Y):
         with gpytorch.settings.fast_computations(False, False, False):
             output = self.model(X)
-            loss = -self.loss_fn(output, Y).mean()
+            loss = -self.loss_fn(output, Y.reshape(-1))
             return (loss,)
 
     def predict(self, X):

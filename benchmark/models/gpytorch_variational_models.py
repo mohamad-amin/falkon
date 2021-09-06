@@ -185,6 +185,8 @@ class GPTrainer():
         else:
             self.ng_optimizer = None
             self.optimizer = torch.optim.Adam(self.params, lr=lr)
+        print(f"Optimizer: {self.optimizer}")
+        print(f"nat-grad optimizer: {self.ng_optimizer}")
 
         self.error_every = 100
 
@@ -284,6 +286,8 @@ class RegressionVGP(GPTrainer):
         print("Model parameters:")
         for k, v in model.named_parameters():
             print(f"\t{k} : {v.shape}")
+        print("Initialized sigma to %s" % (kernel.base_kernel.lengthscale))
+        print("Initialized lambda to %s" % (likelihood.noise_covar.noise))
         if not learn_ind_pts:
             exclude = set(mean_module.parameters()) | set(kernel.parameters())
             print("Excluding parameters from mean and covariance models:", exclude)
