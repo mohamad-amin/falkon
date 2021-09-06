@@ -7,9 +7,13 @@ import numpy as np
 import torch
 import torch.cuda as tcd
 
-from falkon.mmv_ops.utils import _get_gpu_info, _call_direct, _start_wait_processes
+from falkon.mmv_ops.utils import (
+    _get_gpu_info, _call_direct, _start_wait_processes, _dev_from_id, _is_incore
+)
 from falkon.options import BaseOptions
-from falkon.utils.helpers import sizeof_dtype, choose_fn, check_same_device, calc_gpu_block_sizes
+from falkon.utils.helpers import (
+    sizeof_dtype, choose_fn, check_same_device, calc_gpu_block_sizes, select_dim_over_n
+)
 from falkon.kernels import Kernel
 from falkon.utils.tensor_helpers import (
     extract_fortran, extract_same_stride, is_f_contig
@@ -53,20 +57,6 @@ def inplace_trsm(A: torch.Tensor, v: torch.Tensor, alpha: float, lower: bool, tr
     return v
 
 
-def select_dim_over_n(max_n, m, d, coef_nm, coef_nd, coef_md, coef_n, coef_m, coef_d, rest, max_mem):
-    """
-    n * (m * coef_nm + d * coef_nd + coef_n) + rest <= max_mem
-    """
-    n_coef = (m * coef_nm + d * coef_nd + coef_n)
-    rest_mem = rest + coef_md * m * d + coef_m * m + coef_d * d
-    v_n = (max_mem - rest_mem) / n_coef
-
-    out_n = int(min(v_n, max_n))
-    if out_n <= 0:
-        raise MemoryError("Available memory %.2fMB is not enough." % (max_mem / 2**20))
-    return out_n
-
-
 def trsm_fro_block_sizes(n, m, d, avail_mem, incore) -> Tuple[int, int]:
     """
     Needed memory (out-of-core):
@@ -88,16 +78,6 @@ def trsm_fro_block_sizes(n, m, d, avail_mem, incore) -> Tuple[int, int]:
         mem_needed += (m + blk_n) * d
         mem_needed += m**2
     return blk_n, mem_needed
-
-
-def _dev_from_id(device_id: int) -> torch.device:
-    if device_id < 0:
-        return torch.device('cpu')
-    return torch.device('cuda:%d' % device_id)
-
-
-def _is_incore(computation_device: torch.device, data_device: torch.device) -> bool:
-    return computation_device.type == data_device.type
 
 
 def kernel_trsm_fro_runner(proc_idx, queue, device_id):
