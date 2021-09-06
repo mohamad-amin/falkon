@@ -1,5 +1,5 @@
 import dataclasses
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional, List, Any
 
 import torch
 
@@ -40,8 +40,8 @@ def _get_cpu_ram(opt: BaseOptions, slack: float = 0.9) -> float:
     return avail_mem * slack
 
 
-def _start_wait_processes(target, args):
-    processes = []
+def _start_wait_processes(target, args) -> List[Any]:
+    processes, outputs = [], []
     for i, a in enumerate(args):
         args_queue = FakeQueue()
         args_queue.put(a[0])
@@ -52,7 +52,8 @@ def _start_wait_processes(target, args):
     for p in processes:
         p.start()
     for p in processes:
-        p.join()
+        outputs.append(p.join())
+    return outputs
 
 
 def _call_direct(target, arg):

@@ -4,9 +4,12 @@ import torch
 
 from .helpers import sizeof_dtype
 from .tensor_helpers import is_f_contig, is_contig
-from falkon.cuda.cudart_gpu import cuda_memcpy2d, cuda_memcpy2d_async
-from falkon.cuda.cublas_gpu import (cublasSetMatrix, cublasSetMatrixAsync,
-                                    cublasGetMatrix, cublasGetMatrixAsync)
+try:
+    from falkon.cuda.cudart_gpu import cuda_memcpy2d, cuda_memcpy2d_async
+    from falkon.cuda.cublas_gpu import (cublasSetMatrix, cublasSetMatrixAsync,
+                                        cublasGetMatrix, cublasGetMatrixAsync)
+except (OSError, ImportError):
+    pass
 
 
 def check_copy(H, D):
