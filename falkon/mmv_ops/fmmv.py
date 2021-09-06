@@ -1,11 +1,11 @@
 from contextlib import ExitStack
+from dataclasses import dataclass
 from typing import Optional, Union
 
 import numpy as np
 import torch
 import torch.cuda as tcd
 
-from falkon.mmv_ops.fmmv_cuda import ArgsFmmv, ArgsFdmmv
 from falkon.mmv_ops.utils import *
 from falkon.options import BaseOptions
 from falkon.sparse import SparseTensor
@@ -20,6 +20,27 @@ from falkon.utils.tensor_helpers import (
     create_same_stride,
     extract_fortran, create_fortran,
 )
+
+
+@dataclass(frozen=True)
+class ArgsFmmv:
+    X1: Union[torch.Tensor, SparseTensor]
+    X2: Union[torch.Tensor, SparseTensor]
+    v: torch.Tensor
+    out: torch.Tensor
+    kernel: 'Kernel'
+    max_mem: float
+
+
+@dataclass(frozen=True)
+class ArgsFdmmv:
+    X1: Union[torch.Tensor, SparseTensor]
+    X2: Union[torch.Tensor, SparseTensor]
+    v: torch.Tensor
+    w: torch.Tensor
+    out: torch.Tensor
+    kernel: 'Kernel'
+    max_mem: float
 
 
 def _sparse_mmv_blk_sizes(n, d, m, t, avail_mem, extra_mem, incore: bool, m1_density: float, m2_density: float):

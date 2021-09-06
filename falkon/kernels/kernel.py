@@ -5,8 +5,6 @@ from typing import Optional, Any, Dict
 
 from falkon.mmv_ops.fmm import fmm
 
-from falkon.mmv_ops.fmm_cpu import fmm_cpu_sparse, fmm_cpu
-from falkon.mmv_ops.fmmv_cpu import fdmmv_cpu_sparse, fmmv_cpu_sparse, fmmv_cpu, fdmmv_cpu
 from falkon.utils.helpers import check_same_dtype, check_sparse, check_same_device
 from falkon.utils import decide_cuda
 from falkon.options import FalkonOptions
@@ -310,17 +308,6 @@ class Kernel(ABC):
         sparsity = all(sparsity)
         from falkon.mmv_ops.fmmv import fmmv
         return fmmv
-        if use_cuda:
-            from falkon.mmv_ops.fmmv_cuda import fmmv_cuda, fmmv_cuda_sparse
-            if sparsity:
-                return fmmv_cuda_sparse
-            else:
-                return fmmv_cuda
-        else:
-            if sparsity:
-                return fmmv_cpu_sparse
-            else:
-                return fmmv_cpu
 
     def dmmv(self, X1, X2, v, w, out=None, opt: Optional[FalkonOptions] = None):
         # noinspection PyShadowingNames
@@ -421,17 +408,6 @@ class Kernel(ABC):
         sparsity = all(sparsity)
         from falkon.mmv_ops.fmmv import fdmmv
         return fdmmv
-        if use_cuda:
-            from falkon.mmv_ops.fmmv_cuda import fdmmv_cuda, fdmmv_cuda_sparse
-            if sparsity:
-                return fdmmv_cuda_sparse
-            else:
-                return fdmmv_cuda
-        else:
-            if sparsity:
-                return fdmmv_cpu_sparse
-            else:
-                return fdmmv_cpu
 
     @abstractmethod
     def _prepare(self, X1, X2) -> Any:

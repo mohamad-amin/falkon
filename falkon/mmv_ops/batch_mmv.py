@@ -5,7 +5,6 @@ import torch
 import torch.cuda as tcd
 
 from falkon.kernels import Kernel
-from falkon.mmv_ops.fmmv_cuda import ArgsFmmv
 from falkon.mmv_ops.utils import *
 from falkon.options import BaseOptions
 from falkon.utils.helpers import (
@@ -16,6 +15,7 @@ from falkon.utils.helpers import (
 from falkon.utils.tensor_helpers import (
     create_same_stride,
 )
+from mmv_ops.fmmv import ArgsFmmv
 
 
 def mmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor, vout: torch.Tensor,
