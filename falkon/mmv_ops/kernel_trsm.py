@@ -9,12 +9,12 @@ import torch.cuda as tcd
 
 from falkon.mmv_ops.utils import _get_gpu_info, _call_direct, _start_wait_processes
 from falkon.options import BaseOptions
-from falkon.utils.cuda_helpers import flk_copy
 from falkon.utils.helpers import sizeof_dtype, choose_fn, check_same_device, calc_gpu_block_sizes
 from falkon.kernels import Kernel
 from falkon.utils.tensor_helpers import (
     extract_fortran, extract_same_stride, is_f_contig
 )
+from utils.device_copy import copy
 
 
 @dataclass(frozen=True)
@@ -140,15 +140,15 @@ def kernel_trsm_fro_runner(proc_idx, queue, device_id):
             stack.enter_context(tcd.stream(s1))
 
         if not incore:
-            flk_copy(m2, dev_m2, s=s1)
-            flk_copy(tri, dev_tri, s=s2)
+            copy(m2, dev_m2, s=s1)
+            copy(tri, dev_tri, s=s2)
 
         for i in range(0, n, blk_n):
             leni = min(blk_n, n - i)
             if incore:
                 c_dev_m1 = dev_m1[i: i + leni, :]
             else:
-                c_dev_m1 = flk_copy(m1[i: i + leni, :], dev_m1[:leni, :], s=s1)
+                c_dev_m1 = copy(m1[i: i + leni, :], dev_m1[:leni, :], s=s1)
             c_dev_out = dev_out[:, :leni]
             kernel(dev_m2, c_dev_m1, out=c_dev_out, opt=kernel_opt)
             if not incore and s2 is not None:

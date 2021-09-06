@@ -8,13 +8,14 @@ import torch
 
 from falkon.cuda.cublas_gpu import *
 from falkon.cuda.cudart_gpu import cuda_memcpy2d_async
-from falkon.utils.cuda_helpers import copy_to_device, copy_to_host
 from falkon.utils.helpers import choose_fn, sizeof_dtype
 from falkon.utils.tensor_helpers import create_fortran, extract_same_stride, extract_fortran
 from falkon.c_ext import lauum_cuda
 
 
 __all__ = ("par_lauum_c_lower", "par_lauum_f_lower", "BlockAlloc")
+
+from utils.device_copy import copy
 
 
 @dataclass(frozen=True, eq=False, repr=True)
@@ -90,8 +91,12 @@ def par_lauum_f_lower(A: torch.Tensor,
                     col_b = whole_col_b[b_start:, :bb.length]
                     col_b.copy_(A[b_start:N, bb.start:bb.end])
                 else:
-                    col_b: torch.Tensor = copy_to_device(
-                        N - b_start, bb.length, A, b_start, bb.start, whole_col_b, 0, 0, s1)
+                    col_b: torch.Tensor = copy(A[b_start:, bb.start: bb.end], whole_col_b[b_start:, :bb.length], s=s1)
+                    # TODO: This used to be
+                    # copy_to_device(
+                    #    N - b_start, bb.length, A, b_start, bb.start, whole_col_b, 0, 0, s1)
+                    # which is different (whole_col_b used from row 0).
+                    # TODO: The two code-paths can be merged
             except ValueError:
                 pass  # No column here
             if not independent_output:
@@ -139,7 +144,7 @@ def par_lauum_f_lower(A: torch.Tensor,
                         # cuda and non-cuda cases, since we have different orderings (this will require extra buffer)
                         Abb.copy_(cur_lauum_out.T)
                     elif is_cuda:
-                        flk_copy(cur_lauum_out, Abb, s=s1)
+                        copy(cur_lauum_out, Abb, s=s1)
                 elif r > b:
                     br = block_allocs[r]
 
@@ -147,8 +152,7 @@ def par_lauum_f_lower(A: torch.Tensor,
                     if is_cuda:  # If col_r is already in GPU no copy needed.
                         col_r = A[br.start:N, br.start:br.end]
                     else:
-                        col_r = copy_to_device(N - br.start, br.length, A, br.start, br.start,
-                                               whole_col_r, 0, 0, s1)
+                        col_r = copy(A[br.start:, br.start: br.end], whole_col_r[:N - br.start, :br.length], s=s1)
                     # Restrict column b to only the last 'r' rows
                     ccb = col_b[br.start - b_start:, :]
 
@@ -179,11 +183,11 @@ def par_lauum_f_lower(A: torch.Tensor,
                         if is_cuda:
                             A[bb.start:bb.end, br.start:br.end].copy_(ccb[:br.length, :bb.length].T)
                         else:
-                            _temp_cpu = copy_to_host(br.length, bb.length, ccb, 0, 0, temp_bb, 0, 0, s1)
+                            _temp_cpu = copy(ccb[:br.length, :bb.length], temp_bb[:br.length, :bb.length], s=s1)
                             s1.synchronize()  # must wait for data to be onto CPU.
                             A[bb.start:bb.end, br.start:br.end].copy_(_temp_cpu.T)
                     else:
-                        flk_copy(ccb[:br.length, :bb.length], A[br.start:br.end, bb.start:bb.end], s=s1)
+                        copy(ccb[:br.length, :bb.length], A[br.start:br.end, bb.start:bb.end], s=s1)
             s1.synchronize()
 
 
