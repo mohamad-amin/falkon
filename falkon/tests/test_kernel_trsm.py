@@ -15,7 +15,7 @@ from falkon.tests.gen_random import gen_random
 
 
 n, m, d = 1000, 100, 10
-max_mem = 0.5 * 2**20
+max_mem = 0.2 * 2**20
 rtol = {
     np.float32: 1e-5,
     np.float64: 1e-13
@@ -60,7 +60,7 @@ class TestKernelTrsmFro():
 
     @pytest.mark.parametrize("comp_dev,data_dev", [
         ("cpu", "cpu"),
-        pytest.param("cpu", "cuda", marks=[cuda_skip]),
+        pytest.param("cuda", "cpu", marks=[cuda_skip]),
         pytest.param("cuda", "cuda", marks=[cuda_skip])
     ])
     def test(self, m1, m2, kernel, L, comp_dev, data_dev, m1_order, m2_order, dtype, transpose):
@@ -79,19 +79,19 @@ class TestKernelTrsmFro():
 
 
 @pytest.mark.parametrize("comp_dev,data_dev", [
-    ("cpu", "cpu"),
-    pytest.param("cpu", "cuda", marks=[cuda_skip]),
+    #("cpu", "cpu"),
+    pytest.param("cuda", "cpu", marks=[cuda_skip]),
     pytest.param("cuda", "cuda", marks=[cuda_skip])
 ])
 @pytest.mark.benchmark
 def test_kernel_trsm_fro_perf(kernel, comp_dev, data_dev):
     opt = FalkonOptions(use_cpu=comp_dev == 'cpu')
-    n, m, d = 200_000, 1000, 10
+    n, m, d = 200_000, 5000, 10
     num_rep = 5
 
     m1 = torch.from_numpy(gen_random(n, d, 'float32', F=False, seed=92)).to(device=data_dev)
     m2 = torch.from_numpy(gen_random(m, d, 'float32', F=False, seed=92)).to(device=data_dev)
-    kmm = kernel(m2, m2) + torch.eye(m2.shape[0], dtype=m2.dtype, device=m2.device) * 1e-5
+    kmm = kernel(m2, m2) + torch.eye(m2.shape[0], dtype=m2.dtype, device=m2.device) * 1e-3
     L = torch.linalg.cholesky(kmm)
 
     times = []

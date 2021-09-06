@@ -153,8 +153,8 @@ def kernel_trsm_fro_runner(proc_idx, queue, device_id):
             kernel(dev_m2, c_dev_m1, out=c_dev_out, opt=kernel_opt)
             if not incore and s2 is not None:
                 s2.synchronize()
-            inplace_trsm(dev_tri, dev_out, 1.0, lower=lower, transpose=transpose)
-            out_scalar.add_(dev_out.sum())
+            inplace_trsm(dev_tri, c_dev_out, 1.0, lower=lower, transpose=transpose)
+            out_scalar.add_(c_dev_out.sum())
     return out_scalar.item()
 
 
