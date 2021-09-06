@@ -1,14 +1,16 @@
+from typing import Optional
+
 import torch
 
 from falkon.cuda.initialization import cublas_handle
 from falkon.cuda.cublas_gpu import cublasStrsm, cublasDtrsm, cublas_stream
 from falkon.utils.helpers import choose_fn, check_same_device
-# noinspection PyUnresolvedReferences
-from falkon.la_helpers.cuda_la_helpers import cuda_transpose
+from falkon.c_ext import copy_transpose
 from falkon.utils.tensor_helpers import is_f_contig, create_fortran, create_C
 
 
-def cuda_trsm(A: torch.Tensor, v: torch.Tensor, alpha: float, lower: int, transpose: int) -> torch.Tensor:
+def cuda_trsm(A: torch.Tensor, v: torch.Tensor, alpha: float, lower: int, transpose: int,
+              stream: Optional[torch.cuda.Stream] = None) -> torch.Tensor:
     if not is_f_contig(A, strict=False):
         raise ValueError("A must be f-contiguous for CUDA TRSM to work.")
     if not check_same_device(A, v):
@@ -16,19 +18,23 @@ def cuda_trsm(A: torch.Tensor, v: torch.Tensor, alpha: float, lower: int, transp
     if not A.is_cuda:
         raise ValueError("A and v must be CUDA tensors!")
 
-    s = torch.cuda.Stream(device=A.device)
-    cublas_hdl = cublas_handle(A.device.index)
+    device = A.device
+    s = stream
+    if stream is None:
+        s = torch.cuda.current_stream(device=device)
+    cublas_hdl = cublas_handle(device.index)
     trsm_fn = choose_fn(A.dtype, cublasDtrsm, cublasStrsm, "TRSM")
 
-    with torch.cuda.device(A.device), torch.cuda.stream(s), cublas_stream(cublas_hdl, s._as_parameter_):
+    # noinspection PyProtectedMember
+    with torch.cuda.device(device), torch.cuda.stream(s), cublas_stream(cublas_hdl, s._as_parameter_):
         # Deal with copying v, which may not be F-contiguous.
-        vF = create_fortran(v.size(), v.dtype, v.device)
+        vF = create_fortran(v.size(), v.dtype, device)
         if is_f_contig(v, strict=False):
             # We can just make a copy of v
             vF.copy_(v)
-            s.synchronize()  # sync is necessary here for correctness. Not sure why!
+            s.synchronize()  # sync is necessary here for correctness. Not sure why! TODO: Is it still needed?
         else:
-            vF = cuda_transpose(input=v, output=vF.T).T
+            vF = copy_transpose(input=v, output=vF.T).T
 
         uplo = 'L' if lower else 'U'
         trans = 'T' if transpose else 'N'
@@ -37,7 +43,6 @@ def cuda_trsm(A: torch.Tensor, v: torch.Tensor, alpha: float, lower: int, transp
         if is_f_contig(v, strict=False):
             vout = vF
         else:
-            vout = create_C(v.size(), v.dtype, v.device)
-            vout = cuda_transpose(input=vF, output=vout.T).T
-        s.synchronize()
+            vout = create_C(v.size(), v.dtype, device)
+            vout = copy_transpose(input=vF, output=vout.T).T
     return vout

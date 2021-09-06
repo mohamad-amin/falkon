@@ -5,6 +5,14 @@ from falkon.sparse.sparse_tensor import SparseTensor
 from falkon.la_helpers.cyblas import copy_triang
 
 
+def gen_random_multi(*sizes, dtype, F=False, seed=0):
+    rng = np.random.default_rng(seed)
+    out = rng.random(size=tuple(sizes), dtype=dtype)
+    if F:
+        return np.asfortranarray(out)
+    return out
+
+
 def gen_random(a, b, dtype, F=False, seed=0):
     rng = np.random.default_rng(seed)
     out = rng.random(size=(a, b), dtype=dtype)
@@ -25,13 +33,13 @@ def gen_random_pd(t, dtype, F=False, seed=0):
     return A
 
 
-def gen_sparse_matrix(a, b, dtype, density=0.1, seed=0) -> SparseTensor:
-    out = random_sparse(a, b, density=density, format='csr', dtype=dtype, seed=seed)
+def gen_sparse_matrix(a, b, dtype, density=0.1, seed=0, sparse_fromat='csr') -> SparseTensor:
+    out = random_sparse(a, b, density=density, sparse_format=sparse_fromat, dtype=dtype, seed=seed)
 
     return SparseTensor.from_scipy(out)
 
 
-def random_sparse(m, n, density=0.01, format='coo', dtype=None,
+def random_sparse(m, n, density=0.01, sparse_format='coo', dtype=None,
                   seed=None, data_rvs=None):
     dtype = np.dtype(dtype)
     mn = m * n
@@ -52,5 +60,6 @@ def random_sparse(m, n, density=0.01, format='coo', dtype=None,
 
     j = np.floor(ind * 1. / m).astype(tp, copy=False)
     i = (ind - j * m).astype(tp, copy=False)
+    # noinspection PyArgumentList
     vals = data_rvs(k).astype(dtype, copy=False)
-    return scipy.sparse.coo_matrix((vals, (i, j)), shape=(m, n)).asformat(format, copy=False)
+    return scipy.sparse.coo_matrix((vals, (i, j)), shape=(m, n)).asformat(sparse_format, copy=False)

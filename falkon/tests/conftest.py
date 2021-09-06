@@ -10,6 +10,7 @@ from falkon.utils.tensor_helpers import move_tensor
 from falkon.options import BaseOptions, FalkonOptions
 from falkon.utils import decide_cuda
 from falkon.utils.devices import _cpu_used_mem
+from falkon.sparse import SparseTensor
 
 if decide_cuda():
     from falkon.cuda import initialization
@@ -38,6 +39,7 @@ def memory_checker(opt: FalkonOptions, extra_mem=0, check_cpu=True):
             tcd.reset_peak_memory_stats(dev)
             # We have to work around buggy memory stats: sometimes reset doesn't work as expected.
             start_ram[dev] = torch.cuda.max_memory_allocated(dev)
+            #print("Start RAM dev %s: %.5fMB" % (dev, torch.cuda.max_memory_allocated(dev) / 2**20))
     elif mem_check:
         start_ram = _cpu_used_mem(uss=True)
         opt = dataclasses.replace(opt, max_cpu_mem=opt.max_cpu_mem + start_ram)
@@ -64,8 +66,14 @@ def numpy_to_torch_type(dt):
         return torch.float32
     elif dt == np.float64:
         return torch.float64
-    else:
-        raise TypeError("Invalid numpy type %s" % (dt,))
+    return dt
+
+def torch_to_numpy_type(dt):
+    if dt == torch.float32:
+        return np.float32
+    elif dt == torch.float64:
+        return np.float64
+    return dt
 
 
 def fix_mat(t, dtype, order, device="cpu", copy=False, numpy=False):
@@ -85,4 +93,20 @@ def fix_mat(t, dtype, order, device="cpu", copy=False, numpy=False):
 
 def fix_sparse_mat(t, dtype, device="cpu"):
     out = t.to(dtype=numpy_to_torch_type(dtype), device=device)
+    return out
+
+
+def fix_mat_dt(t, dtype=None, numpy=False):
+    if isinstance(t, SparseTensor):
+        out = t.to(dtype=numpy_to_torch_type(dtype))
+        if numpy:
+            raise RuntimeError("Cannot convert SparseTensor to numpy")
+    elif isinstance(t, torch.Tensor):
+        out = t.to(dtype=numpy_to_torch_type(dtype))
+        if numpy:
+            out = out.numpy()
+    else:
+        out = t.astype(torch_to_numpy_type(dtype))
+        if not numpy:
+            out = torch.from_numpy(out)
     return out

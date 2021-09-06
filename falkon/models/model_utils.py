@@ -1,4 +1,3 @@
-import numbers
 import warnings
 from abc import abstractmethod, ABC
 from typing import Union, Optional, Tuple
@@ -8,13 +7,13 @@ import numpy as np
 import torch
 
 import falkon
+from falkon import FalkonOptions
 from falkon.utils.tensor_helpers import is_f_contig
 from falkon.utils.helpers import check_same_dtype, sizeof_dtype
 from falkon.utils import decide_cuda, devices
-from falkon import FalkonOptions
 from falkon.kernels.keops_helpers import should_use_keops
 from falkon.sparse import SparseTensor
-
+from falkon.utils import check_random_generator
 
 _tensor_type = Union[torch.Tensor, SparseTensor]
 
@@ -22,7 +21,7 @@ _tensor_type = Union[torch.Tensor, SparseTensor]
 class FalkonBase(base.BaseEstimator, ABC):
     def __init__(self,
                  kernel: falkon.kernels.Kernel,
-                 M: int,
+                 M: Optional[int],
                  center_selection: Union[str, falkon.center_selection.CenterSelector] = 'uniform',
                  seed: Optional[int] = None,
                  error_fn: Optional[callable] = None,
@@ -44,7 +43,6 @@ class FalkonBase(base.BaseEstimator, ABC):
         self._keops_options = self.options.get_keops_options()
         self._pc_options = self.options.get_pc_options()
         self._cholesky_opt = self.options.get_chol_options()
-        self._lauum_opt = self.options.get_lauum_options()
         self._base_opt = self.options.get_base_options()
 
         self.use_cuda_ = decide_cuda(self.options)
@@ -55,8 +53,12 @@ class FalkonBase(base.BaseEstimator, ABC):
 
         if isinstance(center_selection, str):
             if center_selection.lower() == 'uniform':
+                if M is None:
+                    raise ValueError(
+                        "M must be specified when no `CenterSelector` object is provided. "
+                        "Specify an integer value for `M` or a `CenterSelector` object.")
                 self.center_selection: falkon.center_selection.CenterSelector = \
-                    falkon.center_selection.UniformSelector(self.random_state_)
+                    falkon.center_selection.UniformSelector(self.random_state_, num_centers=M)
             else:
                 raise ValueError(f'Center selection "{center_selection}" is not valid.')
         else:
@@ -81,6 +83,8 @@ class FalkonBase(base.BaseEstimator, ABC):
         The callback computes and displays the validation error.
         """
         def val_cback(it, beta, train_time):
+            # fit_times_[0] is the preparation (i.e. preconditioner time).
+            # train_time is the cumulative training time (excludes time for this function)
             self.fit_times_.append(self.fit_times_[0] + train_time)
             if it % self.error_every != 0:
                 print(f"Iteration {it:3d} - Elapsed {self.fit_times_[-1]:.2f}s", flush=True)
@@ -136,7 +140,7 @@ class FalkonBase(base.BaseEstimator, ABC):
 
         return X
 
-    def _can_store_knm(self, X, ny_points, available_ram, store_threshold=1200):
+    def _can_store_knm(self, X, ny_points, available_ram):
         """Decide whether it's worthwile to pre-compute the k_NM kernel.
 
         Notes
@@ -157,6 +161,7 @@ class FalkonBase(base.BaseEstimator, ABC):
         if self.options.never_store_kernel:
             return False
         dts = sizeof_dtype(X.dtype)
+        store_threshold = self.options.store_kernel_d_threshold
         if X.size(1) > store_threshold:
             necessary_ram = X.size(0) * ny_points.size(0) * dts
             if available_ram > necessary_ram:
@@ -210,40 +215,19 @@ class FalkonBase(base.BaseEstimator, ABC):
         return super().__repr__(N_CHAR_MAX=5000)
 
 
-def check_random_generator(seed):
-    """Turn seed into a np.random.Generator instance
-
-    Parameters
-    ----------
-    seed : None | int | instance of Generator
-        If seed is None, return the Generator singleton used by np.random.
-        If seed is an int, return a new Generator instance seeded with seed.
-        If seed is already a Generator instance, return it.
-        Otherwise raise ValueError.
-    """
-    if seed is None or seed is np.random:
-        # noinspection PyProtectedMember
-        return np.random.mtrand._rand
-    if isinstance(seed, numbers.Integral):
-        return np.random.default_rng(seed)
-    if isinstance(seed, np.random.Generator):
-        return seed
-    raise ValueError('%r cannot be used to seed a numpy.random.RandomState'
-                     ' instance' % seed)
-
-
 def to_c_contig(tensor: Optional[torch.Tensor],
                 name: str = "",
                 warn: bool = False) -> Optional[torch.Tensor]:
     warning_text = (
-        "Input '%s' is F-contiguous; to ensure KeOps compatibility, C-contiguous inputs "
+        "Input '%s' is F-contiguous (stride=%s); to ensure KeOps compatibility, C-contiguous inputs "
         "are necessary. The data will be copied to change its order. To avoid this "
         "unnecessary copy, either disable KeOps (passing `keops_active='no'`) or make "
         "the input tensors C-contiguous."
     )
     if tensor is not None and is_f_contig(tensor, strict=True):
         if warn:
-            warnings.warn(warning_text % name)
+            # noinspection PyArgumentList
+            warnings.warn(warning_text % (name, tensor.stride()))
         orig_device = tensor.device
         return torch.from_numpy(np.array(tensor.cpu().numpy(), order="C")).to(device=orig_device)
     return tensor

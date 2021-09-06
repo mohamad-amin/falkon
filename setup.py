@@ -1,5 +1,6 @@
 import os
 import os.path as osp
+from typing import Any, Tuple, List
 
 import numpy
 from setuptools import setup, find_packages, Extension
@@ -14,6 +15,7 @@ WITH_CUDA = torch.cuda.is_available() and CUDA_HOME is not None
 try:
     from Cython.Build import cythonize
 except ImportError:
+    cythonize = None
     WITH_CYTHON = False
 else:
     WITH_CYTHON = True
@@ -28,82 +30,87 @@ def get_version(root_dir):
     return version
 
 
+def parallel_backend():
+    # https://github.com/suphoff/pytorch_parallel_extension_cpp/blob/master/setup.py
+    from torch.__config__ import parallel_info
+    parallel_info_string = parallel_info()
+    parallel_info_array = parallel_info_string.splitlines()
+    backend_lines = [line for line in parallel_info_array if line.startswith('ATen parallel backend:')]
+    if len(backend_lines) != 1:
+        return None
+    backend = backend_lines[0].rsplit(': ')[1]
+    return backend
+
+
+def parallel_extra_compile_args():
+    backend = parallel_backend()
+    if (backend == 'OpenMP'):
+        return ['-DAT_PARALLEL_OPENMP', '-fopenmp']
+    elif (backend == 'native thread pool'):
+        return ['-DAT_PARALLEL_NATIVE']
+    elif (backend == 'native thread pool and TBB'):
+        return ['-DAT_PARALLEL_NATIVE_TBB']
+    return []
+
+
+def torch_version():
+    version = torch.__version__
+    split_version = version.split(".")
+    return [int(v) for v in split_version]
+
+
+def torch_version_macros():
+    int_version = torch_version()
+    return [('TORCH_VERSION_MAJOR', int_version[0]),
+            ('TORCH_VERSION_MINOR', int_version[1]),
+            ('TORCH_VERSION_PATCH', int_version[2])]
+
+
 def get_extensions():
     extensions = []
+    torch_v = torch_version()
 
-    # Sparse
+    # All C/CUDA routines are compiled into a single extension
     extension_cls = CppExtension
-    sparse_ext_dir = osp.join(CURRENT_DIR, 'falkon', 'sparse')
-    sparse_files = [
-        'sparse_extension.cpp',
-        osp.join('cpp', 'sparse_matmul.cpp'),
-        osp.join('cpp', 'sparse_norm.cpp')
+    ext_dir = osp.join(CURRENT_DIR, 'falkon', 'csrc')
+    ext_files = [
+        'pytorch_bindings.cpp', 'cpu/sparse_norm.cpp'
     ]
-    sparse_compile_args = {'cxx': ['-fopenmp']}
-    sparse_link_args = []
-    sparse_macros = []
+    if torch_v[0] >= 1 and torch_v[1] >= 7:
+        ext_files.append('cpu/square_norm_cpu.cpp')
+    compile_args = {'cxx': parallel_extra_compile_args()}
+    link_args = []
+    macros: List[Tuple[str, Any]] = torch_version_macros()
+    libraries = []
     if WITH_CUDA:
         extension_cls = CUDAExtension
-        sparse_files.extend(['cuda/csr2dense_cuda.cu', 'cuda/spspmm_cuda.cu'])
-        sparse_macros += [('WITH_CUDA', None)]
+        ext_files.extend([
+            'cuda/vec_mul_triang_cuda.cu', 'cuda/spspmm_cuda.cu', 'cuda/multigpu_potrf.cu',
+            'cuda/mul_triang_cuda.cu', 'cuda/lauum.cu', 'cuda/csr2dense_cuda.cu',
+            'cuda/copy_transpose_cuda.cu', 'cuda/copy_triang_cuda.cu',
+        ])
+        if torch_v[0] >= 1 and torch_v[1] >= 7:
+            ext_files.append('cuda/square_norm_cuda.cu')
+        macros.append(('WITH_CUDA', None))
         nvcc_flags = os.getenv('NVCC_FLAGS', '')
         nvcc_flags = [] if nvcc_flags == '' else nvcc_flags.split(' ')
-        nvcc_flags += ['--expt-relaxed-constexpr']
-        sparse_compile_args['nvcc'] = nvcc_flags
-        sparse_link_args += ['-lcusparse', '-l', 'cusparse']
+        nvcc_flags += ['--expt-relaxed-constexpr', '--expt-extended-lambda']
+        compile_args['nvcc'] = nvcc_flags
+        link_args += ['-lcusparse', '-l', 'cusparse',
+                      '-lcublas', '-l', 'cublas',
+                      '-lcusolver', '-l', 'cusolver']
+        libraries.extend(['cusolver', 'cublas', 'cusparse'])
     extensions.append(
-        extension_cls("falkon.sparse.sparse_helpers",
-                      sources=[osp.join(sparse_ext_dir, f) for f in sparse_files],
-                      include_dirs=[sparse_ext_dir],
-                      define_macros=sparse_macros,
-                      extra_compile_args=sparse_compile_args,
-                      extra_link_args=sparse_link_args,
-                      )
+        extension_cls(
+            "falkon.c_ext",
+            sources=[osp.join(ext_dir, f) for f in ext_files],
+            include_dirs=[ext_dir],
+            define_macros=macros,
+            extra_compile_args=compile_args,
+            extra_link_args=link_args,
+            libraries=libraries,
+        )
     )
-
-    # Parallel OOC
-    if WITH_CUDA:
-        ooc_ext_dir = osp.join(CURRENT_DIR, 'falkon', 'ooc_ops', 'multigpu')
-        ooc_files = ['cuda_bind.cpp', 'cuda/multigpu_potrf.cu', 'cuda/lauum.cu']
-        ooc_macros = [('WITH_CUDA', None)]
-        nvcc_flags = os.getenv('NVCC_FLAGS', '')
-        nvcc_flags = [] if nvcc_flags == '' else nvcc_flags.split(' ')
-        nvcc_flags += ['--expt-relaxed-constexpr']
-        ooc_compile_args = {'nvcc': nvcc_flags, 'cxx': []}
-        ooc_link_args = ['-lcublas', '-l', 'cublas', '-lcusolver', '-l', 'cusolver']
-        extensions.append(
-            CUDAExtension(
-                "falkon.ooc_ops.cuda",
-                sources=[osp.join(ooc_ext_dir, f) for f in ooc_files],
-                include_dirs=[ooc_ext_dir],
-                define_macros=ooc_macros,
-                extra_compile_args=ooc_compile_args,
-                extra_link_args=ooc_link_args,
-                libraries=['cusolver', 'cublas'],
-            )
-        )
-
-    # LA Helpers
-    if WITH_CUDA:
-        la_helper_dir = osp.join(CURRENT_DIR, 'falkon', 'la_helpers')
-        la_helper_files = ['cuda_la_helpers_bind.cpp', 'cuda/utils.cu']
-        la_helper_macros = [('WITH_CUDA', None)]
-        nvcc_flags = os.getenv('NVCC_FLAGS', '')
-        nvcc_flags = [] if nvcc_flags == '' else nvcc_flags.split(' ')
-        nvcc_flags += ['--expt-relaxed-constexpr']
-        la_helper_compile_args = {'nvcc': nvcc_flags, 'cxx': []}
-        la_helper_link_args = []
-        extensions.append(
-            CUDAExtension(
-                "falkon.la_helpers.cuda_la_helpers",
-                sources=[osp.join(la_helper_dir, f) for f in la_helper_files],
-                include_dirs=[la_helper_dir],
-                define_macros=la_helper_macros,
-                extra_compile_args=la_helper_compile_args,
-                extra_link_args=la_helper_link_args,
-                libraries=[],
-            )
-        )
 
     # Cyblas helpers
     file_ext = '.pyx' if WITH_CYTHON else '.c'

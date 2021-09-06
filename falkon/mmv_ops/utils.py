@@ -1,16 +1,19 @@
 import dataclasses
 from typing import Tuple, Optional, List, Any
 
+import numpy as np
 import torch
 
 from falkon.options import BaseOptions
 from falkon.utils import devices, PropagatingThread
 from falkon.utils.devices import DeviceInfo
 from falkon.utils.fake_queue import FakeQueue
-from falkon.utils.tensor_helpers import is_contig
+from falkon.utils.tensor_helpers import is_contig, extract_same_stride
 
 __all__ = ("_setup_opt", "_check_contiguity", "_get_gpu_info", "_get_cpu_ram",
-           "_start_wait_processes", "_gpu_tns_same_memory", "_call_direct",)
+           "_start_wait_processes", "_gpu_tns_same_memory", "_call_direct",
+           "ensure_batch_dim", "_extract_flat", "_is_incore", "_dev_from_id",
+           )
 
 
 def _setup_opt(opt: Optional[BaseOptions], is_cpu=False) -> BaseOptions:
@@ -64,7 +67,36 @@ def _call_direct(target, arg):
 
 
 def _gpu_tns_same_memory(A: torch.Tensor, B: torch.Tensor) -> bool:
+    # noinspection PyArgumentList
     return (A.dtype == B.dtype) and \
            (A.shape == B.shape) and \
            (A.data_ptr() == B.data_ptr()) and \
            (A.stride() == B.stride())
+
+
+def ensure_batch_dim(*args: Optional[torch.Tensor]):
+    for tensor in args:
+        if tensor is None:
+            yield tensor
+        elif tensor.dim() == 3:
+            yield tensor
+        elif tensor.dim() == 2:
+            yield tensor.unsqueeze(0)
+        else:
+            raise ValueError("Cannot ensure batch dimension on tensor with %d dimensions" % (tensor.dim()))
+
+
+def _extract_flat(flat_tn, size, other, offset):
+    struct_tn = extract_same_stride(flat_tn, size=size, other=other, offset=offset)
+    offset += np.prod(struct_tn.shape)
+    return struct_tn, offset
+
+
+def _is_incore(computation_device: torch.device, data_device: torch.device) -> bool:
+    return computation_device.type == data_device.type
+
+
+def _dev_from_id(device_id: int) -> torch.device:
+    if device_id < 0:
+        return torch.device('cpu')
+    return torch.device('cuda:%d' % device_id)

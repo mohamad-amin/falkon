@@ -1,10 +1,13 @@
-*.png
 notebooks/data/
 notebooks/logs/
 
 *.xml
 
 *.csv
+*.png
+*.bkp
+*.back
+
 *.idea/
 work/test_paolo.py
 
@@ -148,6 +151,7 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
+junit.xml
 
 # Translations
 *.mo
@@ -222,7 +226,6 @@ dmypy.json
 [Ll]ib
 [Ll]ib64
 [Ll]ocal
-[Ss]cripts
 pyvenv.cfg
 pip-selfcheck.json
 

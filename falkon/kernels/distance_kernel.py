@@ -1,14 +1,24 @@
 import collections
 import functools
+import math
 from abc import ABC, abstractmethod
 from typing import Optional, Union, Tuple, Dict
 
 import torch
+from falkon.utils.tensor_helpers import batchify_tensors
 
+from falkon import sparse
 from falkon.kernels import Kernel, KeopsKernelMixin
 from falkon.options import BaseOptions, FalkonOptions
-from falkon.sparse import sparse_ops
 from falkon.sparse.sparse_tensor import SparseTensor
+from falkon.c_ext import square_norm
+
+
+__all__ = (
+    'GaussianKernel',
+    'LaplacianKernel',
+    'MaternKernel',
+)
 
 DistKerContainer = collections.namedtuple('DistKerContainer', ['sq1', 'sq2'])
 
@@ -55,9 +65,9 @@ class L2DistanceKernel(Kernel, ABC):
 
     def _prepare_sparse(self, X1: SparseTensor, X2: SparseTensor) -> DistKerContainer:
         sq1 = torch.empty(X1.size(0), dtype=X1.dtype, device=X1.device)
-        sparse_ops.sparse_square_norm(X1, sq1)
+        sparse.sparse_square_norm(X1, sq1)
         sq2 = torch.empty(X2.size(0), dtype=X1.dtype, device=X1.device)
-        sparse_ops.sparse_square_norm(X2, sq2)
+        sparse.sparse_square_norm(X2, sq2)
         return DistKerContainer(
             sq1=sq1.reshape(-1, 1), sq2=sq2.reshape(-1, 1)
         )
@@ -66,7 +76,7 @@ class L2DistanceKernel(Kernel, ABC):
         out.addmm_(X1, X2)
 
     def _apply_sparse(self, X1: SparseTensor, X2: SparseTensor, out: torch.Tensor) -> torch.Tensor:
-        return sparse_ops.sparse_matmul(X1, X2, out)
+        return sparse.sparse_matmul(X1, X2, out)
 
     def _finalize(self, A: torch.Tensor, d: DistKerContainer) -> torch.Tensor:
         A.mul_(-2.0)
@@ -78,6 +88,20 @@ class L2DistanceKernel(Kernel, ABC):
     @abstractmethod
     def _transform(self, A: torch.Tensor):
         pass
+
+
+def rbf_core(sigmas, mat1, mat2, out):
+    mat1_div_sig = mat1 / sigmas
+    mat2_div_sig = mat2 / sigmas
+    norm_sq_mat1 = square_norm(mat1_div_sig, -1, True)  # b*n*1
+    norm_sq_mat2 = square_norm(mat2_div_sig, -1, True)  # b*m*1
+
+    torch.baddbmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1, out=out)  # b*n*m
+    out.add_(norm_sq_mat2.transpose(-2, -1))
+    out.clamp_min_(1e-30)
+    out.mul_(-0.5)
+    out.exp_()
+    return out
 
 
 class GaussianKernel(L2DistanceKernel, KeopsKernelMixin):
@@ -140,7 +164,7 @@ class GaussianKernel(L2DistanceKernel, KeopsKernelMixin):
 
     .. math::
 
-        k(x, x') = \exp{-\dfrac{1}{2}x\Sigmax'}
+        k(x, x') = \exp{-\dfrac{1}{2}x\Sigma x'}
 
 
     In both cases, the actual computation follows a different path, working on the expanded
@@ -173,14 +197,9 @@ class GaussianKernel(L2DistanceKernel, KeopsKernelMixin):
             # Sigma is a vector ('diag')
             if sigma.dim() == 1 or sigma.shape[1] == 1:
                 return sigma.reshape(-1), "diag"
-            # Check correctness for 'full' sigma
-            if sigma.dim() != 2:
-                raise TypeError("Sigma can be specified as a 1D or a 2D tensor. "
-                                "Found %dD tensor" % (sigma.dim()))
-            if sigma.shape[0] != sigma.shape[1]:
-                raise TypeError("Sigma passed as a 2D matrix must be square. "
-                                "Found dimensions %s" % (sigma.size()))
-            return sigma, "full"
+            else:
+                # TODO: Better error
+                raise ValueError("sigma must be a scalar or a vector.")
         else:
             try:
                 return torch.tensor([float(sigma)], dtype=torch.float64), "single"
@@ -264,22 +283,16 @@ class GaussianKernel(L2DistanceKernel, KeopsKernelMixin):
             out.addmm_(X1 @ sigma, X2)
 
     def extra_mem(self) -> Dict[str, float]:
-        if self.gaussian_type == 'single':
-            # Only norms in prepare
-            return {'m': 1, 'n': 1}
-        elif self.gaussian_type in {'diag', 'full'}:
-            return {
-                # Data-matrix / sigma in prepare + Data-matrix / sigma in apply
-                'nd': 2,
-                'md': 1,
-                # Norm results in prepare
-                'm': 1,
-                'n': 1,
-            }
-        else:
-            raise ValueError(f"Gaussian type '{self.gaussian_type}' invalid.")
+        return {
+            # Data-matrix / sigma in prepare + Data-matrix / sigma in apply
+            'nd': 2,
+            'md': 1,
+            # Norm results in prepare
+            'm': 1,
+            'n': 1,
+        }
 
-    def _apply_sparse(self, X1: SparseTensor, X2: SparseTensor, out: torch.Tensor):
+    def _apply_sparse(self, X1: SparseTensor, X2: SparseTensor, out: torch.Tensor) -> torch.Tensor:
         if self.gaussian_type == "single":
             return super()._apply_sparse(X1, X2, out)
         else:
@@ -297,11 +310,35 @@ class GaussianKernel(L2DistanceKernel, KeopsKernelMixin):
             A.exp_()
             return A
 
+    def compute(self, X1, X2, out):
+        sigma = self.sigma.to(X1)
+        X1_b, X2_b, out_b = batchify_tensors(X1, X2, out)
+        out_b = rbf_core(sigma, X1_b, X2_b, out_b)
+        if out_b.dim() != out.dim():
+            return out_b[0]
+        return out_b
+
     def __repr__(self):
         return f"GaussianKernel(sigma={self.sigma})"
 
     def __str__(self):
         return f"Gaussian kernel<{self.sigma}>"
+
+
+# noinspection DuplicatedCode
+def laplacian_core(sigmas, mat1, mat2, out):
+    mat1_div_sig = mat1 / sigmas
+    mat2_div_sig = mat2 / sigmas
+    norm_sq_mat1 = square_norm(mat1_div_sig, -1, True)  # b*n*1
+    norm_sq_mat2 = square_norm(mat2_div_sig, -1, True)  # b*m*1
+
+    torch.baddbmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1, out=out)  # b*n*m
+    out.add_(norm_sq_mat2.transpose(-2, -1))
+    out.clamp_min_(1e-20)
+    out.sqrt_()  # Laplacian: sqrt of squared-difference
+    out.neg_()
+    out.exp_()
+    return out
 
 
 class LaplacianKernel(GaussianKernel):
@@ -355,8 +392,211 @@ class LaplacianKernel(GaussianKernel):
         A.sqrt_()
         return self._transform(A)
 
+    def compute(self, X1, X2, out):
+        sigma = self.sigma.to(X1)
+        X1_b, X2_b, out_b = batchify_tensors(X1, X2, out)
+        out_b = laplacian_core(sigma, X1_b, X2_b, out_b)
+        if out_b.dim() != out.dim():
+            return out_b[0]
+        return out_b
+
     def __repr__(self):
         return f"LaplacianKernel(sigma={self.sigma})"
 
     def __str__(self):
         return f"Laplaciankernel<{self.sigma}>"
+
+
+# noinspection DuplicatedCode
+def matern_core(sigmas, mat1, mat2, out, nu):
+    mat1_div_sig = mat1 / sigmas
+    mat2_div_sig = mat2 / sigmas
+    norm_sq_mat1 = square_norm(mat1_div_sig, -1, True)  # b*n*1
+    norm_sq_mat2 = square_norm(mat2_div_sig, -1, True)  # b*m*1
+
+    torch.baddbmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1, out=out)  # b*n*m
+    out.add_(norm_sq_mat2.transpose(-2, -1))
+    out.clamp_min_(1e-20)
+    if nu == 0.5:
+        out.sqrt_().neg_().exp_()  # Laplacian
+    elif nu == 1.5:
+        # (1 + sqrt(3)*D) * exp(-sqrt(3)*D))
+        out.sqrt_().mul_(math.sqrt(3.0))
+        out_neg = torch.neg(out)  # extra n*m block
+        out_neg.exp_()
+        out.add_(1.0).mul_(out_neg)
+    elif nu == 2.5:
+        # (1 + sqrt(5)*D + (sqrt(5)*D)^2 / 3 ) * exp(-sqrt(5)*D)
+        out_sqrt = torch.sqrt(out)
+        out_sqrt.mul_(math.sqrt(5))
+        out.mul_(5.0 / 3.0).add_(out_sqrt).add_(1.0)
+        out_sqrt.neg_().exp_()
+        out.mul_(out_sqrt)
+    elif nu == float('inf'):
+        out.mul_(-0.5).exp_()  # Gaussian
+
+    return out
+
+
+class MaternKernel(GaussianKernel):
+    r"""Class for computing the Matern kernel, and related kernel-vector products.
+
+    The Matern kernels define a generic class of kernel functions which includes the
+    Laplacian and Gaussian kernels. The class is parametrized by 'nu'. When `nu = 0.5`
+    this kernel is equivalent to the Laplacian kernel, when `nu = float('inf')`, the
+    Matern kernel is equivalent to the Gaussian kernel.
+
+    This class implements the Matern kernel only for the values of nu which have a closed
+    form solution, which are 0.5, 1.5, 2.5, and infinity.
+
+    Parameters
+    ----------
+    sigma
+        The length-scale of the Matern kernel. The length-scale can be either a scalar
+        or a vector. Matrix-valued length-scales are not allowed for the Matern kernel.
+    nu
+        The parameter of the Matern kernel. It should be one of `0.5`, `1.5`, `2.5` or
+        `inf`.
+
+    Notes
+    -----
+    While for `nu = float('inf')` this kernel is equivalent to the :class:`GaussianKernel`,
+    the implementation is more general and using the :class:`GaussianKernel` directly
+    may be computationally more efficient.
+
+    """
+    _valid_nu_values = frozenset({0.5, 1.5, 2.5, float('inf')})
+
+    def __init__(self,
+                 sigma: Union[float, torch.Tensor],
+                 nu: Union[float, torch.Tensor],
+                 opt: Optional[FalkonOptions] = None):
+        super().__init__(sigma, opt)
+
+        # Parse nu parameter
+        if isinstance(nu, torch.Tensor):
+            nu = float(nu.item())
+        if nu not in MaternKernel._valid_nu_values:
+            raise ValueError(f"The given value of nu = {nu} can only take "
+                             f"values {MaternKernel._valid_nu_values}.")
+        self.nu = nu
+
+        self.sigma, self.gaussian_type = self._get_sigma_kt(sigma)
+        if self.gaussian_type not in {'single', 'diag'}:
+            raise ValueError(f"'{self.gaussian_type}' covariance matrix not allowed for the MaternKernel class.")
+
+        # Cannot use the distk variants since they are not ready to deal with extra-mem requirements.
+        # This could mean that the MaternKernel implementation with nu=inf is slightly less efficient
+        # than the GaussianKernel.
+        self.kernel_type = "l2-multi-distance"
+        self.kernel_name = f"{self.nu:.1f}-matern"
+
+    def _keops_mmv_impl(self, X1, X2, v, kernel, out, opt: FalkonOptions):
+        if self.nu == 0.5:
+            formula = 'Exp(-Norm2(x1 / s - x2 / s)) * v'
+        elif self.nu == 1.5:
+            formula = ('(IntCst(1) + Sqrt(IntCst(3)) * Norm2(x1 / s - x2 / s)) * '
+                       '(Exp(-Sqrt(IntCst(3)) * Norm2(x1 / s - x2 / s)) * v)')
+        elif self.nu == 2.5:
+            formula = ('(IntCst(1) + Sqrt(IntCst(5)) * Norm2(x1 / s - x2 / s) + '
+                       '(IntInv(3) * IntCst(5)) * SqNorm2(x1 / s - x2 / s)) * '
+                       '(Exp(-Sqrt(IntCst(5)) * Norm2(x1 / s - x2 / s)) * v)')
+        elif self.nu == float('inf'):
+            formula = 'Exp(IntInv(-2) * SqDist(x1 / s, x2 / s)) * v'
+        else:
+            raise RuntimeError(f"Unrecognized value of nu ({self.nu}). "
+                               f"The onnly allowed values are 0.5, 1.5, 2.5, inf.")
+        aliases = [
+            'x1 = Vi(%d)' % (X1.shape[1]),
+            'x2 = Vj(%d)' % (X2.shape[1]),
+            'v = Vj(%d)' % (v.shape[1]),
+            's = Pm(%d)' % (self.sigma.shape[0])
+        ]
+        other_vars = [self.sigma.to(device=X1.device, dtype=X1.dtype)]
+
+        return self.keops_mmv(X1, X2, v, out, formula, aliases, other_vars, opt)
+
+    def _decide_mmv_impl(self, X1, X2, v, opt: FalkonOptions):
+        if self.keops_can_handle_mmv(X1, X2, v, opt):
+            return self._keops_mmv_impl
+        else:
+            return super()._decide_mmv_impl(X1, X2, v, opt)
+
+    def _decide_dmmv_impl(self, X1, X2, v, w, opt: FalkonOptions):
+        if self.keops_can_handle_dmmv(X1, X2, v, w, opt):
+            return functools.partial(self.keops_dmmv_helper, mmv_fn=self._keops_mmv_impl)
+        else:
+            return super()._decide_dmmv_impl(X1, X2, v, w, opt)
+
+    def _prepare(self, X1, X2):
+        sigma = self.sigma.to(X1)
+        return DistKerContainer(
+            sq1=torch.norm(X1 / sigma, p=2, dim=1, keepdim=True).pow_(2),
+            sq2=torch.norm(X2 / sigma, p=2, dim=1, keepdim=True).pow_(2)
+        )
+
+    def _apply(self, X1, X2, out):
+        sigma = self.sigma.to(X1)
+        out.addmm_(X1 / (sigma ** 2), X2)
+
+    def extra_mem(self) -> Dict[str, float]:
+        extra_mem = {
+            # Data-matrix / sigma
+            'nd': 1,
+            'md': 1,
+            # Norm results in prepare
+            'm': 1,
+            'n': 1,
+        }
+        if self.nu in {1.5, 2.5}:
+            # Extra kernel block in transform
+            extra_mem['nm'] = 1
+        return extra_mem
+
+    def _transform(self, A) -> torch.Tensor:
+        # For certain nu = 1.5, 2.5 we will need an extra n*m block
+        if self.nu == 0.5:
+            A.sqrt_()
+            A.neg_()
+            A.exp_()
+        elif self.nu == 1.5:
+            # (1 + sqrt(3)*D) * exp(-sqrt(3)*D))
+            A.sqrt_()
+            A.mul_(math.sqrt(3))
+
+            Aneg = torch.neg(A)
+            Aneg.exp_()
+
+            A.add_(1.0)
+            A.mul_(Aneg)
+        elif self.nu == 2.5:
+            # (1 + sqrt(5)*D + (sqrt(5)*D)^2 / 3 ) * exp(-sqrt(5)*D)
+            Asqrt = torch.sqrt(A)
+            Asqrt.mul_(math.sqrt(5))
+
+            A.mul_(5 / 3)
+            A.add_(Asqrt)
+            A.add_(1)
+
+            Asqrt.neg_()
+            Asqrt.exp_()
+
+            A.mul_(Asqrt)
+        elif self.nu == float('inf'):
+            A.mul_(-0.5)
+            A.exp_()
+        return A
+
+    def compute(self, X1, X2, out):
+        sigma = self.sigma.to(X1)
+        X1_b, X2_b, out_b = batchify_tensors(X1, X2, out)
+        out_b = matern_core(sigma, X1_b, X2_b, out_b, self.nu)
+        if out_b.dim() != out.dim():
+            return out_b[0]
+        return out_b
+
+    def __repr__(self):
+        return f"MaternKernel(sigma={self.sigma}, nu={self.nu:.1f})"
+
+    def __str__(self):
+        return f"Matern kernel<{self.sigma}, {self.nu:.1f}>"

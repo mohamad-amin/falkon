@@ -3,15 +3,15 @@ import threading
 from dataclasses import dataclass
 from typing import List
 
+import numpy as np
 import torch
 
 from falkon.cuda.cublas_gpu import *
 from falkon.cuda.cudart_gpu import cuda_memcpy2d_async
-from falkon.utils.cuda_helpers import copy_to_device, copy_to_host, flk_copy
+from falkon.utils.cuda_helpers import copy_to_device, copy_to_host
 from falkon.utils.helpers import choose_fn, sizeof_dtype
-from falkon.utils.tensor_helpers import create_fortran
-# noinspection PyUnresolvedReferences
-from falkon.ooc_ops.cuda import cuda_lauum
+from falkon.utils.tensor_helpers import create_fortran, extract_same_stride, extract_fortran
+from falkon.c_ext import lauum_cuda
 
 
 __all__ = ("par_lauum_c_lower", "par_lauum_f_lower", "BlockAlloc")
@@ -33,6 +33,12 @@ def _round_nb_size(size, multiple):
         return _rounddown(size, multiple)
     else:
         return max(1, size)
+
+
+def _extract_flat(flat_tn, size, other, offset):
+    struct_tn = extract_same_stride(flat_tn, size=size, other=other, offset=offset)
+    offset += np.prod(struct_tn.shape)
+    return struct_tn, offset
 
 
 def par_lauum_f_lower(A: torch.Tensor,
@@ -57,14 +63,20 @@ def par_lauum_f_lower(A: torch.Tensor,
     my_rows = sorted(my_rows)
 
     with torch.cuda.device(tc_device), torch.cuda.stream(s1), cublas_stream(cublas_handle, s1._as_parameter_):
-        # Preallocate 2 columns
+        # Pre allocate b-col, syrk-out, lauum-out
+        mem_needed = N * max_block_size + 2 * (max_block_size ** 2)
+        if not is_cuda:
+            # Also pre alloc r-col
+            mem_needed += N * max_block_size
+        f_gpu = torch.empty(size=(mem_needed,), dtype=A.dtype, device=tc_device)
+        f_offset = 0
+        whole_col_b, f_offset = _extract_flat(f_gpu, (N, max_block_size), other=A, offset=f_offset)
+        syrk_out, f_offset = _extract_flat(f_gpu, (max_block_size, max_block_size), other=A, offset=f_offset)
+        lauum_out, f_offset = _extract_flat(f_gpu, (max_block_size, max_block_size), other=A, offset=f_offset)
         if not is_cuda:
             temp_bb = create_fortran((max_block_size, max_block_size), A.dtype, 'cpu', pin_memory=True)
-            whole_col_r = create_fortran((A.shape[0], max_block_size), A.dtype, tc_device)
-        whole_col_b = create_fortran((A.shape[0], max_block_size), A.dtype, tc_device)
-        syrk_out = create_fortran((max_block_size, max_block_size), A.dtype, tc_device)
+            whole_col_r, f_offset = _extract_flat(f_gpu, (N, max_block_size), other=A, offset=f_offset)
         syrk_out.fill_(0.0)
-        lauum_out = create_fortran((max_block_size, max_block_size), A.dtype, tc_device)
 
         for b in range(len(block_allocs)):
             bb = block_allocs[b]
@@ -83,11 +95,13 @@ def par_lauum_f_lower(A: torch.Tensor,
             except ValueError:
                 pass  # No column here
             if not independent_output:
+                # wait for copy to device to succeed. After barrier other threads may modify
+                # the part of col_b which we need!
+                s1.synchronize()
                 barrier.wait()
 
             for r in my_rows:
                 if r == b:
-                    s1.synchronize()
                     # SYRK on col_b[bb.length:, :] with output into syrk_out[:bb.length, :bb.length]
                     # C = beta*C + alpha * op(A) @ op(A).T
                     if b_start + bb.length < N:
@@ -98,6 +112,8 @@ def par_lauum_f_lower(A: torch.Tensor,
                                 beta=0.0, C=cur_syrk_out.data_ptr(), ldc=syrk_out.stride(1))
 
                     with torch.cuda.stream(s3):
+                        if independent_output:
+                            s1.synchronize()  # we need col_b to be loaded
                         cur_lauum_out = lauum_out[:bb.length, :bb.length]
                         # Note that col_b[:bb.length, :bb.length] == Abb
                         if independent_output:
@@ -108,13 +124,12 @@ def par_lauum_f_lower(A: torch.Tensor,
                             cur_lauum_out.copy_(col_b[:bb.length, :bb.length])
 
                         # LAUUM on col_b[:bb.length, :bb.length], into lauum_out[:bb.length, :bb.length]
-                        cuda_lauum(n=bb.length, A=col_b[:bb.length, :bb.length], lda=col_b.stride(1),
+                        lauum_cuda(n=bb.length, A=col_b[:bb.length, :bb.length], lda=col_b.stride(1),
                                    B=cur_lauum_out, ldb=max_block_size, lower=True)
-                    s3.synchronize()
+                    s1.wait_stream(s3)  # all subsequent work will need cur_lauum_out
 
                     # Add outputs of SYRK and LAUUM (only if SYRK was performed)
                     if b_start + bb.length < N:
-                        s1.synchronize()
                         cur_lauum_out.add_(cur_syrk_out)
 
                     # Copy lauum_out into the original matrix, while preserving the other side
@@ -164,8 +179,8 @@ def par_lauum_f_lower(A: torch.Tensor,
                         if is_cuda:
                             A[bb.start:bb.end, br.start:br.end].copy_(ccb[:br.length, :bb.length].T)
                         else:
-                            _temp_cpu = flk_copy(ccb[:br.length, :bb.length], temp_bb[:br.length, :bb.length], s=s1)
-                            s1.synchronize()
+                            _temp_cpu = copy_to_host(br.length, bb.length, ccb, 0, 0, temp_bb, 0, 0, s1)
+                            s1.synchronize()  # must wait for data to be onto CPU.
                             A[bb.start:bb.end, br.start:br.end].copy_(_temp_cpu.T)
                     else:
                         flk_copy(ccb[:br.length, :bb.length], A[br.start:br.end, bb.start:bb.end], s=s1)
@@ -196,14 +211,16 @@ def par_lauum_c_lower(A: torch.Tensor,
     my_rows = sorted(my_rows)
 
     with torch.cuda.device(tc_device), torch.cuda.stream(s1), cublas_stream(cublas_handle, s1_cuda):
-        # Preallocate 2 block-columns. The single block is a CPU buffer
         if not is_cuda:
             temp_bb = create_fortran((max_block_size, max_block_size), A.dtype, 'cpu', pin_memory=True).T
-        whole_col_b = create_fortran((A.shape[0] * max_block_size,), A.dtype, tc_device)
-        whole_col_r = create_fortran((A.shape[0] * max_block_size,), A.dtype, tc_device)
-        syrk_out = create_fortran((max_block_size, max_block_size), A.dtype, tc_device)
+        # Pre allocate r-col, b-col, syrk-out, lauum-out
+        mem_needed = 2 * N * max_block_size + 2 * (max_block_size ** 2)
+        f_gpu = torch.empty(size=(mem_needed,), dtype=A.dtype, device=tc_device)
+        whole_col_b = f_gpu[:N * max_block_size]
+        whole_col_r = f_gpu[N * max_block_size: 2 * N * max_block_size]
+        syrk_out = extract_fortran(f_gpu, size=(max_block_size, max_block_size), offset=2 * N * max_block_size)
+        lauum_out = extract_fortran(f_gpu, size=(max_block_size, max_block_size), offset=2 * N * max_block_size + max_block_size ** 2)
         syrk_out.fill_(0.0)
-        lauum_out = create_fortran((max_block_size, max_block_size), A.dtype, tc_device)
 
         for b in range(len(block_allocs)):
             bb = block_allocs[b]
@@ -220,6 +237,9 @@ def par_lauum_c_lower(A: torch.Tensor,
             except ValueError:  # all of `my_rows` are smaller than `b`.
                 pass
             if not independent_output:
+                # wait for copy to device to succeed. After barrier other threads may modify
+                # the part of col_b which we need!
+                s1.synchronize()
                 barrier.wait()
 
             for r in my_rows:
@@ -227,8 +247,6 @@ def par_lauum_c_lower(A: torch.Tensor,
                     continue
                 if r == b:
                     is_last_row = b_start + bb.length == N
-                    # Sync the load of whole_col_b
-                    s1.synchronize()
                     # SYRK on g_b[bb.length:, :] with output replacing g_b[:bb.length, :]
                     # C = beta*C + alpha * op(A) @ op(A).T
                     if not is_last_row:
@@ -239,6 +257,8 @@ def par_lauum_c_lower(A: torch.Tensor,
                                 beta=0.0, C=syrk_out.data_ptr(), ldc=max_block_size)
 
                     with torch.cuda.stream(s3):
+                        if independent_output:
+                            s1.synchronize()  # we need col_b to be loaded
                         # Lower LAUUM for C-contig is equal to upper LAUUM for F-contig
                         c_lauum_in = whole_col_b[:bb.length * max_block_size].view(bb.length, max_block_size)[:, :bb.length]
                         c_lauum_out = lauum_out[:bb.length, :bb.length]
@@ -247,11 +267,10 @@ def par_lauum_c_lower(A: torch.Tensor,
                             c_lauum_out.copy_(c_lauum_in)
                         else:
                             c_lauum_out.copy_(c_lauum_in.T)
-                        cuda_lauum(n=bb.length, A=c_lauum_in, lda=max_block_size, B=c_lauum_out, ldb=max_block_size, lower=False)
+                        lauum_cuda(n=bb.length, A=c_lauum_in, lda=max_block_size, B=c_lauum_out, ldb=max_block_size, lower=False)
 
-                    s3.synchronize()
+                    s1.wait_stream(s3)  # all subsequent work on s1 will need cur_lauum_out
                     if not is_last_row:
-                        s1.synchronize()
                         c_lauum_out.add_(syrk_out[:bb.length, :bb.length])
 
                     # copy back whole_col_b into Abb

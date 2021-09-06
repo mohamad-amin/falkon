@@ -71,7 +71,7 @@ class DotProdKernel(Kernel, ABC):
     def _apply(self, X1: torch.Tensor, X2: torch.Tensor, out: torch.Tensor):
         out.addmm_(X1, X2)
 
-    def _apply_sparse(self, X1: SparseTensor, X2: SparseTensor, out: torch.Tensor):
+    def _apply_sparse(self, X1: SparseTensor, X2: SparseTensor, out: torch.Tensor) -> torch.Tensor:
         return sparse_matmul(X1, X2, out)
 
 
@@ -99,7 +99,6 @@ class LinearKernel(DotProdKernel, KeopsKernelMixin):
     >>> kernel_matrix = k(X, X)
     >>> torch.testing.assert_allclose(kernel_matrix, X @ X.T * (1/2**2))
     """
-
     def __init__(self,
                  beta: _float_sc_type = 0.0,
                  sigma: _float_sc_type = 1.0,
@@ -147,6 +146,13 @@ class LinearKernel(DotProdKernel, KeopsKernelMixin):
         A.mul_(gamma)
         A.add_(beta)
         return A
+
+    def compute(self, X1, X2, out):
+        gamma = self.gamma.to(X1)
+        beta = self.beta.to(X1)
+        torch.mm(X1, X2.T, out=out)
+        out.mul_(gamma).add_(beta)
+        return out
 
     def __str__(self):
         return f"LinearKernel(sigma={self.sigma})"
@@ -232,6 +238,14 @@ class PolynomialKernel(DotProdKernel, KeopsKernelMixin):
         A.pow_(degree)
         return A
 
+    def compute(self, X1, X2, out):
+        alpha = self.alpha.to(X1)
+        beta = self.beta.to(X1)
+        degree = self.degree.to(X1)
+        torch.mm(X1, X2.T, out=out)
+        out.mul_(alpha).add_(beta).pow_(degree)
+        return out
+
     def __str__(self):
         return f"PolynomialKernel(alpha={self.alpha}, beta={self.beta}, degree={self.degree})"
 
@@ -288,6 +302,13 @@ class SigmoidKernel(DotProdKernel, KeopsKernelMixin):
         A.add_(beta)
         A.tanh_()
         return A
+
+    def compute(self, X1, X2, out):
+        alpha = self.alpha.to(X1)
+        beta = self.beta.to(X1)
+        torch.mm(X1, X2.T, out=out)
+        out.mul_(alpha).add_(beta).tanh_()
+        return out
 
     def __str__(self):
         return f"SigmoidKernel(alpha={self.alpha}, beta={self.beta})"
