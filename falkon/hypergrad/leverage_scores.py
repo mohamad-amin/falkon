@@ -1,4 +1,5 @@
 import time
+from contextlib import ExitStack
 from typing import Dict, Optional
 
 import scipy.linalg
@@ -21,6 +22,10 @@ __all__ = (
     "validation_loss",
     "ValidationLoss",
 )
+
+from la_helpers import trsm
+
+from utils.helpers import sizeof_dtype, select_dim_over_n
 
 EPS = 1e-6
 
@@ -303,6 +308,57 @@ def nystrom_trace_hutch_bwd(kmn_z, kmm_chol, l_solve_1, l_solve_2):
             - 2 * (l_solve_2 * (kmm_chol @ l_solve_1)).sum(0).mean()
         )
     return bg
+
+
+def nystrom_trace_frotrsm_fwd(kernel_args, M, X):
+    opt = FalkonOptions(keops_active="no", no_single_kernel=False)
+    kernel = GaussianKernel(kernel_args, opt=opt)
+    if X.is_cuda:
+        from mmv_ops.utils import _get_gpu_info
+        gpu_info = _get_gpu_info(opt, slack=0.9)
+        single_gpu_info = [g for g in gpu_info if g.Id == X.device.index][0]
+        avail_mem = single_gpu_info.usable_ram / sizeof_dtype(X.dtype)
+    else:
+        avail_mem = opt.max_cpu_mem / sizeof_dtype(X.dtype)
+
+    coef_nm = 8
+    blk_n = select_dim_over_n(max_n=X.shape[0], m=M.shape[0], d=X.shape[1], max_mem=avail_mem,
+                              coef_nm=coef_nm, coef_nd=1, coef_md=1, coef_n=0,
+                              coef_m=0, coef_d=0, rest=0)
+
+    mm_eye = torch.eye(M.shape[0], device=M.device, dtype=M.dtype) * EPS
+    with torch.autograd.enable_grad():
+        kmm = full_rbf_kernel(M, M, kernel_args)
+        kmm_chol = torch.cholesky(kmm + mm_eye)
+
+    fwd = torch.tensor(0.0, dtype=X.dtype, device=X.device)
+    bwd = torch.tensor(0.0, dtype=X.dtype, device=X.device)
+    with ExitStack() as stack:
+        if X.device.type == 'cuda':
+            s1 = torch.cuda.current_stream(X.device)
+            stack.enter_context(torch.cuda.device(X.device))
+            stack.enter_context(torch.cuda.stream(s1))
+
+        for i in range(0, X.shape[0], blk_n):
+            leni = min(blk_n, X.shape[0] - i)
+            c_X = X[i: i + leni, :]
+            with torch.autograd.enable_grad():
+                k_mn = kernel(M, c_X, opt=opt)
+
+            # Forward
+            with torch.autograd.no_grad():
+                solve1 = trsm(kmm_chol, k_mn, 1.0, lower=True, transpose=False)
+                solve2 = trsm(kmm_chol, solve1, 1.0, lower=True, transpose=True)
+                fwd += solve1.square().sum()  # TODO: make inplace?
+
+            with torch.autograd.enable_grad():
+                bwd += 2 * (k_mn * solve2).sum(0).mean()
+                bwd -= 2 * (solve2 * (kmm_chol @ solve1)).sum(0).mean()
+    return fwd, bwd
+
+
+def nystrom_trace_frotrsm_bwd(bwd):
+    return bwd
 
 
 def nystrom_trace_trinv_fwd(kernel_args, M, X):
