@@ -22,7 +22,7 @@ __all__ = (
     "ValidationLoss",
 )
 
-EPS = 1e-6
+EPS = 5e-5
 
 
 class NoRegLossAndDeffCtx():
@@ -307,9 +307,10 @@ def nystrom_trace_hutch_bwd(kmn_z, kmm_chol, l_solve_1, l_solve_2):
 
 def nystrom_trace_trinv_fwd(kernel_args, M, X):
     diff_kernel = DiffGaussianKernel(kernel_args, opt=FalkonOptions(keops_active="no"))
+    mm_eye = torch.eye(M.shape[0], device=M.device, dtype=M.dtype) * EPS
     with torch.autograd.enable_grad():
         kmm = full_rbf_kernel(M, M, kernel_args)
-        kmm_chol = torch.cholesky(kmm)
+        kmm_chol = torch.cholesky(kmm + mm_eye)
     with torch.autograd.no_grad():
         linv = tri_inverse(kmm_chol, lower=1)
     with torch.autograd.enable_grad():
@@ -346,7 +347,7 @@ def nystrom_deff_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxiter,
                 X, M, penalty, ZY, kernel_args, solve_opt, solve_maxiter, init_sol=last_solve_zy)
 
     with torch.autograd.no_grad():
-        d_eff = (data.kmn_z * data.solve_z).sum(0).mean()
+        d_eff = (data.kmn_z * data.solve_z).sum(0).mean() / X.shape[0]
 
     return d_eff, data
 
@@ -365,7 +366,7 @@ def nystrom_deff_bwd(kernel_args, penalty, M, X, data):
             2 * (data.kmn_z * data.solve_z).sum(0).mean()
             - (data.knm_solve_z.square().sum(0).mean() +
                pen_n * (data.solve_z * data.kmm_solve_z).sum(0).mean())
-        )
+        ) / X.shape[0]
     return deff_bg, data
 
 
@@ -403,6 +404,7 @@ def datafit_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxiter,
         loss = Y.square().sum()
         loss -= 2 * (data.kmn_y * data.solve_y).sum(0).mean()
         loss += data.y_tilde.square().sum(0).mean()
+        loss /= X.shape[0]
 
     return loss, data
 
@@ -423,7 +425,7 @@ def datafit_bwd(kernel_args, penalty, M, X, data):
             + 2 * (data.y_tilde * data.y_tilde.detach()).sum(0).mean()  # 2 * alpha.T @ g(k_nm.T) @ y_tilde
             - 2 * ((data.knm_solve_y * diff_kernel.mmv(X, M, data.solve_ytilde)).sum(0) +
                    pen_n * (data.kmm_solve_y * data.solve_ytilde).sum(0)).mean()  # -2 alpha @ g(H) @ alpha
-        )
+        ) / X.shape[0]
     return loss_bg, data
 
 
@@ -443,6 +445,7 @@ def penalized_datafit_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxite
     with torch.autograd.no_grad():
         loss = Y.square().sum()
         loss -= (data.kmn_y * data.solve_y).sum(0).mean()
+        loss /= X.shape[0]
 
     return loss, data
 
@@ -464,7 +467,7 @@ def penalized_datafit_bwd(kernel_args, penalty, M, X, data: NoRegLossAndDeffCtx)
             -2 * (data.kmn_y * data.solve_y).sum(0).mean()
             + (knm_solve_y.square().sum(0).mean() +
                pen_n * (kmm_solve_y * data.solve_y).sum(0).mean())
-        )
+        ) / X.shape[0]
     return loss_bg, data
 
 
@@ -534,8 +537,9 @@ class NoRegLossAndDeff(torch.autograd.Function):
         t_s = time.time()
         with torch.autograd.enable_grad():
             kmn_z = data.kmn_z  # Need to diff through the slicing
-        trace, tr_ctx = nystrom_trace_fwd(
-            kernel_args=kernel_args, M=M, X=X, kmn_z=kmn_z, use_ste=use_stoch_trace)
+        #trace, tr_ctx = nystrom_trace_fwd(
+        #    kernel_args=kernel_args, M=M, X=X, kmn_z=kmn_z, use_ste=use_stoch_trace)
+        tr_ctx = None
         NoRegLossAndDeff.t_tr_fwd.append(time.time() - t_s)
 
         if warm_start:
@@ -544,8 +548,12 @@ class NoRegLossAndDeff(torch.autograd.Function):
         NoRegLossAndDeff.last_alpha = data.solve_y.detach()
         ctx.save_for_backward(kernel_args, penalty, M)
         ctx.data, ctx.tr_ctx, ctx.X, ctx.use_stoch_trace = data, tr_ctx, X, use_stoch_trace
-        print(f"Stochastic: D-eff {d_eff:.3e} Data-Fit {datafit:.3e} Trace {X.shape[0] - trace:.3e}")
-        return d_eff + datafit + (X.shape[0] - trace)
+        _pen = penalty * X.shape[0]
+        #d_eff = d_eff / _pen
+        #datafit = d_eff / _pen
+        #trace = (X.shape[0] - trace) / X.shape[0]
+        #print(f"Stochastic: D-eff {d_eff:.3e} Data-Fit {datafit:.3e} Trace {trace:.3e}", flush=True)
+        return d_eff + datafit #+ trace# / _pen
 
     @staticmethod
     def backward(ctx, out):
@@ -559,12 +567,13 @@ class NoRegLossAndDeff(torch.autograd.Function):
         dfit_bwd, data = datafit_bwd(kernel_args=kernel_args, penalty=penalty, M=M, X=ctx.X, data=data)
         NoRegLossAndDeff.t_fit_bwd.append(time.time() - t_s)
         t_s = time.time()
-        tr_bwd = nystrom_trace_bwd(ctx.tr_ctx, use_ste=ctx.use_stoch_trace)
+        #tr_bwd = nystrom_trace_bwd(ctx.tr_ctx, use_ste=ctx.use_stoch_trace)
         NoRegLossAndDeff.t_tr_bwd.append(time.time() - t_s)
 
         t_s = time.time()
         with torch.autograd.enable_grad():
-            bg = out * (deff_bwd + dfit_bwd - tr_bwd)
+            _pen = penalty * ctx.X.shape[0]
+            bg = out * (deff_bwd + dfit_bwd)# - tr_bwd / ctx.X.shape[0])
         out = calc_grads(ctx, bg, NoRegLossAndDeff.NUM_DIFF_ARGS)
         NoRegLossAndDeff.t_grad.append(time.time() - t_s)
         return out
