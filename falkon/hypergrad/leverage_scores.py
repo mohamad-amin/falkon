@@ -310,18 +310,18 @@ def nystrom_trace_hutch_bwd(kmn_z, kmm_chol, l_solve_1, l_solve_2, n):
     return bg
 
 
-def nystrom_trace_frotrsm_fwd(kernel_args, M, X):
+def nystrom_trace_frotrsm_fwd(kernel_args, M, X, penalty):
     opt = FalkonOptions(keops_active="no", no_single_kernel=False)
     kernel = GaussianKernel(kernel_args, opt=opt)
     if X.is_cuda:
-        from mmv_ops.utils import _get_gpu_info
+        from falkon.mmv_ops.utils import _get_gpu_info
         gpu_info = _get_gpu_info(opt, slack=0.9)
         single_gpu_info = [g for g in gpu_info if g.Id == X.device.index][0]
         avail_mem = single_gpu_info.usable_ram / sizeof_dtype(X.dtype)
     else:
         avail_mem = opt.max_cpu_mem / sizeof_dtype(X.dtype)
 
-    coef_nm = 8
+    coef_nm = 50
     blk_n = select_dim_over_n(max_n=X.shape[0], m=M.shape[0], d=X.shape[1], max_mem=avail_mem,
                               coef_nm=coef_nm, coef_nd=1, coef_md=1, coef_n=0,
                               coef_m=0, coef_d=0, rest=0)
@@ -355,9 +355,9 @@ def nystrom_trace_frotrsm_fwd(kernel_args, M, X):
                 bwd += 2 * (k_mn * solve2).sum()#.sum(0).mean()
                 bwd -= 2 * (solve2 * (kmm_chol @ solve1)).sum()#.sum(0).mean()
     with torch.autograd.no_grad():
-        fwd = 1.0 - fwd / X.shape[0]
+        fwd = (1.0 - fwd / X.shape[0])
     with torch.autograd.enable_grad():
-        bwd = - bwd / X.shape[0]
+        bwd = (- bwd / X.shape[0])
     return fwd, bwd
 
 
@@ -597,7 +597,7 @@ class NoRegLossAndDeff(torch.autograd.Function):
             data=data)
         NoRegLossAndDeff.t_fit_fwd.append(time.time() - t_s)
         t_s = time.time()
-        trace, tr_ctx = nystrom_trace_frotrsm_fwd(kernel_args, M, X)
+        trace, tr_ctx = nystrom_trace_frotrsm_fwd(kernel_args, M, X, penalty)
         ## This is the `old` version
         # with torch.autograd.enable_grad():
         #     kmn_z = data.kmn_z  # Need to diff through the slicing
@@ -614,10 +614,13 @@ class NoRegLossAndDeff(torch.autograd.Function):
         NoRegLossAndDeff.last_alpha = data.solve_y.detach()
         ctx.save_for_backward(kernel_args, penalty, M)
         ctx.data, ctx.tr_ctx, ctx.X, ctx.use_stoch_trace = data, tr_ctx, X, use_stoch_trace
-        # _pen = penalty * X.shape[0]
-        #d_eff = d_eff / _pen
-        #datafit = d_eff / _pen
-        #trace = (X.shape[0] - trace) / X.shape[0]
+        _pen = penalty * X.shape[0]
+        d_eff = d_eff / _pen
+        trace = trace / _pen
+        #datafit = datafit / _pen
+        ctx.deff = d_eff.detach()
+        ctx.dfit = datafit.detach()
+        ctx.trace = trace.detach()
         print(f"Stochastic: D-eff {d_eff:.3e} Data-Fit {datafit:.3e} Trace {trace:.3e}", flush=True)
         return d_eff + datafit + trace
 
@@ -634,16 +637,33 @@ class NoRegLossAndDeff(torch.autograd.Function):
         NoRegLossAndDeff.t_fit_bwd.append(time.time() - t_s)
         t_s = time.time()
         tr_bwd = nystrom_trace_frotrsm_bwd(ctx.tr_ctx)
+        ## `old` version
         # tr_bwd = nystrom_trace_bwd(ctx.tr_ctx, use_ste=ctx.use_stoch_trace)
         NoRegLossAndDeff.t_tr_bwd.append(time.time() - t_s)
 
         t_s = time.time()
-        with torch.autograd.enable_grad():
-            _pen = penalty * ctx.X.shape[0]
-            bg = out * (deff_bwd + dfit_bwd + tr_bwd)
-        out = calc_grads(ctx, bg, NoRegLossAndDeff.NUM_DIFF_ARGS)
+        grads_deff = list(calc_grads(ctx, deff_bwd, NoRegLossAndDeff.NUM_DIFF_ARGS))
+        grads_dfit = list(calc_grads(ctx, dfit_bwd, NoRegLossAndDeff.NUM_DIFF_ARGS))
+        grads_trace = list(calc_grads(ctx, tr_bwd, NoRegLossAndDeff.NUM_DIFF_ARGS))
+
+        pen_n = penalty * ctx.X.shape[0]
+        grads_deff[1] = (grads_deff[1] / pen_n - (ctx.loss / penalty))
+        grads_trace[1] = (grads_trace[1] / pen_n - (ctx.loss / penalty))
         NoRegLossAndDeff.t_grad.append(time.time() - t_s)
-        return out
+
+        grads = []
+        for g1, g2, g3 in zip(grads_deff, grads_dfit, grads_trace):
+            grad = 0.0
+            if g1 is not None:
+                grad += g1
+            if g2 is not None:
+                grad += g2
+            if g3 is not None:
+                grad += g3
+            if g1 is None and g2 is None and g3 is None:
+                grad = None
+            grads.append(grad)
+        return grads
 
     @staticmethod
     def grad_check():
