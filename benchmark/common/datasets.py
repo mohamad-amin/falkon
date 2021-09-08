@@ -42,14 +42,14 @@ def mean_remove_y(Ytr, Yts):
 
 def standardize_y(Ytr, Yts):
     mtr = np.mean(Ytr, dtype=np.float64).astype(Ytr.dtype)
-    str = np.std(Ytr, dtype=np.float64, ddof=1).astype(Ytr.dtype)
+    stdtr = np.std(Ytr, dtype=np.float64, ddof=1).astype(Ytr.dtype)
     Ytr -= mtr
-    Ytr /= str
+    Ytr /= stdtr
     Yts -= mtr
-    Yts /= str
+    Yts /= stdtr
     Ytr = Ytr.reshape((-1, 1))
     Yts = Yts.reshape((-1, 1))
-    return Ytr, Yts, {'Y_mean': mtr, 'Y_std': str}
+    return Ytr, Yts, {'Y_mean': mtr, 'Y_std': stdtr}
 
 
 def as_np_dtype(dtype):
@@ -925,15 +925,7 @@ class ChietDataset(BaseDataset):
 
     @staticmethod
     def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
-        mtr = np.mean(Xtr, axis=0, dtype=np.float64, keepdims=True).astype(Xtr.dtype)
-        std_tr = np.std(Xtr, axis=0, dtype=np.float64, ddof=1, keepdims=True).astype(Xtr.dtype)
-
-        Xtr -= mtr
-        Xtr /= std_tr
-        Xts -= mtr
-        Xts /= std_tr
-
-        return Xtr, Xts, {}
+        return standardize_x(Xtr, Xts)
 
     @staticmethod
     def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
@@ -1071,6 +1063,7 @@ class Kin40kDataset(BaseDataset):
 
     @staticmethod
     def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        #return standardize_y(Ytr, Yts)
         return mean_remove_y(Ytr, Yts)
 
     def dset_name(self):
