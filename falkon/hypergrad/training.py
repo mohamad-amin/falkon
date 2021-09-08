@@ -142,8 +142,8 @@ def pred_reporting(model: HyperOptimModel,
     train_err, err_name = err_fn(Ytr.detach().cpu(), train_preds)
     out_str = (f"Epoch {epoch} ({cum_time:5.2f}s) - "
                f"Sigma {get_scalar(sigma):.3f} - Penalty {get_scalar(penalty):.2e} - "
-               f"Tr  {err_name} = {train_err:7.5f} - "
-               f"Ts  {err_name} = {test_err:7.5f}")
+               f"Tr  {err_name} = {train_err:9.7f} - "
+               f"Ts  {err_name} = {test_err:9.7f}")
     writer.add_scalar(f'error/{err_name}/train', train_err, epoch)
     writer.add_scalar(f'error/{err_name}/test', test_err, epoch)
 
@@ -164,6 +164,7 @@ def pred_reporting(model: HyperOptimModel,
 
 def create_optimizer(opt_type: str, model: HyperOptimModel, learning_rate: float):
     center_lr_div = 1
+    schedule = None
     named_params = model.named_parameters()
     print("Creating optimizer with the following parameters:")
     for k, v in named_params.items():
@@ -183,16 +184,16 @@ def create_optimizer(opt_type: str, model: HyperOptimModel, learning_rate: float
                     "params": named_params['centers'], 'lr': learning_rate / center_lr_div})
         opt_hp = torch.optim.Adam(opt_modules)
         # schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_hp, factor=0.5, patience=1)
-        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=100, gamma=0.5)
+        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=150, gamma=0.5)
+    elif opt_type == "sgd":
+        opt_hp = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)
     elif opt_type == "lbfgs":
         if model.losses_are_grads:
             raise ValueError("L-BFGS not valid for model %s" % (model))
         opt_hp = torch.optim.LBFGS(model.parameters(), lr=learning_rate,
                                    history_size=100, )
-        schedule = None
     elif opt_type == "rmsprop":
         opt_hp = torch.optim.RMSprop(model.parameters(), lr=learning_rate)
-        schedule = None
     else:
         raise ValueError("Optimizer type %s not recognized" % (opt_type))
 
