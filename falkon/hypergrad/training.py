@@ -442,7 +442,7 @@ def init_model(model_type, data, penalty_init, sigma_init, centers_init, opt_pen
     elif model_type == "svgp":
         model = SVGP(sigma_init=start_sigma, penalty_init=penalty_init, centers_init=centers_init,
                      opt_sigma=opt_sigma, opt_penalty=opt_penalty, opt_centers=opt_centers,
-                     cuda=cuda, num_data=data['X'].shape[0])
+                     cuda=cuda, num_data=data['X'].shape[0], multi_class=data['Y'].shape[1])
     else:
         raise RuntimeError(f"{model_type} model type not recognized!")
 
