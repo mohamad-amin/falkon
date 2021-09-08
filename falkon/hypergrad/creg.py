@@ -422,7 +422,6 @@ class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
 
     def hp_loss(self, X, Y):
         variance = self.penalty * X.shape[0]
-        sqrt_var = torch.sqrt(variance)
         Kdiag = X.shape[0]
 
         m = self.centers.shape[0]
@@ -431,13 +430,13 @@ class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
                torch.eye(m, device=X.device, dtype=X.dtype) * 5e-5)
         L = cholesky(kmm)  # L @ L.T = kmm
         # A = L^{-1} K_mn / (sqrt(n*pen))
-        A = torch.triangular_solve(kmn, L, upper=False).solution / sqrt_var
+        A = torch.triangular_solve(kmn, L, upper=False).solution
         AAT = A @ A.T
         # B = A @ A.T + I
-        B = AAT + torch.eye(AAT.shape[0], device=X.device, dtype=X.dtype)
+        B = AAT + torch.eye(AAT.shape[0], device=X.device, dtype=X.dtype) * variance
         LB = cholesky(B)  # LB @ LB.T = B
         AY = A @ Y
-        c = torch.triangular_solve(AY, LB, upper=False).solution #/ sqrt_var
+        c = torch.triangular_solve(AY, LB, upper=False).solution
         dfit_t1 = torch.triangular_solve(c, LB, upper=False, transpose=True).solution
         dfit_vec = Y - A.T @ dfit_t1
 
@@ -447,7 +446,7 @@ class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         # Complexity (nystrom-deff)
         ndeff = C.square().sum() / X.shape[0]  # = torch.trace(C.T @ C)
         datafit = torch.square(dfit_vec).mean()
-        trace = (Kdiag - torch.trace(AAT) * variance) / X.shape[0]
+        trace = (Kdiag - torch.trace(AAT) ) / X.shape[0]
 
         ndeff = ndeff / variance
         trace = trace / variance
