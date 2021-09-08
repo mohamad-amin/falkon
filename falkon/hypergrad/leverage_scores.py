@@ -288,7 +288,7 @@ def nystrom_trace_hutch_fwd(kernel_args, M, kmn_z, n):
     mm_eye = torch.eye(M.shape[0], device=M.device, dtype=M.dtype) * EPS
     with torch.autograd.enable_grad():
         kmm = full_rbf_kernel(M, M, kernel_args)
-        kmm_chol = torch.cholesky(kmm + mm_eye)
+        kmm_chol, info = torch.linalg.cholesky_ex(kmm + mm_eye, check_errors=True)
 
     with torch.autograd.no_grad():
         l_solve_1 = torch.triangular_solve(kmn_z, kmm_chol, upper=False, transpose=False).solution  # m * t
@@ -310,9 +310,8 @@ def nystrom_trace_hutch_bwd(kmn_z, kmm_chol, l_solve_1, l_solve_2, n):
     return bg
 
 
-def nystrom_trace_frotrsm_fwd(kernel_args, M, X, penalty):
+def nystrom_trace_frotrsm_fwd(kernel_args, M, X):
     opt = FalkonOptions(keops_active="no", no_single_kernel=False)
-    kernel = GaussianKernel(kernel_args, opt=opt)
     if X.is_cuda:
         from falkon.mmv_ops.utils import _get_gpu_info
         gpu_info = _get_gpu_info(opt, slack=0.9)
@@ -329,7 +328,7 @@ def nystrom_trace_frotrsm_fwd(kernel_args, M, X, penalty):
     mm_eye = torch.eye(M.shape[0], device=M.device, dtype=M.dtype) * EPS
     with torch.autograd.enable_grad():
         kmm = full_rbf_kernel(M, M, kernel_args)
-        kmm_chol = torch.cholesky(kmm + mm_eye)
+        kmm_chol, info = torch.linalg.cholesky_ex(kmm + mm_eye, check_errors=True)
 
     fwd = torch.tensor(0.0, dtype=X.dtype, device=X.device)
     bwd = torch.tensor(0.0, dtype=X.dtype, device=X.device)
@@ -370,7 +369,7 @@ def nystrom_trace_trinv_fwd(kernel_args, M, X):
     mm_eye = torch.eye(M.shape[0], device=M.device, dtype=M.dtype) * EPS
     with torch.autograd.enable_grad():
         kmm = full_rbf_kernel(M, M, kernel_args)
-        kmm_chol = torch.cholesky(kmm + mm_eye)
+        kmm_chol, info = torch.linalg.cholesky_ex(kmm + mm_eye, check_errors=True)
     with torch.autograd.no_grad():
         linv = tri_inverse(kmm_chol, lower=1)
     with torch.autograd.enable_grad():
@@ -597,7 +596,7 @@ class NoRegLossAndDeff(torch.autograd.Function):
             data=data)
         NoRegLossAndDeff.t_fit_fwd.append(time.time() - t_s)
         t_s = time.time()
-        trace, tr_ctx = nystrom_trace_frotrsm_fwd(kernel_args, M, X, penalty)
+        trace, tr_ctx = nystrom_trace_frotrsm_fwd(kernel_args, M, X)
         ## This is the `old` version
         # with torch.autograd.enable_grad():
         #     kmn_z = data.kmn_z  # Need to diff through the slicing
@@ -621,7 +620,6 @@ class NoRegLossAndDeff(torch.autograd.Function):
         ctx.deff = d_eff.detach()
         ctx.dfit = datafit.detach()
         ctx.trace = trace.detach()
-        print(f"Stochastic: D-eff {d_eff:.3e} Data-Fit {datafit:.3e} Trace {trace:.3e}", flush=True)
         return d_eff + datafit + trace
 
     @staticmethod
@@ -647,23 +645,29 @@ class NoRegLossAndDeff(torch.autograd.Function):
         grads_trace = list(calc_grads(ctx, tr_bwd, NoRegLossAndDeff.NUM_DIFF_ARGS))
 
         pen_n = penalty * ctx.X.shape[0]
-        grads_deff[1] = (grads_deff[1] / pen_n - (ctx.loss / penalty))
-        grads_trace[1] = (grads_trace[1] / pen_n - (ctx.loss / penalty))
+        if grads_deff[0] is not None:
+            grads_deff[0] = grads_deff[0] / pen_n
+        if grads_deff[1] is not None:
+            grads_deff[1] = (grads_deff[1] / pen_n - (ctx.deff / penalty))
+        if grads_deff[2] is not None:
+            grads_deff[2] = grads_deff[2] / pen_n
+        if grads_trace[0] is not None:
+            grads_trace[0] /= pen_n
+        if ctx.needs_input_grad[1]:
+            grads_trace[1] = (0.0 / pen_n - (ctx.trace / penalty))
+        if grads_trace[2] is not None:
+            grads_trace[2] /= pen_n
         NoRegLossAndDeff.t_grad.append(time.time() - t_s)
 
         grads = []
-        for g1, g2, g3 in zip(grads_deff, grads_dfit, grads_trace):
-            grad = 0.0
-            if g1 is not None:
-                grad += g1
-            if g2 is not None:
-                grad += g2
-            if g3 is not None:
-                grad += g3
-            if g1 is None and g2 is None and g3 is None:
-                grad = None
-            grads.append(grad)
-        return grads
+        for i in range(len(grads_deff)):
+            grad, any_not_none = 0.0, False
+            for g in (grads_deff[i], grads_dfit[i], grads_trace[i]):
+                if g is not None:
+                    grad += g
+                    any_not_none = True
+            grads.append(grad * out if any_not_none else None)
+        return tuple(grads)
 
     @staticmethod
     def grad_check():
@@ -674,11 +678,6 @@ class NoRegLossAndDeff(torch.autograd.Function):
         M = X[:10].clone().detach().requires_grad_()
         s = torch.tensor([10.0], dtype=X.dtype).requires_grad_()
         p = torch.tensor(1e-2, dtype=X.dtype).requires_grad_()
-
-        torch.autograd.gradcheck(
-            lambda sigma, pen, centers:
-                NoRegLossAndDeff.apply(sigma, pen, centers, X, Y, 20, True, FalkonOptions(), 30, False, True, False),
-            (s, p, M))
 
         torch.autograd.gradcheck(
             lambda sigma, pen, centers:
