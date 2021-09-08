@@ -644,20 +644,26 @@ class NoRegLossAndDeff(torch.autograd.Function):
         grads_dfit = list(calc_grads(ctx, dfit_bwd, NoRegLossAndDeff.NUM_DIFF_ARGS))
         grads_trace = list(calc_grads(ctx, tr_bwd, NoRegLossAndDeff.NUM_DIFF_ARGS))
 
+        # print(f"Grads before everything: deff={grads_deff[1]:.2e} dfit={grads_dfit[1]:.2e} ")
+
         pen_n = penalty * ctx.X.shape[0]
-        if grads_deff[0] is not None:
-            grads_deff[0] = grads_deff[0] / pen_n
         if grads_deff[1] is not None:
-            grads_deff[1] = (grads_deff[1] / pen_n - (ctx.deff / penalty))
-        if grads_deff[2] is not None:
-            grads_deff[2] = grads_deff[2] / pen_n
+            grads_deff[1] = (grads_deff[1] / ctx.X.shape[0] - ctx.deff)
+        if ctx.needs_input_grad[1]:
+            grads_trace[1] = -(ctx.trace)
+        if grads_dfit[1] is not None:
+            grads_dfit[1] *= penalty
+        if grads_deff[0] is not None:
+            grads_deff[0] /= pen_n
         if grads_trace[0] is not None:
             grads_trace[0] /= pen_n
-        if ctx.needs_input_grad[1]:
-            grads_trace[1] = (0.0 / pen_n - (ctx.trace / penalty))
+        if grads_deff[2] is not None:
+            grads_deff[2] /= pen_n
         if grads_trace[2] is not None:
             grads_trace[2] /= pen_n
         NoRegLossAndDeff.t_grad.append(time.time() - t_s)
+
+        # print(f"Grads after division: deff={grads_deff[1]:.2e} dfit={grads_dfit[1]:.2e} trace={grads_trace[1]:.2e}")
 
         grads = []
         for i in range(len(grads_deff)):
@@ -671,7 +677,7 @@ class NoRegLossAndDeff(torch.autograd.Function):
 
     @staticmethod
     def grad_check():
-        torch.manual_seed(3)
+        torch.manual_seed(4)
         X = torch.randn(50, 6, dtype=torch.float64)
         w = torch.randn(X.shape[1], 1, dtype=torch.float64)
         Y = X @ w

@@ -451,10 +451,6 @@ class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
 
         ndeff = ndeff / variance
         trace = trace / variance
-        #ndeff# /= variance
-        #datafit /= self.penalty#variance
-        #trace *= 0#variance
-        #print(ndeff + datafit + trace)
         return ndeff, datafit, trace
 
     def predict(self, X):
