@@ -77,6 +77,14 @@ class Dataset(Enum):
     BOSTON = 'boston'
     PROTEIN = 'protein'
     KIN40K = 'kin40k'
+    CODRNA = 'codrna'
+    SVMGUIDE1 = 'svmguide1'
+    PHISHING = 'phishing'
+    SPACEGA = 'spacega'
+    CADATA = 'cadata'
+    MG = 'mg'
+    CPUSMALL = 'cpusmall'
+    ABALONE = 'abalone'
 
     def __str__(self):
         return self.value

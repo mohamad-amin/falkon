@@ -244,6 +244,14 @@ ERROR_METRICS: Dict[Dataset, List[ERROR_FN_TYPE]] = {
     Dataset.BOSTON: [nrmse],
     Dataset.PROTEIN: [nrmse],
     Dataset.KIN40K: [nrmse],
+    Dataset.CODRNA: [binary_cerr],
+    Dataset.SVMGUIDE1: [binary_cerr],
+    Dataset.PHISHING: [binary_cerr],
+    Dataset.SPACEGA: [nrmse],
+    Dataset.CADATA: [nrmse],
+    Dataset.MG: [nrmse],
+    Dataset.CPUSMALL: [nrmse],
+    Dataset.ABALONE: [nrmse],
 }
 TF_ERROR_METRICS: Dict[Dataset, ERROR_FN_TYPE] = {
     Dataset.TIMIT: timit_calc_error_tf,

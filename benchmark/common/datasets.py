@@ -1,3 +1,4 @@
+import os
 from abc import abstractmethod
 from typing import Union, Tuple
 
@@ -5,6 +6,8 @@ import h5py
 import numpy as np
 import scipy.io as scio
 import scipy.sparse
+from scipy.sparse import load_npz
+from sklearn.datasets import load_svmlight_file
 
 from .benchmark_utils import Dataset
 
@@ -13,6 +16,31 @@ __all__ = (
     "BaseDataset", "HiggsDataset", "SusyDataset", "MillionSongsDataset",
     "TimitDataset", "NycTaxiDataset", "YelpDataset", "FlightsDataset"
 )
+
+
+def load_from_npz(dset_name, folder, verbose=False):
+    x_file = os.path.join(folder, "%s_data.npz" % dset_name)
+    y_file = os.path.join(folder, "%s_target.npy" % dset_name)
+    x_data = np.asarray(load_npz(x_file).todense())
+    y_data = np.load(y_file)
+    if verbose:
+        print("Loaded %s. X: %s - Y: %s" % (dset_name, x_data.shape, y_data.shape))
+    return (x_data, y_data)
+
+
+def load_from_t(dset_name, folder, verbose=False):
+    file_tr = os.path.join(folder, dset_name)
+    file_ts = os.path.join(folder, dset_name + ".t")
+    x_data_tr, y_data_tr = load_svmlight_file(file_tr)
+    x_data_tr = np.asarray(x_data_tr.todense())
+    x_data_ts, y_data_ts = load_svmlight_file(file_ts)
+    x_data_ts = np.asarray(x_data_ts.todense())
+    if verbose:
+        print("Loaded %s. train X: %s - Y: %s - test X: %s - Y: %s" %
+              (dset_name, x_data_tr.shape, y_data_tr.shape, x_data_ts.shape, y_data_ts.shape))
+    x_data = np.concatenate((x_data_tr, x_data_ts))
+    y_data = np.concatenate((y_data_tr, y_data_ts))
+    return x_data, y_data
 
 
 def standardize_x(Xtr, Xts):
@@ -1077,6 +1105,268 @@ class Kin40kDataset(BaseDataset):
         return self._dset_name
 
 
+class CodRnaDataset(BaseDataset):
+    folder = '/data/DATASETS/libsvm/binary'
+    _dset_name = 'cod-rna'
+    _num_train = 59_535
+    _num_test = 271_617
+
+    @staticmethod
+    def read_data(dtype):
+        x_data, y_data = load_from_t(CodRnaDataset._dset_name, CodRnaDataset.folder)
+        x_data = x_data.astype(as_np_dtype(dtype))
+        y_data = y_data.astype(as_np_dtype(dtype))
+        return x_data, y_data
+
+    @staticmethod
+    def split_data(X, Y, train_frac: Union[float, None]):
+        if train_frac is None:
+            idx_tr = np.arange(CodRnaDataset._num_train)
+            idx_ts = np.arange(CodRnaDataset._num_train, CodRnaDataset._num_train + CodRnaDataset._num_test)
+        else:
+            idx_tr, idx_ts = equal_split(X.shape[0], train_frac)
+        return X[idx_tr], Y[idx_tr], X[idx_ts], Y[idx_ts]
+
+    @staticmethod
+    def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return standardize_x(Xtr, Xts)
+
+    @staticmethod
+    def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        Ytr = Ytr.reshape(-1, 1)
+        Yts = Yts.reshape(-1, 1)
+        return Ytr, Yts, {}
+
+    def dset_name(self):
+        return self._dset_name
+
+
+class SvmGuide1Dataset(BaseDataset):
+    folder = '/data/DATASETS/libsvm/binary'
+    _dset_name = 'svmguide1'
+    _num_train = 3089
+    _num_test = 4000
+
+    @staticmethod
+    def read_data(dtype):
+        x_data, y_data = load_from_t(SvmGuide1Dataset._dset_name, SvmGuide1Dataset.folder)
+        x_data = x_data.astype(as_np_dtype(dtype))
+        y_data = y_data.astype(as_np_dtype(dtype))
+        return x_data, y_data
+
+    @staticmethod
+    def split_data(X, Y, train_frac: Union[float, None]):
+        if train_frac is None:
+            idx_tr = np.arange(SvmGuide1Dataset._num_train)
+            idx_ts = np.arange(SvmGuide1Dataset._num_train, SvmGuide1Dataset._num_train + SvmGuide1Dataset._num_test)
+        else:
+            idx_tr, idx_ts = equal_split(X.shape[0], train_frac)
+        return X[idx_tr], Y[idx_tr], X[idx_ts], Y[idx_ts]
+
+    @staticmethod
+    def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return standardize_x(Xtr, Xts)
+
+    @staticmethod
+    def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        """Convert labels from 0, 1 to -1, +1"""
+        Ytr = Ytr * 2 - 1
+        Yts = Yts * 2 - 1
+        return Ytr.reshape((-1, 1)), Yts.reshape((-1, 1)), {}
+
+    def dset_name(self):
+        return self._dset_name
+
+
+class PhishingDataset(BaseDataset):
+    folder = '/data/DATASETS/libsvm/binary'
+    _dset_name = 'phishing'
+    _default_train_frac = 0.7
+
+    @staticmethod
+    def read_data(dtype):
+        x_data, y_data = load_from_npz(PhishingDataset._dset_name, PhishingDataset.folder)
+        x_data = x_data.astype(as_np_dtype(dtype))
+        y_data = y_data.astype(as_np_dtype(dtype))
+        return x_data, y_data
+
+    @staticmethod
+    def split_data(X, Y, train_frac: Union[float, None]):
+        if train_frac is None:
+            train_frac = PhishingDataset._default_train_frac
+        idx_tr, idx_ts = equal_split(X.shape[0], train_frac)
+        return X[idx_tr], Y[idx_tr], X[idx_ts], Y[idx_ts]
+
+    @staticmethod
+    def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return Xtr, Xts, {}  # No preproc, all values are equal-.-
+
+    @staticmethod
+    def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        """Convert labels from 0, 1 to -1, +1"""
+        Ytr = Ytr * 2 - 1
+        Yts = Yts * 2 - 1
+        return Ytr.reshape((-1, 1)), Yts.reshape((-1, 1)), {}
+
+    def dset_name(self):
+        return self._dset_name
+
+
+class SpaceGaDataset(BaseDataset):
+    folder = '/data/DATASETS/libsvm/regression'
+    _dset_name = 'space_ga'
+    _default_train_frac = 0.7
+
+    @staticmethod
+    def read_data(dtype):
+        x_data, y_data = load_from_npz(SpaceGaDataset._dset_name, SpaceGaDataset.folder)
+        x_data = x_data.astype(as_np_dtype(dtype))
+        y_data = y_data.astype(as_np_dtype(dtype))
+        return x_data, y_data
+
+    @staticmethod
+    def split_data(X, Y, train_frac: Union[float, None]):
+        if train_frac is None:
+            train_frac = SpaceGaDataset._default_train_frac
+        idx_tr, idx_ts = equal_split(X.shape[0], train_frac)
+        return X[idx_tr], Y[idx_tr], X[idx_ts], Y[idx_ts]
+
+    @staticmethod
+    def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return standardize_x(Xtr, Xts)
+
+    @staticmethod
+    def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return mean_remove_y(Ytr, Yts)
+
+    def dset_name(self):
+        return self._dset_name
+
+
+class CadataDataset(BaseDataset):
+    folder = '/data/DATASETS/libsvm/regression'
+    _dset_name = 'cadata'
+    _default_train_frac = 0.7
+
+    @staticmethod
+    def read_data(dtype):
+        x_data, y_data = load_from_npz(CadataDataset._dset_name, CadataDataset.folder)
+        x_data = x_data.astype(as_np_dtype(dtype))
+        y_data = y_data.astype(as_np_dtype(dtype))
+        return x_data, y_data
+
+    @staticmethod
+    def split_data(X, Y, train_frac: Union[float, None]):
+        if train_frac is None:
+            train_frac = CadataDataset._default_train_frac
+        idx_tr, idx_ts = equal_split(X.shape[0], train_frac)
+        return X[idx_tr], Y[idx_tr], X[idx_ts], Y[idx_ts]
+
+    @staticmethod
+    def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return standardize_x(Xtr, Xts)
+
+    @staticmethod
+    def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return mean_remove_y(Ytr, Yts)
+
+    def dset_name(self):
+        return self._dset_name
+
+
+class MgDataset(BaseDataset):
+    folder = '/data/DATASETS/libsvm/regression'
+    _dset_name = 'mg'
+    _default_train_frac = 0.7
+
+    @staticmethod
+    def read_data(dtype):
+        x_data, y_data = load_from_npz(MgDataset._dset_name, MgDataset.folder)
+        x_data = x_data.astype(as_np_dtype(dtype))
+        y_data = y_data.astype(as_np_dtype(dtype))
+        return x_data, y_data
+
+    @staticmethod
+    def split_data(X, Y, train_frac: Union[float, None]):
+        if train_frac is None:
+            train_frac = MgDataset._default_train_frac
+        idx_tr, idx_ts = equal_split(X.shape[0], train_frac)
+        return X[idx_tr], Y[idx_tr], X[idx_ts], Y[idx_ts]
+
+    @staticmethod
+    def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return standardize_x(Xtr, Xts)
+
+    @staticmethod
+    def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return mean_remove_y(Ytr, Yts)
+
+    def dset_name(self):
+        return self._dset_name
+
+
+class CpuSmallDataset(BaseDataset):
+    folder = '/data/DATASETS/libsvm/regression'
+    _dset_name = 'cpusmall'
+    _default_train_frac = 0.7
+
+    @staticmethod
+    def read_data(dtype):
+        x_data, y_data = load_from_npz(CpuSmallDataset._dset_name, CpuSmallDataset.folder)
+        x_data = x_data.astype(as_np_dtype(dtype))
+        y_data = y_data.astype(as_np_dtype(dtype))
+        return x_data, y_data
+
+    @staticmethod
+    def split_data(X, Y, train_frac: Union[float, None]):
+        if train_frac is None:
+            train_frac = CpuSmallDataset._default_train_frac
+        idx_tr, idx_ts = equal_split(X.shape[0], train_frac)
+        return X[idx_tr], Y[idx_tr], X[idx_ts], Y[idx_ts]
+
+    @staticmethod
+    def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return standardize_x(Xtr, Xts)
+
+    @staticmethod
+    def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return mean_remove_y(Ytr, Yts)
+
+    def dset_name(self):
+        return self._dset_name
+
+
+class AbaloneDataset(BaseDataset):
+    folder = '/data/DATASETS/libsvm/regression'
+    _dset_name = 'abalone'
+    _default_train_frac = 0.7
+
+    @staticmethod
+    def read_data(dtype):
+        x_data, y_data = load_from_npz(AbaloneDataset._dset_name, AbaloneDataset.folder)
+        x_data = x_data.astype(as_np_dtype(dtype))
+        y_data = y_data.astype(as_np_dtype(dtype))
+        return x_data, y_data
+
+    @staticmethod
+    def split_data(X, Y, train_frac: Union[float, None]):
+        if train_frac is None:
+            train_frac = AbaloneDataset._default_train_frac
+        idx_tr, idx_ts = equal_split(X.shape[0], train_frac)
+        return X[idx_tr], Y[idx_tr], X[idx_ts], Y[idx_ts]
+
+    @staticmethod
+    def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return standardize_x(Xtr, Xts)
+
+    @staticmethod
+    def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return mean_remove_y(Ytr, Yts)
+
+    def dset_name(self):
+        return self._dset_name
+
+
 """ Public API """
 
 __LOADERS = {
@@ -1099,7 +1389,15 @@ __LOADERS = {
     Dataset.ENERGY: EnergyDataset(),
     Dataset.BOSTON: BostonDataset(),
     Dataset.PROTEIN: ProteinDataset(),
-    Dataset.KIN40K: Kin40kDataset()
+    Dataset.KIN40K: Kin40kDataset(),
+    Dataset.CODRNA: CodRnaDataset(),
+    Dataset.SVMGUIDE1: SvmGuide1Dataset(),
+    Dataset.PHISHING: PhishingDataset(),
+    Dataset.SPACEGA: SpaceGaDataset(),
+    Dataset.CADATA: CadataDataset(),
+    Dataset.MG: MgDataset(),
+    Dataset.CPUSMALL: CpuSmallDataset(),
+    Dataset.ABALONE: AbaloneDataset(),
 }
 
 
