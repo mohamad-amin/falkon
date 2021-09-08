@@ -17,6 +17,7 @@ class SVGP(HyperOptimModel):
             opt_penalty,
             cuda: bool,
             num_data: int,
+            multi_class: int,
     ):
         """
         super().__init__(
@@ -38,24 +39,33 @@ class SVGP(HyperOptimModel):
         self.variational_distribution = "diag"
         self.num_data = num_data
 
-        self.kernel = gpytorch.kernels.RBFKernel(ard_num_dims=sigma_init.shape[0])
+        if multi_class > 1:
+            self.kernel = gpytorch.kernels.RBFKernel(
+                ard_num_dims=sigma_init.shape[0], batch_shape=torch.Size([multi_class]))
+            mean_module = gpytorch.means.ConstantMean(batch_shape=torch.Size([multi_class]))
+            likelihood = gpytorch.likelihoods.SoftmaxLikelihood(
+                num_classes=multi_class, mixing_weights=False)
+            var_strat = "multi_task"
+        else:
+            self.kernel = gpytorch.kernels.RBFKernel(ard_num_dims=sigma_init.shape[0])
+            mean_module = gpytorch.means.ConstantMean()
+            likelihood = gpytorch.likelihoods.GaussianLikelihood()
+            likelihood.noise = penalty_init * self.num_data
+            var_strat = "var_strat"
+
         self.kernel.lengthscale = sigma_init
         if cuda:
-            self.kernel = self.kernel.cuda()
-
-        mean_module = gpytorch.means.ConstantMean()
-        if cuda:
             mean_module = mean_module.cuda()
-        likelihood = gpytorch.likelihoods.GaussianLikelihood()
-        likelihood.noise = penalty_init * self.num_data
+            self.kernel = self.kernel.cuda()
 
         self.model = GenericApproxGP(centers_init.to(device=self.device),
                                      mean_module=mean_module,
                                      covar_module=self.kernel,
-                                     var_strat="var_strat",
+                                     var_strat=var_strat,
                                      var_distrib=self.variational_distribution,
                                      likelihood=likelihood,
                                      learn_ind_pts=self.opt_centers,
+                                     num_classes=multi_class,
                                      )
         self.loss_fn = gpytorch.mlls.VariationalELBO(likelihood, self.model, num_data=self.num_data)
         if cuda:
@@ -88,7 +98,9 @@ class SVGP(HyperOptimModel):
     def hp_loss(self, X, Y):
         with gpytorch.settings.fast_computations(False, False, False):
             output = self.model(X)
-            loss = -self.loss_fn(output, Y.reshape(-1))
+            if Y.shape[1] == 1:
+                Y = Y.reshape(-1)
+            loss = -self.loss_fn(output, Y)
             return (loss,)
 
     def predict(self, X):
