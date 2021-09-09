@@ -1526,6 +1526,10 @@ __LOADERS = {
     Dataset.MG: MgDataset(),
     Dataset.CPUSMALL: CpuSmallDataset(),
     Dataset.ABALONE: AbaloneDataset(),
+    Dataset.CASP: CaspDataset(),
+    Dataset.BLOGFEEDBACK: BlogFeedbackDataset(),
+    Dataset.COVTYPE: CovTypeDataset(),
+    Dataset.IJCNN1: Ijcnn1Dataset(),
 }
 
 

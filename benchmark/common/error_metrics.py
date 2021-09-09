@@ -252,6 +252,10 @@ ERROR_METRICS: Dict[Dataset, List[ERROR_FN_TYPE]] = {
     Dataset.MG: [nrmse],
     Dataset.CPUSMALL: [nrmse],
     Dataset.ABALONE: [nrmse],
+    Dataset.CASP: [nrmse],
+    Dataset.BLOGFEEDBACK: [nrmse],
+    Dataset.COVTYPE: [binary_cerr],
+    Dataset.IJCNN1: [binary_cerr],
 }
 TF_ERROR_METRICS: Dict[Dataset, ERROR_FN_TYPE] = {
     Dataset.TIMIT: timit_calc_error_tf,

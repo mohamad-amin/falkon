@@ -85,6 +85,10 @@ class Dataset(Enum):
     MG = 'mg'
     CPUSMALL = 'cpusmall'
     ABALONE = 'abalone'
+    CASP = 'casp'
+    BLOGFEEDBACK = 'blogfeedback'
+    COVTYPE = 'covtype'
+    IJCNN1 = 'ijcnn1'
 
     def __str__(self):
         return self.value
