@@ -47,6 +47,7 @@ def standardize_x(Xtr, Xts):
     if isinstance(Xtr, np.ndarray):
         mXtr = Xtr.mean(axis=0, keepdims=True, dtype=np.float64).astype(Xtr.dtype)
         sXtr = Xtr.std(axis=0, keepdims=True, dtype=np.float64, ddof=1).astype(Xtr.dtype)
+        sXtr[sXtr == 0] = 1.0
     else:
         mXtr = Xtr.mean(dim=0, keepdims=True)
         sXtr = Xtr.std(dim=0, keepdims=True)
@@ -704,25 +705,18 @@ class SVHNDataset(BaseDataset):
 
 
 class MnistSmallDataset(BaseDataset):
-    file_name = "/data/DATASETS/MNIST/mnist.mat"
-    ts_file_name = "/data/DATASETS/MNIST/mnist.t.mat"
+    file_name = "/data/DATASETS/misc/mnist.hdf5"
     _dset_name = "MNIST"
 
     @staticmethod
     def read_data(dtype):
-        data = scio.loadmat(MnistSmallDataset.file_name)
-        Xtr = data["Z"].astype(as_np_dtype(dtype)) / 255
-        Ytr = data["y"].astype(as_np_dtype(dtype)).reshape((-1, ))
-
-        data = scio.loadmat(MnistSmallDataset.ts_file_name)
-        Xts = data["Z"].astype(as_np_dtype(dtype)) / 255
-        # For no reason MNIST has 778 features here.. Add zeros at end?
-        Xts = np.concatenate((np.zeros((Xts.shape[0], 2), dtype=Xts.dtype), Xts), axis=1)
-        Yts = data["y"].astype(as_np_dtype(dtype)).reshape((-1, ))
-
-        X = np.concatenate((Xtr, Xts), axis=0)
-        Y = np.concatenate((Ytr, Yts), axis=0)
-
+        with h5py.File(MnistSmallDataset.file_name, 'r') as h5py_file:
+            X_train = np.array(h5py_file['X_train'], dtype=as_np_dtype(dtype))
+            Y_train = np.array(h5py_file['Y_train'], dtype=as_np_dtype(dtype))
+            X_test = np.array(h5py_file['X_test'], dtype=as_np_dtype(dtype))
+            Y_test = np.array(h5py_file['Y_test'], dtype=as_np_dtype(dtype))
+        X = np.concatenate([X_train, X_test], axis=0)
+        Y = np.concatenate([Y_train, Y_test], axis=0)
         return X, Y
 
     @staticmethod
@@ -736,15 +730,16 @@ class MnistSmallDataset(BaseDataset):
 
     @staticmethod
     def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        Xtr /= 255.0
+        Xts /= 255.0
         return Xtr, Xts, {}
 
     @staticmethod
     def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
         n_classes = 10
         eye = np.eye(n_classes, dtype=as_np_dtype(Ytr.dtype))
-        A = eye
-        Ytr = A[Ytr.astype(np.int32), :]
-        Yts = A[Yts.astype(np.int32), :]
+        Ytr = eye[Ytr.astype(np.int32), :]
+        Yts = eye[Yts.astype(np.int32), :]
         return Ytr, Yts, {}
 
     def dset_name(self):
@@ -988,7 +983,6 @@ class EnergyDataset(BaseDataset):
 
     @staticmethod
     def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
-        #return standardize_y(Ytr, Yts)
         return mean_remove_y(Ytr, Yts)
 
     def dset_name(self):
@@ -1021,7 +1015,6 @@ class BostonDataset(BaseDataset):
     @staticmethod
     def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
         return mean_remove_y(Ytr, Yts)
-        #return standardize_y(Ytr, Yts)
 
     def dset_name(self):
         return self._dset_name
@@ -1053,7 +1046,6 @@ class ProteinDataset(BaseDataset):
     @staticmethod
     def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
         return mean_remove_y(Ytr, Yts)
-        #return standardize_y(Ytr, Yts)
 
     def dset_name(self):
         return self._dset_name
@@ -1091,7 +1083,6 @@ class Kin40kDataset(BaseDataset):
 
     @staticmethod
     def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
-        #return standardize_y(Ytr, Yts)
         return mean_remove_y(Ytr, Yts)
 
     def dset_name(self):
@@ -1355,6 +1346,150 @@ class AbaloneDataset(BaseDataset):
     @staticmethod
     def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
         return mean_remove_y(Ytr, Yts)
+
+    def dset_name(self):
+        return self._dset_name
+
+
+class CaspDataset(BaseDataset):
+    file_name = '/data/DATASETS/misc/casp.hdf5'
+    _dset_name = 'casp'
+    _default_train_frac = 0.7
+
+    @staticmethod
+    def read_data(dtype):
+        with h5py.File(CaspDataset.file_name, 'r') as h5py_file:
+            X = np.array(h5py_file['X'], dtype=as_np_dtype(dtype))
+            Y = np.array(h5py_file['Y'], dtype=as_np_dtype(dtype))
+        return X, Y
+
+    @staticmethod
+    def split_data(X, Y, train_frac: Union[float, None]):
+        if train_frac is None:
+            train_frac = CaspDataset._default_train_frac
+        idx_tr, idx_ts = equal_split(X.shape[0], train_frac)
+        return X[idx_tr], Y[idx_tr], X[idx_ts], Y[idx_ts]
+
+    @staticmethod
+    def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return standardize_x(Xtr, Xts)
+
+    @staticmethod
+    def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return mean_remove_y(Ytr, Yts)
+
+    def dset_name(self):
+        return self._dset_name
+
+
+class BlogFeedbackDataset(BaseDataset):
+    file_name = '/data/DATASETS/misc/BlogFeedback.hdf5'
+    _dset_name = 'blog-feedback'
+    _num_train_samples = 52397
+
+    @staticmethod
+    def read_data(dtype):
+        with h5py.File(BlogFeedbackDataset.file_name, 'r') as h5py_file:
+            X_train = np.array(h5py_file['X_train'], dtype=as_np_dtype(dtype))
+            Y_train = np.array(h5py_file['Y_train'], dtype=as_np_dtype(dtype))
+            X_test = np.array(h5py_file['X_test'], dtype=as_np_dtype(dtype))
+            Y_test = np.array(h5py_file['Y_test'], dtype=as_np_dtype(dtype))
+        X = np.concatenate([X_train, X_test], axis=0)
+        Y = np.concatenate([Y_train, Y_test], axis=0)
+        return X, Y
+
+    @staticmethod
+    def split_data(X, Y, train_frac: Union[float, None]):
+        if train_frac is None:
+            idx_tr = np.arange(BlogFeedbackDataset._num_train_samples)
+            idx_ts = np.arange(BlogFeedbackDataset._num_train_samples, X.shape[0])
+        else:
+            idx_tr, idx_ts = equal_split(X.shape[0], train_frac)
+        return X[idx_tr], Y[idx_tr], X[idx_ts], Y[idx_ts]
+
+    @staticmethod
+    def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        mXtr = Xtr.mean(axis=0, keepdims=True, dtype=np.float64).astype(Xtr.dtype)
+        # sXtr = Xtr.std(axis=0, keepdims=True, dtype=np.float64, ddof=1).astype(Xtr.dtype)
+        # sXtr[sXtr == 0] = 1.0
+
+        Xtr -= mXtr
+        Xts -= mXtr
+
+        return Xtr, Xts, {}
+
+    @staticmethod
+    def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return Ytr.reshape(-1, 1), Yts.reshape(-1, 1), {}
+
+    def dset_name(self):
+        return self._dset_name
+
+
+class CovTypeDataset(BaseDataset):
+    file_name = '/data/DATASETS/misc/covtype_binary.hdf5'
+    _dset_name = 'covtype'
+    _default_train_frac = 0.7
+
+    @staticmethod
+    def read_data(dtype):
+        with h5py.File(CovTypeDataset.file_name, 'r') as h5py_file:
+            X = np.array(h5py_file['X'], dtype=as_np_dtype(dtype))
+            Y = np.array(h5py_file['Y'], dtype=as_np_dtype(dtype))
+        return X, Y
+
+    @staticmethod
+    def split_data(X, Y, train_frac: Union[float, None]):
+        if train_frac is None:
+            train_frac = CovTypeDataset._default_train_frac
+        idx_tr, idx_ts = equal_split(X.shape[0], train_frac)
+        return X[idx_tr], Y[idx_tr], X[idx_ts], Y[idx_ts]
+
+    @staticmethod
+    def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return standardize_x(Xtr, Xts)
+
+    @staticmethod
+    def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        # Convert from 1, 2 to -1, +1
+        Ytr = (Ytr - 1) * 2 - 1
+        Yts = (Ytr - 1) * 2 - 1
+        return Ytr.reshape(-1, 1), Yts.reshape(-1, 1), {}
+
+    def dset_name(self):
+        return self._dset_name
+
+
+class Ijcnn1Dataset(BaseDataset):
+    file_name = '/data/DATASETS/misc/ijcnn1.hdf5'
+    _dset_name = 'ijcnn1'
+    _train_num = 49990
+
+    @staticmethod
+    def read_data(dtype):
+        with h5py.File(Ijcnn1Dataset.file_name, "r") as f:
+            Xtr = np.array(f["X_train"], dtype=as_np_dtype(dtype))
+            Ytr = np.array(f["Y_train"], dtype=as_np_dtype(dtype))
+            Xts = np.array(f["X_test"], dtype=as_np_dtype(dtype))
+            Yts = np.array(f["Y_test"], dtype=as_np_dtype(dtype))
+        return np.concatenate((Xtr, Xts), 0), np.concatenate((Ytr, Yts), 0)
+
+    @staticmethod
+    def split_data(X, Y, train_frac: Union[float, None]):
+        if train_frac is None:
+            idx_tr = np.arange(0, Ijcnn1Dataset._train_num)
+            idx_ts = np.arange(Ijcnn1Dataset._train_num, X.shape[0])
+        else:
+            idx_tr, idx_ts = equal_split(X.shape[0], train_frac)
+        return X[idx_tr], Y[idx_tr], X[idx_ts], Y[idx_ts]
+
+    @staticmethod
+    def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return Xtr, Xts, {}  # Data already standardized
+
+    @staticmethod
+    def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        return Ytr.reshape(-1, 1), Yts.reshape(-1, 1), {}
 
     def dset_name(self):
         return self._dset_name
