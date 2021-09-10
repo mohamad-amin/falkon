@@ -253,7 +253,7 @@ ERROR_METRICS: Dict[Dataset, List[ERROR_FN_TYPE]] = {
     Dataset.CPUSMALL: [nrmse],
     Dataset.ABALONE: [nrmse],
     Dataset.CASP: [nrmse],
-    Dataset.BLOGFEEDBACK: [nrmse],
+    Dataset.BLOGFEEDBACK: [rmse],
     Dataset.COVTYPE: [binary_cerr],
     Dataset.IJCNN1: [binary_cerr],
 }

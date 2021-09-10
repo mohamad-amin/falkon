@@ -1410,11 +1410,13 @@ class BlogFeedbackDataset(BaseDataset):
     @staticmethod
     def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
         mXtr = Xtr.mean(axis=0, keepdims=True, dtype=np.float64).astype(Xtr.dtype)
-        # sXtr = Xtr.std(axis=0, keepdims=True, dtype=np.float64, ddof=1).astype(Xtr.dtype)
-        # sXtr[sXtr == 0] = 1.0
+        sXtr = Xtr.std(axis=0, keepdims=True, dtype=np.float64, ddof=1).astype(Xtr.dtype)
+        sXtr[sXtr == 0] = 1.0
 
         Xtr -= mXtr
+        Xtr /= sXtr
         Xts -= mXtr
+        Xts /= sXtr
 
         return Xtr, Xts, {}
 
@@ -1453,7 +1455,7 @@ class CovTypeDataset(BaseDataset):
     def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
         # Convert from 1, 2 to -1, +1
         Ytr = (Ytr - 1) * 2 - 1
-        Yts = (Ytr - 1) * 2 - 1
+        Yts = (Yts - 1) * 2 - 1
         return Ytr.reshape(-1, 1), Yts.reshape(-1, 1), {}
 
     def dset_name(self):
