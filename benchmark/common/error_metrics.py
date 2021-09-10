@@ -256,6 +256,7 @@ ERROR_METRICS: Dict[Dataset, List[ERROR_FN_TYPE]] = {
     Dataset.BLOGFEEDBACK: [rmse],
     Dataset.COVTYPE: [binary_cerr],
     Dataset.IJCNN1: [binary_cerr],
+    Dataset.FASHION_MNIST: [mnist_calc_cerr],
 }
 TF_ERROR_METRICS: Dict[Dataset, ERROR_FN_TYPE] = {
     Dataset.TIMIT: timit_calc_error_tf,

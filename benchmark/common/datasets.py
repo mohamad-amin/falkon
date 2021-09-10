@@ -250,15 +250,7 @@ class MillionSongsDataset(BaseDataset):
 
     @staticmethod
     def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
-        mtr = np.mean(Ytr, dtype=np.float64).astype(Ytr.dtype)
-        sttr = np.std(Ytr, dtype=np.float64, ddof=1).astype(Ytr.dtype)
-        Ytr -= mtr
-        Ytr /= sttr
-        Yts -= mtr
-        Yts /= sttr
-        Ytr = Ytr.reshape((-1, 1))
-        Yts = Yts.reshape((-1, 1))
-        return Ytr, Yts, {'Y_std': sttr, 'Y_mean': mtr}
+        return standardize_y(Ytr, Yts)
 
     @staticmethod
     def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
@@ -275,10 +267,9 @@ class NycTaxiDataset(BaseDataset):
 
     @staticmethod
     def read_data(dtype):
-        h5py_file = h5py.File(NycTaxiDataset.file_name, 'r')
-        X = np.array(h5py_file['X'], dtype=as_np_dtype(dtype))  # N x 9
-        Y = np.array(h5py_file['Y'], dtype=as_np_dtype(dtype))  # N x 1
-
+        with h5py.File(NycTaxiDataset.file_name, 'r') as h5py_file:
+            X = np.array(h5py_file['X'], dtype=as_np_dtype(dtype))  # N x 9
+            Y = np.array(h5py_file['Y'], dtype=as_np_dtype(dtype))  # N x 1
         return X, Y
 
     @staticmethod
@@ -321,8 +312,8 @@ class HiggsDataset(BaseDataset):
 
     @staticmethod
     def read_data(dtype):
-        h5py_file = h5py.File(HiggsDataset.file_name, 'r')
-        arr = np.array(h5py_file['X'], dtype=as_np_dtype(dtype)).T
+        with h5py.File(HiggsDataset.file_name, 'r') as h5py_file:
+            arr = np.array(h5py_file['X'], dtype=as_np_dtype(dtype)).T
         X = arr[:, 1:]
         Y = arr[:, 0]
         return X, Y
@@ -413,12 +404,11 @@ class YelpDataset(BaseDataset):
 
     @staticmethod
     def read_data(dtype):
-        dtype = as_np_dtype(dtype)
-        f = h5py.File(YelpDataset.file_name, 'r')
-        X = scipy.sparse.csc_matrix((
-            np.array(f['X']['data'], dtype),
-            f['X']['ir'][...], f['X']['jc'][...])).tocsr(copy=False)
-        Y = np.array(f['Y'], dtype=dtype).reshape((-1, 1))
+        with h5py.File(YelpDataset.file_name, 'r') as h5py_file:
+            X = scipy.sparse.csc_matrix((
+                np.array(h5py_file['X']['data'], as_np_dtype(dtype)),
+                h5py_file['X']['ir'][...], h5py_file['X']['jc'][...])).tocsr(copy=False)
+            Y = np.array(h5py_file['Y'], dtype=as_np_dtype(dtype)).reshape((-1, 1))
         return X, Y
 
     @staticmethod
@@ -475,15 +465,15 @@ class FlightsDataset(BaseDataset):
 
     @staticmethod
     def read_data(dtype):
-        h5py_file = h5py.File(FlightsDataset.file_name, 'r')
-        X = np.array(h5py_file['X'], dtype=as_np_dtype(dtype))
-        Y = np.array(h5py_file['Y'], dtype=as_np_dtype(dtype))
+        with h5py.File(FlightsDataset.file_name, 'r') as h5py_file:
+            X = np.array(h5py_file['X'], dtype=as_np_dtype(dtype))
+            Y = np.array(h5py_file['Y'], dtype=as_np_dtype(dtype))
         # Preprocessing independent of train/test
         # As for https://github.com/jameshensman/VFF/blob/master/experiments/airline/airline_additive_figure.py
         # 1. Convert time of day from hhmm to minutes since midnight
         #  ArrTime is column 7, DepTime is column 6
-        X[:, 7] = 60*np.floor(X[:, 7]/100) + np.mod(X[:, 7], 100)
-        X[:, 6] = 60*np.floor(X[:, 6]/100) + np.mod(X[:, 6], 100)
+        X[:, 7] = 60 * np.floor(X[:, 7] / 100) + np.mod(X[:, 7], 100)
+        X[:, 6] = 60 * np.floor(X[:, 6] / 100) + np.mod(X[:, 6], 100)
         # 2. remove flights with silly negative delays (small negative delays are OK)
         pos_delay_idx = np.where(Y > -60)[0]
         X = X[pos_delay_idx, :]
@@ -508,14 +498,7 @@ class FlightsDataset(BaseDataset):
 
     @staticmethod
     def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
-        mtr = np.mean(Ytr, dtype=np.float64).astype(Ytr.dtype)
-        sttr = np.std(Ytr, dtype=np.float64, ddof=1).astype(Ytr.dtype)
-        Ytr -= mtr
-        Ytr /= sttr
-        Yts -= mtr
-        Yts /= sttr
-        Ytr = Ytr.reshape((-1, 1))
-        Yts = Yts.reshape((-1, 1))
+        Ytr, Yts, metadata = standardize_y(Ytr, Yts)
         return Ytr, Yts, {}
 
     def dset_name(self):
@@ -529,9 +512,9 @@ class FlightsClsDataset(BaseDataset):
 
     @staticmethod
     def read_data(dtype):
-        h5py_file = h5py.File(FlightsDataset.file_name, 'r')
-        X = np.array(h5py_file['X'], dtype=as_np_dtype(dtype))
-        Y = np.array(h5py_file['Y'], dtype=as_np_dtype(dtype))
+        with h5py.File(FlightsDataset.file_name, 'r') as h5py_file:
+            X = np.array(h5py_file['X'], dtype=as_np_dtype(dtype))
+            Y = np.array(h5py_file['Y'], dtype=as_np_dtype(dtype))
         # Preprocessing independent of train/test
         # As for https://github.com/jameshensman/VFF/blob/master/experiments/airline/airline_additive_figure.py
         # 1. Convert time of day from hhmm to minutes since midnight
@@ -669,7 +652,7 @@ class SVHNDataset(BaseDataset):
         # Merge
         X = np.concatenate((Xtr, Xts), axis=0)
         Y = np.concatenate((Ytr, Yts), axis=0)
-        # Convert to RGB
+        # Convert from RGB to B/W
         R = X[:, :1024]
         G = X[:, 1024:2048]
         B = X[:, 2048:3072]
@@ -695,9 +678,50 @@ class SVHNDataset(BaseDataset):
     def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
         n_classes = 10
         eye = np.eye(n_classes, dtype=as_np_dtype(Ytr.dtype))
-        A = eye
-        Ytr = A[Ytr.astype(np.int32), :]
-        Yts = A[Yts.astype(np.int32), :]
+        Ytr = eye[Ytr.astype(np.int32), :]
+        Yts = eye[Yts.astype(np.int32), :]
+        return Ytr, Yts, {}
+
+    def dset_name(self):
+        return self._dset_name
+
+
+class FashionMnistDataset(BaseDataset):
+    file_name = "/data/DATASETS/misc/fashion_mnist.hdf5"
+    _dset_name = "FASHION_MNIST"
+
+    @staticmethod
+    def read_data(dtype):
+        with h5py.File(FashionMnistDataset.file_name, 'r') as h5py_file:
+            X_train = np.array(h5py_file['X_train'], dtype=as_np_dtype(dtype))
+            Y_train = np.array(h5py_file['Y_train'], dtype=as_np_dtype(dtype))
+            X_test = np.array(h5py_file['X_test'], dtype=as_np_dtype(dtype))
+            Y_test = np.array(h5py_file['Y_test'], dtype=as_np_dtype(dtype))
+        X = np.concatenate([X_train, X_test], axis=0)
+        Y = np.concatenate([Y_train, Y_test], axis=0)
+        return X, Y
+
+    @staticmethod
+    def split_data(X, Y, train_frac):
+        if train_frac is None:
+            idx_tr = np.arange(0, 60000)
+            idx_ts = np.arange(60000, 70000)
+        else:
+            idx_tr, idx_ts = equal_split(X.shape[0], train_frac)
+        return X[idx_tr], Y[idx_tr], X[idx_ts], Y[idx_ts]
+
+    @staticmethod
+    def preprocess_x(Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        Xtr /= 255.0
+        Xts /= 255.0
+        return Xtr, Xts, {}
+
+    @staticmethod
+    def preprocess_y(Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
+        n_classes = 10
+        eye = np.eye(n_classes, dtype=as_np_dtype(Ytr.dtype))
+        Ytr = eye[Ytr.astype(np.int32), :]
+        Yts = eye[Yts.astype(np.int32), :]
         return Ytr, Yts, {}
 
     def dset_name(self):
@@ -1532,6 +1556,7 @@ __LOADERS = {
     Dataset.BLOGFEEDBACK: BlogFeedbackDataset(),
     Dataset.COVTYPE: CovTypeDataset(),
     Dataset.IJCNN1: Ijcnn1Dataset(),
+    Dataset.FASHION_MNIST: FashionMnistDataset(),
 }
 
 

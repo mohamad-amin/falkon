@@ -89,6 +89,7 @@ class Dataset(Enum):
     BLOGFEEDBACK = 'blogfeedback'
     COVTYPE = 'covtype'
     IJCNN1 = 'ijcnn1'
+    FASHION_MNIST = 'fashionmnist'
 
     def __str__(self):
         return self.value
