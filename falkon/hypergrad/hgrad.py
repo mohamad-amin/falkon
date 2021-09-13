@@ -129,7 +129,7 @@ class NystromClosedFormHgrad(NystromKRRModelMixinN, HyperOptimModel):
         m = self.centers.shape[0]
         kmn = full_rbf_kernel(self.centers, Xtr, self.sigma)
         kmm = (full_rbf_kernel(self.centers, self.centers, self.sigma) +
-               torch.eye(m, device=Xtr.device, dtype=Xtr.dtype) * 1e-6)
+               torch.eye(m, device=Xtr.device, dtype=Xtr.dtype) * 5e-5)
         kmval = full_rbf_kernel(self.centers, Xval, self.sigma)
 
         L = cholesky(kmm)   # L @ L.T = kmm
@@ -146,7 +146,7 @@ class NystromClosedFormHgrad(NystromKRRModelMixinN, HyperOptimModel):
         self.alpha = torch.triangular_solve(tmp1, L, upper=False, transpose=True).solution
         val_preds = kmval.T @ self.alpha
 
-        return (torch.sum(torch.square(Yval - val_preds)), )
+        return (torch.mean(torch.square(Yval - val_preds)), )
 
     def predict(self, X):
         if self.alpha is None:

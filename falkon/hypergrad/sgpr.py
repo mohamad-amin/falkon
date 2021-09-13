@@ -91,9 +91,19 @@ class SGPR(NystromKRRModelMixinN, HyperOptimModel):
 
         m = self.centers.shape[0]
         kmn = full_rbf_kernel(self.centers, X, self.sigma)
-        kmm = (full_rbf_kernel(self.centers, self.centers, self.sigma) +
-               torch.eye(m, device=X.device, dtype=X.dtype) * 1e-6)
-        self.L = cholesky(kmm)   # L @ L.T = kmm
+        kmm = full_rbf_kernel(self.centers, self.centers, self.sigma)
+        try:
+            # L @ L.T = kmm
+            eps = 1e-5
+            self.L = cholesky(kmm + torch.eye(m, device=X.device, dtype=X.dtype) * eps)
+        except RuntimeError as e:
+            try:
+                eps = 1e-4
+                self.L = cholesky(kmm + torch.eye(m, device=X.device, dtype=X.dtype) * eps)
+            except RuntimeError as e:
+                eps = 1e-3
+                self.L = cholesky(kmm + torch.eye(m, device=X.device, dtype=X.dtype) * eps)
+
         # A = L^{-1} K_mn / (sqrt(n*pen))
         A = torch.triangular_solve(kmn, self.L, upper=False).solution / sqrt_var
         AAT = A @ A.T

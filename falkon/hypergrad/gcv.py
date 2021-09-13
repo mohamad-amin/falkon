@@ -130,7 +130,7 @@ class NystromGCV(NystromKRRModelMixinN, HyperOptimModel):
         m = self.centers.shape[0]
         kmn = full_rbf_kernel(self.centers, X, self.sigma)
         kmm = (full_rbf_kernel(self.centers, self.centers, self.sigma) +
-               torch.eye(m, device=X.device, dtype=X.dtype) * 1e-6)
+               torch.eye(m, device=X.device, dtype=X.dtype) * 5e-5)
         self.L = cholesky(kmm)  # L @ L.T = kmm
         # A = L^{-1} K_mn / (sqrt(n*pen))
         A = torch.triangular_solve(kmn, self.L, upper=False).solution / sqrt_var
@@ -146,12 +146,13 @@ class NystromGCV(NystromKRRModelMixinN, HyperOptimModel):
         tmp2 = torch.triangular_solve(tmp1, self.LB, upper=False, transpose=True).solution
         self.d = tmp2 / sqrt_var  # only for predictions
         tmp3 = Y - A.T @ tmp2
-        numerator = torch.square(tmp3).sum(0).mean()
+        numerator = torch.square(tmp3)
 
-        # Denominator
+        # Denominator (1/n * Tr(I - H))^2
         C = torch.triangular_solve(A, self.LB, upper=False).solution
         denominator = (1 - torch.square(C).sum() / X.shape[0]) ** 2
-        return ((1 / X.shape[0]) * (numerator / denominator),)
+
+        return ((numerator / denominator).mean(), )
 
     def predict(self, X):
         if self.L is None or self.LB is None or self.d is None:
