@@ -4,10 +4,11 @@ import os
 import pickle
 import warnings
 from functools import partial
-from typing import Any, List
+from typing import Any, List, Optional
 
 import numpy as np
 import pandas as pd
+import scipy.spatial
 import torch
 
 from benchmark.common.datasets import get_load_fn
@@ -22,6 +23,21 @@ from falkon.hypergrad.training import (
 )
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
+
+def median_heuristic(X: torch.Tensor, sigma_type: str, num_rnd_points: Optional[int]):
+    # https://arxiv.org/pdf/1707.07269.pdf
+    if num_rnd_points is not None:
+        rnd_idx = np.random.choice(X.shape[0], size=num_rnd_points, replace=False)
+        X = X[rnd_idx]
+    if sigma_type == 'diag':
+        sigmas = [median_heuristic(X[:, i: i+1], 'single', None) for i in range(X.shape[1])]
+        return torch.tensor(sigmas)
+    else:
+        # Calculate pairwise distances
+        dist = torch.pdist(X, p=2)
+        med_dist = torch.median(dist)
+        return med_dist
 
 
 def save_logs(logs: Any, exp_name: str, log_folder: str = "./logs"):
@@ -53,9 +69,9 @@ def run_grid_search(
         exp_name: str,
         dataset: Dataset,
         model_type: str,
-        penalty_init: float,
+        penalty_init: str,
         sigma_type: str,
-        sigma_init: float,
+        sigma_init: str,
         gs_file: str,
         num_centers: int,
         val_pct: float,
@@ -107,9 +123,9 @@ def run_optimization(
         exp_name: str,
         dataset: Dataset,
         model_type: str,
-        penalty_init: float,
+        penalty_init: str,
         sigma_type: str,
-        sigma_init: float,
+        sigma_init: str,
         opt_centers: bool,
         opt_sigma: bool,
         opt_penalty: bool,
@@ -191,8 +207,8 @@ if __name__ == "__main__":
     p.add_argument('--sigma-type', type=str,
                    help="Use diagonal or single lengthscale for the kernel",
                    default='single')
-    p.add_argument('--sigma-init', type=float, default=2.0, help="Starting value for sigma")
-    p.add_argument('--penalty-init', type=float, default=1.0, help="Starting value for penalty")
+    p.add_argument('--sigma-init', type=str, default='2.0', help="Starting value for sigma")
+    p.add_argument('--penalty-init', type=str, default='1.0', help="Starting value for penalty")
     p.add_argument('--oc', action='store_true',
                    help="Whether to optimize Nystrom centers")
     p.add_argument('--os', action='store_true',
