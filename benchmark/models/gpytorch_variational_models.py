@@ -112,7 +112,10 @@ class GenericApproxGP(BaseModel):
         self.covar_module = covar_module
 
         if not strategy.variational_params_initialized.item():
-            strategy._variational_distribution.initialize_variational_distribution(strategy.prior_distribution)
+            try:
+                strategy._variational_distribution.initialize_variational_distribution(strategy.prior_distribution)
+            except AttributeError:
+                strategy.base_variational_strategy._variational_distribution.initialize_variational_distribution(strategy.base_variational_strategy.prior_distribution)
             strategy.variational_params_initialized.fill_(1)
 
     def forward(self, x):
