@@ -316,7 +316,7 @@ def nystrom_trace_frotrsm_fwd(kernel_args, M, X):
         from falkon.mmv_ops.utils import _get_gpu_info
         gpu_info = _get_gpu_info(opt, slack=0.9)
         single_gpu_info = [g for g in gpu_info if g.Id == X.device.index][0]
-        avail_mem = single_gpu_info.usable_ram / sizeof_dtype(X.dtype)
+        avail_mem = single_gpu_info.usable_memory / sizeof_dtype(X.dtype)
     else:
         avail_mem = opt.max_cpu_mem / sizeof_dtype(X.dtype)
 
@@ -616,7 +616,6 @@ class NoRegLossAndDeff(torch.autograd.Function):
         _pen = penalty * X.shape[0]
         d_eff = d_eff / _pen
         trace = trace / _pen
-        #datafit = datafit / _pen
         ctx.deff = d_eff.detach()
         ctx.dfit = datafit.detach()
         ctx.trace = trace.detach()
@@ -650,9 +649,10 @@ class NoRegLossAndDeff(torch.autograd.Function):
         if grads_deff[1] is not None:
             grads_deff[1] = (grads_deff[1] / ctx.X.shape[0] - ctx.deff)
         if ctx.needs_input_grad[1]:
-            grads_trace[1] = -(ctx.trace)
+            grads_trace[1] = -(ctx.trace) #/ penalty
         if grads_dfit[1] is not None:
             grads_dfit[1] *= penalty
+
         if grads_deff[0] is not None:
             grads_deff[0] /= pen_n
         if grads_trace[0] is not None:
@@ -663,7 +663,7 @@ class NoRegLossAndDeff(torch.autograd.Function):
             grads_trace[2] /= pen_n
         NoRegLossAndDeff.t_grad.append(time.time() - t_s)
 
-        # print(f"Grads after division: deff={grads_deff[1]:.2e} dfit={grads_dfit[1]:.2e} trace={grads_trace[1]:.2e}")
+        print(f"Grads after division: deff={grads_deff[1]:.2e} dfit={grads_dfit[1]:.2e} trace={grads_trace[1]:.2e}")
 
         grads = []
         for i in range(len(grads_deff)):

@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.cuda as tcd
 
+import falkon
 from falkon.mmv_ops.utils import *
 from falkon.options import BaseOptions
 from falkon.sparse import SparseTensor
@@ -28,7 +29,7 @@ class ArgsFmmv:
     X2: Union[torch.Tensor, SparseTensor]
     v: torch.Tensor
     out: torch.Tensor
-    kernel: 'Kernel'
+    kernel: 'falkon.kernels.Kernel'
     max_mem: float
 
 
@@ -39,11 +40,12 @@ class ArgsFdmmv:
     v: torch.Tensor
     w: torch.Tensor
     out: torch.Tensor
-    kernel: 'Kernel'
+    kernel: 'falkon.kernels.Kernel'
     max_mem: float
 
 
-def _sparse_mmv_blk_sizes(n, d, m, t, avail_mem, extra_mem, incore: bool, m1_density: float, m2_density: float):
+def _sparse_mmv_blk_sizes(n, d, m, t, avail_mem, extra_mem, incore: bool, m1_density: float,
+                          m2_density: float):
     # Memory needs:
     # chunk of x1: n + 2*d*n*density
     # chunk of x2: d + 2*d*m*density (because is transposed)
@@ -111,7 +113,8 @@ def mmv_run_starter(proc_idx, queue, device_id):
 
 
 def sparse_mmv_run_thread(m1: SparseTensor, m2: SparseTensor, v: torch.Tensor,
-                          out: torch.Tensor, kernel: 'Kernel', blk_n: int, blk_m: int,
+                          out: torch.Tensor, kernel: 'falkon.kernels.Kernel', blk_n: int,
+                          blk_m: int,
                           mem_needed: int, dev: torch.device):
     incore = _is_incore(dev, m1.device)
     N, D = m1.shape
@@ -125,7 +128,8 @@ def sparse_mmv_run_thread(m1: SparseTensor, m2: SparseTensor, v: torch.Tensor,
     flat_offset += np.prod(ker_gpu.shape)
     dev_v, dev_out = None, None
     if not incore:
-        dev_out, flat_offset = _extract_flat(flat_gpu, size=(blk_n, T), other=out, offset=flat_offset)
+        dev_out, flat_offset = _extract_flat(flat_gpu, size=(blk_n, T), other=out,
+                                             offset=flat_offset)
         dev_v, flat_offset = _extract_flat(flat_gpu, size=(blk_m, T), other=v, offset=flat_offset)
 
     with ExitStack() as stack:
@@ -175,7 +179,7 @@ def sparse_mmv_run_thread(m1: SparseTensor, m2: SparseTensor, v: torch.Tensor,
 
 
 def mmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Tensor],
-                   out: torch.Tensor, kernel: 'Kernel', blk_n: int, blk_m: int,
+                   out: torch.Tensor, kernel: 'falkon.kernels.Kernel', blk_n: int, blk_m: int,
                    mem_needed: int, dev: torch.device):
     # data(CUDA), dev(CUDA) or data(CPU), dev(CPU)
     incore = _is_incore(dev, m1.device)
@@ -185,7 +189,7 @@ def mmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Tensor]
     # Initialize extra buffers
     flat_gpu = torch.empty(size=(mem_needed,), dtype=m1.dtype, device=dev)
     flat_offset = 0
-    ker_gpu, flat_offset = _extract_flat(flat_gpu, size=(blk_n, blk_m), other=out, offset=flat_offset)
+    dev_ker, flat_offset = _extract_flat(flat_gpu, size=(blk_n, blk_m), other=out, offset=flat_offset)
     dev_m1, dev_m2, dev_out, dev_v = None, None, None, None
     if not incore:
         dev_m1, flat_offset = _extract_flat(flat_gpu, size=(blk_n, D), other=m1, offset=flat_offset)
@@ -195,8 +199,7 @@ def mmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Tensor]
 
     with ExitStack() as stack:
         if dev.type == 'cuda':
-            s1 = tcd.current_stream(dev)
-            s2 = tcd.Stream(dev)
+            s1, s2 = tcd.current_stream(dev), tcd.Stream(dev)
             stack.enter_context(tcd.device(dev))
             stack.enter_context(tcd.stream(s1))
         for i in range(0, N, blk_n):
@@ -217,7 +220,7 @@ def mmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Tensor]
                 else:
                     c_dev_m2 = copy(m2[j: j + lenj, :], dev_m2[:lenj, :], s=s1)
                     c_dev_v = copy(v[j: j + lenj, :], dev_v[:lenj, :], s=s2)
-                c_dev_ker = ker_gpu[:leni, :lenj].fill_(0.0)
+                c_dev_ker = dev_ker[:leni, :lenj].fill_(0.0)
 
                 c_dev_ker = kernel.compute(c_dev_m1, c_dev_m2, c_dev_ker)
                 if not incore:
@@ -225,16 +228,15 @@ def mmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Tensor]
                 c_dev_out.addmm_(c_dev_ker, c_dev_v)
                 if not incore:
                     s1.synchronize()  # sync necessary to avoid s2 overwriting dev_v/dev_w
-
+            # end iter over M
             if not incore:
                 copy(c_dev_out, out[i: i + leni], s=s1)
-            # end iter over N
-        # end iter over M
+        # end iter over N
     # exit context manager (device, stream)
 
 
 def _sparse_dmmv_blk_sizes(n, d, m, t, avail_mem, extra_mem: dict, incore: bool,
-                           dev_out_exists: bool, has_w: bool, m1_density: float, m2_density: float):
+                           dev_out_exists: bool, m1_density: float, m2_density: float):
     # Memory needs:
     # chunk of X1              : n + 2*d*n*density
     # full X2                  : d + 2*d*m*density (it's transposed)
@@ -268,7 +270,8 @@ def _sparse_dmmv_blk_sizes(n, d, m, t, avail_mem, extra_mem: dict, incore: bool,
     return blk_n, mem_needed
 
 
-def _dense_dmmv_blk_sizes(n, d, m, t, avail_mem: float, extra_mem: dict, incore: bool, dev_out_exists: bool, has_w: bool):
+def _dense_dmmv_blk_sizes(n, d, m, t, avail_mem: float, extra_mem: dict, incore: bool,
+                          dev_out_exists: bool):
     coef_nm, coef_nd, coef_md, coef_nt, coef_mt = 1, 0, 0, 0, 0
     coef_nt += 1  # for dev_w allocation
     if not incore:
@@ -313,18 +316,18 @@ def dmmv_run_starter(proc_idx, queue, device_id):
     if is_sparse:
         blk_n, mem_needed = _sparse_dmmv_blk_sizes(
             n=n, d=d, m=m, t=t, avail_mem=avail_mem, extra_mem=extra_mem, incore=incore,
-            dev_out_exists=dev_out_exists, has_w=w is not None, m1_density=X1.density,
-            m2_density=X2.density)
+            dev_out_exists=dev_out_exists, m1_density=X1.density, m2_density=X2.density)
         sparse_dmmv_run_thread(X1, X2, v, w, out, kernel, blk_n, mem_needed, dev)
     else:
         blk_n, mem_needed = _dense_dmmv_blk_sizes(
             n=n, d=d, m=m, t=t, avail_mem=avail_mem, extra_mem=extra_mem, incore=incore,
-            dev_out_exists=dev_out_exists, has_w=w is not None)
+            dev_out_exists=dev_out_exists)
         dmmv_run_thread(X1, X2, v, w, out, kernel, blk_n, mem_needed, dev)
 
 
 def sparse_dmmv_run_thread(m1: SparseTensor, m2: SparseTensor, v: torch.Tensor,
-                           w: Optional[torch.Tensor], out: torch.Tensor, kernel: 'Kernel',
+                           w: Optional[torch.Tensor], out: torch.Tensor,
+                           kernel: 'falkon.kernels.Kernel',
                            blk_n: int, mem_needed: int, dev: torch.device):
     incore = _is_incore(dev, m1.device)
     dev_out_exists = out.device == dev  # out has already been allocated on the computation device
@@ -337,19 +340,20 @@ def sparse_dmmv_run_thread(m1: SparseTensor, m2: SparseTensor, v: torch.Tensor,
     # ker_gpu must be fortran-ordered due to cusparse csr2dense function (TODO: only on CUDA)
     ker_gpu = extract_fortran(flat_gpu, size=(blk_n, M), offset=flat_offset)
     flat_offset += np.prod(ker_gpu.shape)
-    dev_w, flat_offset = _extract_flat(flat_gpu, size=(blk_n, T), other=v if w is None else w, offset=flat_offset)
+    dev_w, flat_offset = _extract_flat(flat_gpu, size=(blk_n, T), other=v if w is None else w,
+                                       offset=flat_offset)
     dev_out, dev_v, dev_m2 = out, v, m2
     if not incore:
         if not dev_out_exists:
-            dev_out, flat_offset = _extract_flat(flat_gpu, size=(M, T), other=out, offset=flat_offset)
+            dev_out, flat_offset = _extract_flat(flat_gpu, size=(M, T), other=out,
+                                                 offset=flat_offset)
         dev_v, flat_offset = _extract_flat(flat_gpu, size=(M, T), other=v, offset=flat_offset)
     dev_out.fill_(0.0)
 
     with ExitStack() as stack:
-        s1, s2 = None, None
+        s1 = None
         if dev.type == 'cuda':
             s1 = tcd.current_stream(dev)
-            s2 = tcd.Stream(dev)
             stack.enter_context(tcd.device(dev))
             stack.enter_context(tcd.stream(s1))
         if not incore:  # Note that CUDA-incore is not allowed to happen (CPU->CUDA)
@@ -387,7 +391,8 @@ def sparse_dmmv_run_thread(m1: SparseTensor, m2: SparseTensor, v: torch.Tensor,
 
 def dmmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor,
                     w: Optional[torch.Tensor], out: torch.Tensor,
-                    kernel: 'Kernel', blk_n: int, mem_needed: int, dev: torch.device):
+                    kernel: 'falkon.kernels.Kernel', blk_n: int, mem_needed: int,
+                    dev: torch.device):
     # k(x2, x1) @ (k(x1, x2) @ v + w)
     # data(CUDA), dev(CUDA) or data(CPU), dev(CPU)
     incore = _is_incore(dev, m1.device)
@@ -399,21 +404,22 @@ def dmmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor,
     flat_gpu = torch.empty(size=(mem_needed,), dtype=m1.dtype, device=dev)
     flat_offset = 0
     dev_ker, flat_offset = _extract_flat(flat_gpu, size=(blk_n, M), other=out, offset=flat_offset)
-    dev_w, flat_offset = _extract_flat(flat_gpu, size=(blk_n, T), other=v if w is None else w, offset=flat_offset)
+    dev_w, flat_offset = _extract_flat(flat_gpu, size=(blk_n, T), other=v if w is None else w,
+                                       offset=flat_offset)
     dev_m1, dev_m2, dev_out, dev_v = None, m2, out, v
     if not incore:
         dev_m1, flat_offset = _extract_flat(flat_gpu, size=(blk_n, D), other=m1, offset=flat_offset)
         dev_m2, flat_offset = _extract_flat(flat_gpu, size=(M, D), other=m2, offset=flat_offset)
         if not dev_out_exists:
-            dev_out, flat_offset = _extract_flat(flat_gpu, size=(M, T), other=out, offset=flat_offset)
+            dev_out, flat_offset = _extract_flat(flat_gpu, size=(M, T), other=out,
+                                                 offset=flat_offset)
         dev_v, flat_offset = _extract_flat(flat_gpu, size=(M, T), other=v, offset=flat_offset)
     dev_out.fill_(0.0)
 
     with ExitStack() as stack:
         s1, s2 = None, None
         if dev.type == 'cuda':
-            s1 = tcd.current_stream(dev)
-            s2 = tcd.Stream(dev)
+            s1, s2 = tcd.current_stream(dev), tcd.Stream(dev)
             stack.enter_context(tcd.device(dev))
             stack.enter_context(tcd.stream(s1))
         if not incore:
@@ -444,7 +450,7 @@ def dmmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor,
 
 def fmmv(X1: Union[torch.Tensor, SparseTensor],
          X2: Union[torch.Tensor, SparseTensor],
-         v: torch.Tensor, kernel: 'Kernel', out: Optional[torch.Tensor] = None,
+         v: torch.Tensor, kernel: 'falkon.kernels.Kernel', out: Optional[torch.Tensor] = None,
          opt: Optional[BaseOptions] = None) -> torch.Tensor:
     is_sparse = isinstance(X1, SparseTensor)
     if not is_sparse:
@@ -472,7 +478,7 @@ def fmmv(X1: Union[torch.Tensor, SparseTensor],
         gpu_info = _get_gpu_info(opt, slack=0.9)
         single_gpu_info = [g for g in gpu_info if g.Id == data_dev.index][0]
         args = ArgsFmmv(X1=X1, X2=X2, v=v, out=out, kernel=kernel,
-                        max_mem=single_gpu_info.usable_ram)
+                        max_mem=single_gpu_info.usable_memory)
         _call_direct(mmv_run_starter, (args, data_dev.index))
     elif comp_dev_type == 'cuda' and data_dev.type == 'cpu':
         gpu_info = _get_gpu_info(opt, slack=0.9)
@@ -490,7 +496,7 @@ def fmmv(X1: Union[torch.Tensor, SparseTensor],
                 X1=X1_block,
                 X2=X2, v=v,
                 out=out.narrow(0, block_sizes[i], bwidth),
-                kernel=kernel, max_mem=g.usable_ram), g.Id))
+                kernel=kernel, max_mem=g.usable_memory), g.Id))
         _start_wait_processes(mmv_run_starter, args)
     else:
         raise RuntimeError("Requested CPU computations with CUDA data. This should not happen.")
@@ -499,7 +505,7 @@ def fmmv(X1: Union[torch.Tensor, SparseTensor],
 
 def fdmmv(X1: Union[torch.Tensor, SparseTensor], X2: Union[torch.Tensor, SparseTensor],
           v: torch.Tensor, w: Optional[torch.Tensor],
-          kernel: 'Kernel', out: Optional[torch.Tensor] = None,
+          kernel: 'falkon.kernels.Kernel', out: Optional[torch.Tensor] = None,
           opt: Optional[BaseOptions] = None) -> torch.Tensor:
     """
     X1 : N x D
@@ -535,7 +541,7 @@ def fdmmv(X1: Union[torch.Tensor, SparseTensor], X2: Union[torch.Tensor, SparseT
         gpu_info = _get_gpu_info(opt, slack=0.9)
         single_gpu_info = [g for g in gpu_info if g.Id == data_dev.index][0]
         args = ArgsFdmmv(X1=X1, X2=X2, v=v, w=w, out=out, kernel=kernel,
-                         max_mem=single_gpu_info.usable_ram)
+                         max_mem=single_gpu_info.usable_memory)
         _call_direct(dmmv_run_starter, (args, data_dev.index))
     elif comp_dev_type == 'cuda' and data_dev.type == 'cpu':
         gpu_info = _get_gpu_info(opt, slack=0.9)
@@ -547,7 +553,7 @@ def fdmmv(X1: Union[torch.Tensor, SparseTensor], X2: Union[torch.Tensor, SparseT
             if bwidth <= 0:
                 continue
             cur_out_gpu = create_same_stride((M, T), out, out.dtype, f'cuda:{gpu_info[i].Id}')
-            gpu_info[i].usable_ram -= M * T * sizeof_dtype(X1.dtype)
+            gpu_info[i].usable_memory -= M * T * sizeof_dtype(X1.dtype)
             wrlk.append(cur_out_gpu)
             if is_sparse:
                 X1_block = X1.narrow_rows(block_sizes[i], bwidth)
@@ -558,7 +564,7 @@ def fdmmv(X1: Union[torch.Tensor, SparseTensor], X2: Union[torch.Tensor, SparseT
                 X2=X2, v=v,
                 w=w.narrow(0, block_sizes[i], bwidth) if w is not None else None,
                 out=cur_out_gpu,
-                kernel=kernel, max_mem=g.usable_ram), g.Id))
+                kernel=kernel, max_mem=g.usable_memory), g.Id))
         _start_wait_processes(dmmv_run_starter, args)
         if len(wrlk) > 1:  # Sum up all subprocess outputs and copy to `out` on host.
             # noinspection PyTypeChecker

@@ -156,7 +156,7 @@ def kernel_trsm_fro(tri: torch.Tensor, m1: torch.Tensor, m2: torch.Tensor, kerne
         gpu_info = _get_gpu_info(opt, slack=0.9)
         single_gpu_info = [g for g in gpu_info if g.Id == data_dev.index][0]
         args = KernelTrsmArgs(
-            m1=m1, m2=m2, tri=tri, kernel=kernel, max_mem=single_gpu_info.usable_ram,
+            m1=m1, m2=m2, tri=tri, kernel=kernel, max_mem=single_gpu_info.usable_memory,
             lower=lower, transpose=transpose)
         return _call_direct(kernel_trsm_fro_runner, (args, data_dev.index))
     elif comp_dev_type == 'cuda' and data_dev.type == 'cpu':
@@ -169,7 +169,7 @@ def kernel_trsm_fro(tri: torch.Tensor, m1: torch.Tensor, m2: torch.Tensor, kerne
                 continue
             args.append((KernelTrsmArgs(
                 m1=m1.narrow(0, block_sizes[i], bwidth), m2=m2, tri=tri, kernel=kernel,
-                max_mem=g.usable_ram, lower=lower, transpose=transpose), g.Id))
+                max_mem=g.usable_memory, lower=lower, transpose=transpose), g.Id))
         outputs = _start_wait_processes(kernel_trsm_fro_runner, args)
         return sum(outputs)
     else:
