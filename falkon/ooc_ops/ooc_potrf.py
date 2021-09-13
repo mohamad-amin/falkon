@@ -13,7 +13,7 @@ from falkon.c_ext import parallel_potrf
 from falkon.utils.tensor_helpers import (
     is_f_contig, copy_same_stride, extract_fortran
 )
-from utils.device_copy import copy
+from falkon.utils.device_copy import copy
 from .ooc_utils import calc_block_sizes
 
 __all__ = ("gpu_cholesky",)
