@@ -90,6 +90,9 @@ class Dataset(Enum):
     COVTYPE = 'covtype'
     IJCNN1 = 'ijcnn1'
     FASHION_MNIST = 'fashionmnist'
+    BUZZ = 'buzz'
+    ROAD3D = 'road3d'
+    HOUSEELECTRIC = 'houseelectric'
 
     def __str__(self):
         return self.value
