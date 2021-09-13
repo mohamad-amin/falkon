@@ -200,7 +200,7 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         m = self.centers.shape[0]
         kmn = full_rbf_kernel(self.centers, X, self.sigma)
         kmm = (full_rbf_kernel(self.centers, self.centers, self.sigma) +
-               torch.eye(m, device=X.device, dtype=X.dtype) * 1e-5)
+               torch.eye(m, device=X.device, dtype=X.dtype) * 5e-5)
         self.L = cholesky(kmm)  # L @ L.T = kmm
         # A = L^{-1} K_mn / (sqrt(n*pen))
         A = torch.triangular_solve(kmn, self.L, upper=False).solution# / sqrt_var
@@ -216,7 +216,17 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         # Complexity (nystrom-deff)
         ndeff = (C.square().sum())
         datafit = (torch.square(Y).sum() - torch.square(self.c * sqrt_var).sum())# / (1 - C.square().sum() / X.shape[0])
-        trace = Kdiag - torch.trace(AAT)# * variance
+        trace = Kdiag - torch.trace(AAT)
+        #ndeff = ndeff / X.shape[0]
+        #datafit = datafit / X.shape[0]
+        #trace = trace / X.shape[0]
+
+        #trace = trace / variance
+        #datafit *= variance
+        #ndeff /= variance
+
+        #ndeff *= 50#(X.shape[0] / m)
+        #trace *= 0
 
         return ndeff, datafit, trace
 
@@ -402,6 +412,10 @@ class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
             opt_sigma,
             opt_penalty,
             cuda: bool,
+            div_trace_by_lambda: bool = False,
+            div_trdeff_by_lambda: bool = False,
+            div_mul_lambda: bool = False,
+            div_deff_by_lambda: bool = False,
     ):
         super().__init__(
             penalty=penalty_init,
@@ -419,6 +433,10 @@ class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
             self.register_parameter("centers", self.centers_.requires_grad_(True))
 
         self.alpha = None
+        self.div_trace_by_lambda = div_trace_by_lambda
+        self.div_trdeff_by_lambda = div_trdeff_by_lambda
+        self.div_mul_lambda = div_mul_lambda
+        self.div_deff_by_lambda = div_deff_by_lambda
 
     def hp_loss(self, X, Y):
         variance = self.penalty * X.shape[0]
@@ -444,12 +462,32 @@ class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         C = torch.triangular_solve(A, LB, upper=False).solution
 
         # Complexity (nystrom-deff)
-        ndeff = C.square().sum() / X.shape[0]  # = torch.trace(C.T @ C)
-        datafit = torch.square(dfit_vec).mean()
-        trace = (Kdiag - torch.trace(AAT) ) / X.shape[0]
+        ndeff = C.square().sum() #/ X.shape[0]  # = torch.trace(C.T @ C)
+        datafit = torch.square(dfit_vec).sum()#.mean()
+        trace = (Kdiag - torch.trace(AAT) ) #/ X.shape[0]
 
-        ndeff = ndeff / variance
-        trace = trace / variance
+        ndeff /= m
+        datafit /= m
+        trace /= m
+
+        if self.div_trace_by_lambda:
+            trace = trace / variance
+        if self.div_deff_by_lambda:
+            ndeff = ndeff / variance
+        if self.div_trdeff_by_lambda:
+            trace = trace / variance
+            ndeff = ndeff / variance
+        if self.div_mul_lambda:
+            ndeff /= variance
+            datafit *= variance
+            trace /= variance
+
+        #ndeff = ndeff * (X.shape[0] / m)
+        #ndeff = C.square().sum()
+        #datafit = 0.5 * torch.square(dfit_vec).sum()/ variance
+        #trace = 0.5 * (Kdiag - torch.trace(AAT)) / variance
+        #trace *= 0
+
         return ndeff, datafit, trace
 
     def predict(self, X):
