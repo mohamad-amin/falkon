@@ -73,7 +73,10 @@ class SVGP(HyperOptimModel):
 
     @property
     def penalty(self):
-        return self.model.likelihood.noise / self.num_data
+        try:
+            return self.model.likelihood.noise / self.num_data
+        except AttributeError:
+            return 0.0
 
     @property
     def sigma(self):
@@ -81,7 +84,10 @@ class SVGP(HyperOptimModel):
 
     @property
     def centers(self):
-        return self.model.strategy.inducing_points
+        try:
+            return self.model.strategy.inducing_points
+        except AttributeError:
+            return self.model.strategy.base_variational_strategy.inducing_points
 
     @centers.setter
     def centers(self, value):
@@ -100,13 +106,13 @@ class SVGP(HyperOptimModel):
             output = self.model(X)
             if Y.shape[1] == 1:
                 Y = Y.reshape(-1)
-            loss = -self.loss_fn(output, Y)
+            loss = -self.loss_fn(output, Y.T)
             return (loss,)
 
     def predict(self, X):
         with gpytorch.settings.fast_computations(False, False, False):
             preds = self.model.likelihood(self.model(X))
-            return preds.mean
+            return preds.mean.T
 
     @property
     def loss_names(self):

@@ -25,6 +25,7 @@ __all__ = [
     "train_complexity_reg",
     "init_model",
     "run_on_grid",
+    "fetch_loss",
     "HPGridPoint",
 ]
 
@@ -77,15 +78,15 @@ def report_grads(named_hparams, grads, losses, loss_names, step) -> Dict[str, fl
 
 
 def grad_loss_reporting(named_hparams, grads, losses, loss_names, verbose, step, losses_are_grads):
-    report_dicts = []
-    if not losses_are_grads and losses is not None:
-        report_dicts.append(report_losses(losses, loss_names, step))
-    report_dicts.append(report_hps(named_hparams, step))
-    if verbose and grads is not None:
-        report_dicts.append(report_grads(named_hparams, grads, losses, loss_names, step))
     report_dict = {}
-    for rd in report_dicts:
-        report_dict.update(rd)
+    # Losses
+    if not losses_are_grads and losses is not None:
+        report_dict.update(report_losses(losses, loss_names, step))
+    # Hyperparameters
+    report_dict.update(report_hps(named_hparams, step))
+    # Gradients
+    if verbose and grads is not None:
+        report_dict.update(report_grads(named_hparams, grads, losses, loss_names, step))
     return report_dict
 
 
@@ -184,7 +185,7 @@ def create_optimizer(opt_type: str, model: HyperOptimModel, learning_rate: float
                     "params": named_params['centers'], 'lr': learning_rate / center_lr_div})
         opt_hp = torch.optim.Adam(opt_modules)
         # schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_hp, factor=0.5, patience=1)
-        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=150, gamma=0.5)
+        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=200, gamma=0.5)
     elif opt_type == "sgd":
         opt_hp = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)
     elif opt_type == "lbfgs":
@@ -288,6 +289,7 @@ def train_complexity_reg_mb(
     Xtrc, Ytrc, Xtsc, Ytsc = Xtr, Ytr, Xts, Yts
     if cuda:
         Xtrc, Ytrc, Xtsc, Ytsc = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
+    loss_every = 5
     opt_hp, schedule = create_optimizer(optimizer, model, learning_rate)
     print(f"Starting hyperparameter optimization on model {model}.")
     print(f"Will run for {num_epochs} epochs with {opt_hp} optimizer, "
@@ -300,40 +302,31 @@ def train_complexity_reg_mb(
     for epoch in range(num_epochs):
         np.random.shuffle(mb_indices)
         for mb_start in range(0, Xtr.shape[0], minibatch):
-            print("%d " % mb_start, end='', flush=True)
             Xtr_batch = (Xtr[mb_indices[mb_start: mb_start + minibatch], :]).contiguous()
             Ytr_batch = (Ytr[mb_indices[mb_start: mb_start + minibatch], :]).contiguous()
             if cuda:
                 Xtr_batch, Ytr_batch = Xtr_batch.cuda(), Ytr_batch.cuda()
 
-            #def closure():
-            #    opt_hp.zero_grad()
-            #    losses = model.hp_loss(Xtr_batch, Ytr_batch)
-                #hp_grad(model, *losses, accumulate_grads=True,
-                #        losses_are_grads=model.losses_are_grads)
-            #    loss = reduce(torch.add, losses)
-            #    loss.backward()
-            #    return loss
-            #opt_hp.step(closure)
-
             opt_hp.zero_grad()
-            loss = model.hp_loss(Xtr_batch, Ytr_batch)[0]
+            loss = model.hp_loss(Xtr_batch, Ytr_batch)[0]  # There is only one loss!
             loss.backward()
             opt_hp.step()
 
-        pred_dict = {}
+        loss_dict = grad_loss_reporting(model.named_parameters(), None, None, model.loss_names,
+                                        verbose, epoch, losses_are_grads=False)
         if epoch != 0 and (epoch + 1) % loss_every == 0:
             pred_dict = pred_reporting(
                 model=model, Xtr=Xtrc, Ytr=Ytrc, Xts=Xtsc, Yts=Ytsc,
                 err_fn=err_fn, epoch=epoch, time_start=t_start, cum_time=cum_time,
                 resolve_model=True, mb_size=minibatch)
             cum_time = pred_dict["cum_time"]
+            loss_dict.update(pred_dict)
             t_start = time.time()
-        logs.append(pred_dict)
+        logs.append(loss_dict)
         if schedule is not None:
             if isinstance(schedule, torch.optim.lr_scheduler.ReduceLROnPlateau):
                 if 'train_NRMSE' in pred_dict or 'train_MSE' in pred_dict or 'train_c-error' in pred_dict:
-                    schedule.step(pred_dict['train_NRMSE'])
+                    schedule.step(pred_dict['train_NRMSE'])  # TODO: the step uses NRMSE which may not be present...
             else:
                 schedule.step()
     if retrain_nkrr:
@@ -402,7 +395,29 @@ def init_model(model_type, data, penalty_init, sigma_init, centers_init, opt_pen
     elif model_type == "creg-nopenfit":
         model = DeffNoPenFitTr(sigma_init=start_sigma, penalty_init=penalty_init,
                                centers_init=centers_init, opt_sigma=opt_sigma,
-                               opt_penalty=opt_penalty, opt_centers=opt_centers, cuda=cuda)
+                               opt_penalty=opt_penalty, opt_centers=opt_centers, cuda=cuda,
+                               div_trace_by_lambda=False, div_trdeff_by_lambda=False)
+    elif model_type == "creg-nopenfit-divtr":
+        model = DeffNoPenFitTr(sigma_init=start_sigma, penalty_init=penalty_init,
+                               centers_init=centers_init, opt_sigma=opt_sigma,
+                               opt_penalty=opt_penalty, opt_centers=opt_centers, cuda=cuda,
+                               div_trace_by_lambda=True, div_trdeff_by_lambda=False)
+    elif model_type == "creg-nopenfit-divdeff":
+        model = DeffNoPenFitTr(sigma_init=start_sigma, penalty_init=penalty_init,
+                               centers_init=centers_init, opt_sigma=opt_sigma,
+                               opt_penalty=opt_penalty, opt_centers=opt_centers, cuda=cuda,
+                               div_deff_by_lambda=True)
+    elif model_type == "creg-nopenfit-divtrdeff":
+        model = DeffNoPenFitTr(sigma_init=start_sigma, penalty_init=penalty_init,
+                               centers_init=centers_init, opt_sigma=opt_sigma,
+                               opt_penalty=opt_penalty, opt_centers=opt_centers, cuda=cuda,
+                               div_trdeff_by_lambda=True, div_trace_by_lambda=False)
+    elif model_type == "creg-nopenfit-divmul":
+        model = DeffNoPenFitTr(sigma_init=start_sigma, penalty_init=penalty_init,
+                               centers_init=centers_init, opt_sigma=opt_sigma,
+                               opt_penalty=opt_penalty, opt_centers=opt_centers, cuda=cuda,
+                               div_trdeff_by_lambda=False, div_trace_by_lambda=False,
+                               div_mul_lambda=True)
     elif model_type == "stoch-creg-penfit":
         model = StochasticDeffPenFitTr(sigma_init=start_sigma, penalty_init=penalty_init,
                                        centers_init=centers_init, opt_sigma=opt_sigma,
@@ -493,3 +508,15 @@ def run_on_grid(
         grid_point.results.update(pred_report)
 
     return grid_spec
+
+
+def fetch_loss(
+        Xtr: torch.Tensor,
+        Ytr: torch.Tensor,
+        Xts: torch.Tensor,
+        Yts: torch.Tensor,
+        model: HyperOptimModel,
+        ):
+    train_losses = model.hp_loss(Xtr, Ytr)
+    return train_losses, model.loss_names
+

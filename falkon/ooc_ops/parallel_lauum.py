@@ -10,12 +10,12 @@ from falkon.cuda.cublas_gpu import *
 from falkon.cuda.cudart_gpu import cuda_memcpy2d_async
 from falkon.utils.helpers import choose_fn, sizeof_dtype
 from falkon.utils.tensor_helpers import create_fortran, extract_same_stride, extract_fortran
+from falkon.utils.device_copy import copy
 from falkon.c_ext import lauum_cuda
 
 
 __all__ = ("par_lauum_c_lower", "par_lauum_f_lower", "BlockAlloc")
 
-from utils.device_copy import copy
 
 
 @dataclass(frozen=True, eq=False, repr=True)
