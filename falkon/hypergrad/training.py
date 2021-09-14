@@ -1,25 +1,24 @@
-import math
 import time
+from dataclasses import dataclass
 from functools import reduce
 from typing import Optional, Dict, List, Any
 
 import numpy as np
 import torch
-from dataclasses import dataclass
 
+from benchmark.common.summary import get_writer
 from falkon import FalkonOptions, Falkon, InCoreFalkon
+from falkon.hypergrad.common import get_start_sigma, get_scalar
+from falkon.hypergrad.complexity_reg import HyperOptimModel, hp_grad
 from falkon.hypergrad.creg import (
     DeffNoPenFitTr, DeffPenFitTr, StochasticDeffPenFitTr,
     StochasticDeffNoPenFitTr, CompDeffPenFitTr, CompDeffNoPenFitTr,
 )
-from falkon.hypergrad.hgrad import NystromClosedFormHgrad, NystromIFTHgrad, FalkonClosedFormHgrad
-from falkon.hypergrad.common import get_start_sigma, get_scalar
-from falkon.hypergrad.complexity_reg import HyperOptimModel, hp_grad
 from falkon.hypergrad.gcv import NystromGCV, StochasticNystromGCV
+from falkon.hypergrad.hgrad import NystromClosedFormHgrad, NystromIFTHgrad, FalkonClosedFormHgrad
 from falkon.hypergrad.loocv import NystromLOOCV
 from falkon.hypergrad.sgpr import GPR, SGPR
 from falkon.hypergrad.svgp import SVGP
-from benchmark.common.summary import get_writer
 
 __all__ = [
     "train_complexity_reg",
@@ -514,6 +513,7 @@ def run_on_grid(
         Yts: torch.Tensor,
         model: HyperOptimModel,
         grid_spec: List[HPGridPoint],
+        minibatch: Optional[int],
         err_fn,
         cuda: bool):
     if cuda:
@@ -522,22 +522,25 @@ def run_on_grid(
     print(f"Starting grid-search on model {model}.")
     print(f"Will run for {len(grid_spec)} points.")
 
-    loss_report = {}
+    if minibatch is None or minibatch < 0:
+        minibatch = Xtr.shape[0]
     cum_time = 0
     for i, grid_point in enumerate(grid_spec):
         e_start = time.time()
         set_grid_point(model, grid_point)
-        losses = model.hp_loss(Xtr, Ytr)
+        losses = [0.0] * len(model.loss_names)
+        for mb_start in range(0, Xtr.shape[0], minibatch):
+            Xtr_batch = Xtr[mb_start: mb_start + minibatch, :]
+            Ytr_batch = Ytr[mb_start: mb_start + minibatch, :]
+            mb_losses = model.hp_loss(Xtr_batch, Ytr_batch)
+            for loss, mb_loss in zip(losses, mb_losses):
+                loss += mb_loss
+        cum_time += time.time() - e_start
+        grid_point.results = pred_reporting(
+            model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts, resolve_model=True,
+            err_fn=err_fn, epoch=i, cum_time=cum_time, mb_size=minibatch)
         if not model.losses_are_grads:
-            loss_report = report_losses(losses, model.loss_names, i)
-        pred_report = pred_reporting(
-            model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
-            err_fn=err_fn, epoch=i, time_start=e_start, cum_time=cum_time)
-        cum_time = pred_report["cum_time"]
-        grid_point.results = {}
-        grid_point.results.update(loss_report)
-        grid_point.results.update(pred_report)
-
+            grid_point.results.update(report_losses(losses, model.loss_names, i))
     return grid_spec
 
 
@@ -550,4 +553,3 @@ def fetch_loss(
         ):
     train_losses = model.hp_loss(Xtr, Ytr)
     return train_losses, model.loss_names
-

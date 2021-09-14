@@ -15,7 +15,6 @@ from benchmark.common.benchmark_utils import Dataset
 from benchmark.common.datasets import get_load_fn
 from benchmark.common.error_metrics import get_err_fns
 from benchmark.common.summary import get_writer
-from falkon import FalkonOptions
 from falkon.center_selection import UniformSelector
 from falkon.hypergrad.training import (
     init_model, train_complexity_reg, HPGridPoint, run_on_grid,
@@ -107,6 +106,7 @@ def run_grid_search(
         flk_maxiter: int,
         num_trace_vecs: int,
         nystrace_ste: bool,
+        minibatch: int,
         cuda: bool,
         seed: int):
     torch.manual_seed(seed)
@@ -134,10 +134,9 @@ def run_grid_search(
                        flk_maxiter=flk_maxiter,
                        nystrace_ste=nystrace_ste,
                        )
-    logs = run_on_grid(Xtr=Xtr, Ytr=Ytr,
-                       Xts=Xts, Yts=Yts,
+    logs = run_on_grid(Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
                        model=model, err_fn=partial(err_fns[0], **metadata),
-                       grid_spec=grid_spec, cuda=cuda)
+                       grid_spec=grid_spec, cuda=cuda, minibatch=minibatch)
     save_logs(logs, exp_name=exp_name)
 
 
@@ -305,9 +304,6 @@ if __name__ == "__main__":
 
     if torch.cuda.is_available():
         torch.cuda.init()
-        from falkon.cuda import initialization
-
-        initialization.init(FalkonOptions())
 
     if args.fetch_loss:
         run_fetch_loss(exp_name=args.name, dataset=args.dataset, model_type=args.model,
@@ -321,7 +317,8 @@ if __name__ == "__main__":
                         sigma_init=args.sigma_init, num_centers=args.num_centers,
                         val_pct=args.val_pct, nystrace_ste=args.approx_trace,
                         cg_tol=args.cg_tol, cuda=args.cuda, seed=args.seed,
-                        num_trace_vecs=args.num_t, flk_maxiter=args.flk_maxiter)
+                        num_trace_vecs=args.num_t, flk_maxiter=args.flk_maxiter,
+                        minibatch=args.mb)
     else:
         run_optimization(exp_name=args.name, dataset=args.dataset, model_type=args.model,
                          penalty_init=args.penalty_init, sigma_type=args.sigma_type,
