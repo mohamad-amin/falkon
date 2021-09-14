@@ -614,12 +614,13 @@ class NoRegLossAndDeff(torch.autograd.Function):
         ctx.save_for_backward(kernel_args, penalty, M)
         ctx.data, ctx.tr_ctx, ctx.X, ctx.use_stoch_trace = data, tr_ctx, X, use_stoch_trace
         _pen = penalty * X.shape[0]
-        d_eff = d_eff / _pen
-        trace = trace / _pen
+        #d_eff = d_eff / _pen
+        #trace = trace / _pen
         #datafit = datafit / _pen
         ctx.deff = d_eff.detach()
         ctx.dfit = datafit.detach()
         ctx.trace = trace.detach()
+        print(f"stochastic creg-no-pen-fit - D-eff={d_eff:5.3e} DFit={datafit:5.3e} Trace={trace:5.3e}")
         return d_eff + datafit + trace
 
     @staticmethod
@@ -647,24 +648,24 @@ class NoRegLossAndDeff(torch.autograd.Function):
         # print(f"Grads before everything: deff={grads_deff[1]:.2e} dfit={grads_dfit[1]:.2e} ")
 
         pen_n = penalty * ctx.X.shape[0]
-        if grads_deff[1] is not None:
-            grads_deff[1] = (grads_deff[1] / ctx.X.shape[0] - ctx.deff)
-        if ctx.needs_input_grad[1]:
-            grads_trace[1] = -(ctx.trace)
-        if grads_dfit[1] is not None:
-            grads_dfit[1] *= penalty
-        if grads_deff[0] is not None:
-            grads_deff[0] /= pen_n
-        if grads_trace[0] is not None:
-            grads_trace[0] /= pen_n
-        if grads_deff[2] is not None:
-            grads_deff[2] /= pen_n
-        if grads_trace[2] is not None:
-            grads_trace[2] /= pen_n
+        #if grads_deff[1] is not None:
+        #    grads_deff[1] *= penalty#(grads_deff[1] / ctx.X.shape[0] - ctx.deff)
+        #if ctx.needs_input_grad[1]:
+        #    grads_trace[1] = -(ctx.trace / penalty)
+        #if grads_dfit[1] is not None:
+        #    grads_dfit[1] *= penalty
+        #if grads_deff[0] is not None:
+        #    grads_deff[0] /= pen_n
+        #if grads_trace[0] is not None:
+        #    grads_trace[0] /= pen_n
+        #if grads_deff[2] is not None:
+        #    grads_deff[2] /= pen_n
+        #if grads_trace[2] is not None:
+        #    grads_trace[2] /= pen_n
         NoRegLossAndDeff.t_grad.append(time.time() - t_s)
 
         # print(f"Grads after division: deff={grads_deff[1]:.2e} dfit={grads_dfit[1]:.2e} trace={grads_trace[1]:.2e}")
-
+        #print(f"Lambda grads: deff={grads_deff[1]:.2e} - dfit={grads_dfit[1]:.2e} - trace={grads_trace[1]:.2e}")
         grads = []
         for i in range(len(grads_deff)):
             grad, any_not_none = 0.0, False
