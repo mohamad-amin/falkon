@@ -23,6 +23,7 @@ from falkon.hypergrad.training import (
 )
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+AUTO_PEN_MULTIPLIER = 0.5
 
 
 def median_heuristic(X: torch.Tensor, sigma_type: str, num_rnd_points: Optional[int]):
@@ -72,7 +73,7 @@ def sigma_pen_init(data, sigma_type, sigma_init, penalty_init):
     else:
         sigma_init = float(sigma_init)
     if penalty_init == 'auto':
-        penalty_init = 0.9 / data['Xtr'].shape[0]
+        penalty_init = AUTO_PEN_MULTIPLIER / data['Xtr'].shape[0]
         print("Initial penalty is: %.4e" % (penalty_init))
     else:
         penalty_init = float(penalty_init)

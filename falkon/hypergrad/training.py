@@ -241,7 +241,7 @@ def epoch_bookkeeping(
             past_logs = logs[-early_stop_patience:]  # Last n logs from most oldest to most recent
             for plog in past_logs:
                 if 'train_error' in plog:
-                    past_errs.append(plog['train_error'])
+                    past_errs.append(abs(plog['train_error']))
             if np.argmin(past_errs) == 0:  # The minimal error in the oldest log
                 raise EarlyStop(f"Early stopped at epoch {epoch} with past errors: {past_errs}.")
 
@@ -264,7 +264,7 @@ def train_complexity_reg(
     if cuda:
         Xtr, Ytr, Xts, Yts = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
     loss_every = 5
-    early_stop_epochs = 20
+    early_stop_epochs = 21
     opt_hp, schedule = create_optimizer(optimizer, model, learning_rate)
     print(f"Starting hyperparameter optimization on model {model}.")
     print(f"Will run for {num_epochs} epochs with {opt_hp} optimizer.")
@@ -287,11 +287,16 @@ def train_complexity_reg(
         opt_hp.step(closure)
 
         cum_time += time.time() - t_start
-        epoch_bookkeeping(epoch=epoch, model=model, data={'Xtr': Xtr, 'Ytr': Ytr, 'Xts': Xts, 'Yts': Yts},
-                          err_fn=err_fn, grads=grads, losses=losses, loss_every=loss_every,
-                          early_stop_patience=early_stop_epochs, schedule=schedule, minibatch=None,
-                          logs=logs, cum_time=cum_time, verbose=verbose)
-        del grads, losses
+        try:
+            epoch_bookkeeping(epoch=epoch, model=model, data={'Xtr': Xtr, 'Ytr': Ytr, 'Xts': Xts, 'Yts': Yts},
+                              err_fn=err_fn, grads=grads, losses=losses, loss_every=loss_every,
+                              early_stop_patience=early_stop_epochs, schedule=schedule, minibatch=None,
+                              logs=logs, cum_time=cum_time, verbose=verbose)
+        except EarlyStop as e:
+            print(e)
+            break
+        finally:
+            del grads, losses
     if retrain_nkrr:
         print(f"Final retrain after {num_epochs} epochs:")
         pred_dict = pred_reporting(
@@ -323,7 +328,7 @@ def train_complexity_reg_mb(
     if cuda:
         Xtrc, Ytrc, Xtsc, Ytsc = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
     loss_every = 5
-    early_stop_epochs = 20
+    early_stop_epochs = 21
     opt_hp, schedule = create_optimizer(optimizer, model, learning_rate)
     print(f"Starting hyperparameter optimization on model {model}.")
     print(f"Will run for {num_epochs} epochs with {opt_hp} optimizer, "
@@ -347,10 +352,14 @@ def train_complexity_reg_mb(
             opt_hp.step()
 
         cum_time += time.time() - t_start
-        epoch_bookkeeping(epoch=epoch, model=model, data={'Xtr': Xtr, 'Ytr': Ytr, 'Xts': Xts, 'Yts': Yts},
-                          err_fn=err_fn, grads=None, losses=None, loss_every=loss_every,
-                          early_stop_patience=early_stop_epochs, schedule=schedule, minibatch=minibatch,
-                          logs=logs, cum_time=cum_time, verbose=verbose)
+        try:
+            epoch_bookkeeping(epoch=epoch, model=model, data={'Xtr': Xtrc, 'Ytr': Ytrc, 'Xts': Xtsc, 'Yts': Ytsc},
+                              err_fn=err_fn, grads=None, losses=None, loss_every=loss_every,
+                              early_stop_patience=early_stop_epochs, schedule=schedule, minibatch=minibatch,
+                              logs=logs, cum_time=cum_time, verbose=verbose)
+        except EarlyStop as e:
+            print(e)
+            break
     if retrain_nkrr:
         print(f"Final retrain after {num_epochs} epochs:")
         pred_dict = pred_reporting(
