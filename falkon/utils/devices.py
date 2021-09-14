@@ -22,12 +22,14 @@ class DeviceInfo:
     total_memory: float = 0
     used_memory: float = 0
     free_memory: float = 0
+    usable_memory: float = 0
     gpu_name: str = ''
 
     def update_memory(self, total_memory=0, used_memory=0, free_memory=0):
         self.total_memory = total_memory
         self.used_memory = used_memory
         self.free_memory = free_memory
+        self.usable_memory = self.free_memory
 
     @property
     def isCPU(self):
@@ -45,9 +47,11 @@ class DeviceInfo:
 
     def __repr__(self):
         return ("DeviceInfo(Id={Id}, speed={speed}, total_memory={total_memory}, "
-                "used_memory={used_memory}, free_memory={free_memory})".format(
+                "used_memory={used_memory}, free_memory={free_memory}, "
+                "usable_memory={usable_memory})".format(
                     Id=self.Id, speed=self.speed, total_memory=self.total_memory,
-                    used_memory=self.used_memory, free_memory=self.free_memory))
+                    used_memory=self.used_memory, free_memory=self.free_memory,
+                    usable_memory=self.usable_memory))
 
 
 def _get_cpu_device_info(opt: BaseOptions, data_dict: Dict[int, DeviceInfo]) -> Dict[int, DeviceInfo]:

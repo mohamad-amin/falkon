@@ -1,20 +1,20 @@
-import math
 import argparse
 import datetime
+import math
 import os
 import pickle
 import warnings
 from functools import partial
-from typing import Any, List
+from typing import Any, List, Optional
 
 import numpy as np
 import pandas as pd
 import torch
 
+from benchmark.common.benchmark_utils import Dataset
 from benchmark.common.datasets import get_load_fn
 from benchmark.common.error_metrics import get_err_fns
 from benchmark.common.summary import get_writer
-from benchmark.common.benchmark_utils import Dataset
 from falkon import FalkonOptions
 from falkon.center_selection import UniformSelector
 from falkon.hypergrad.training import (
@@ -23,6 +23,21 @@ from falkon.hypergrad.training import (
 )
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
+
+def median_heuristic(X: torch.Tensor, sigma_type: str, num_rnd_points: Optional[int]):
+    # https://arxiv.org/pdf/1707.07269.pdf
+    if num_rnd_points is not None and num_rnd_points < X.shape[0]:
+        rnd_idx = np.random.choice(X.shape[0], size=num_rnd_points, replace=False)
+        X = X[rnd_idx]
+    if sigma_type == 'diag':
+        sigmas = [median_heuristic(X[:, i: i + 1], 'single', None) for i in range(X.shape[1])]
+        return torch.tensor(sigmas)
+    else:
+        # Calculate pairwise distances
+        dist = torch.pdist(X, p=2)
+        med_dist = torch.median(dist)
+        return med_dist
 
 
 def save_logs(logs: Any, exp_name: str, log_folder: str = "./logs"):
@@ -50,13 +65,40 @@ def read_gs_file(file_name: str) -> List[HPGridPoint]:
     return points
 
 
+def sigma_pen_init(data, sigma_type, sigma_init, penalty_init):
+    if sigma_init == 'auto':
+        sigma_init = median_heuristic(data['Xtr'], sigma_type='single', num_rnd_points=5000)
+        print("Initial sigma is: %.4e" % (sigma_init))
+    else:
+        sigma_init = float(sigma_init)
+    if penalty_init == 'auto':
+        penalty_init = 0.9 / data['Xtr'].shape[0]
+        print("Initial penalty is: %.4e" % (penalty_init))
+    else:
+        penalty_init = float(penalty_init)
+
+    return sigma_init, penalty_init
+
+
+def choose_centers_init(Xtr, model_type, metadata, num_centers, seed):
+    # Center selection (not on GPR!)
+    if model_type == "gpr":
+        centers = None
+    else:
+        if 'centers' in metadata:
+            print(f"Ignoring default centers and picking new {num_centers} centers.")
+        selector = UniformSelector(np.random.default_rng(seed), num_centers)
+        centers = selector.select(Xtr, None)
+    return centers
+
+
 def run_grid_search(
         exp_name: str,
         dataset: Dataset,
         model_type: str,
-        penalty_init: float,
+        penalty_init: str,
         sigma_type: str,
-        sigma_init: float,
+        sigma_init: str,
         gs_file: str,
         num_centers: int,
         val_pct: float,
@@ -71,20 +113,14 @@ def run_grid_search(
     Xtr, Ytr, Xts, Yts, metadata = get_load_fn(dataset)(np.float64, as_torch=True)
     err_fns = get_err_fns(dataset)
 
-    # Center selection (not on GPR!)
-    if model_type == "gpr":
-        centers = None
-    else:
-        if 'centers' in metadata:
-            print(f"Ignoring default centers and picking new {num_centers} centers.")
-        selector = UniformSelector(np.random.default_rng(seed))
-        centers = selector.select(Xtr, None, num_centers)
-
+    centers_init = choose_centers_init(Xtr, model_type, metadata, num_centers, seed)
+    sigma_init, penalty_init = sigma_pen_init(
+        {'Xtr': Xtr}, sigma_type=sigma_type, sigma_init=sigma_init, penalty_init=penalty_init)
     grid_spec = read_gs_file(gs_file)
     model = init_model(model_type=model_type,
                        data={'X': Xtr, 'Y': Ytr},
                        penalty_init=penalty_init,
-                       centers_init=centers,
+                       centers_init=centers_init,
                        sigma_init=sigma_init,
                        opt_penalty=False,
                        opt_sigma=False,
@@ -108,26 +144,25 @@ def run_fetch_loss(
         dataset: Dataset,
         exp_name: str,
         model_type: str,
-        penalty_init: float,
+        penalty_init: str,
         sigma_type: str,
         sigma_init: float,
         num_centers: int,
         seed: int
-    ):
+):
     torch.manual_seed(seed)
     np.random.seed(seed)
     Xtr, Ytr, Xts, Yts, metadata = get_load_fn(dataset)(np.float32, as_torch=True)
-    selector = UniformSelector(np.random.default_rng(seed), num_centers)
-    centers = selector.select(Xtr, None)
 
-    penalty_init= 0.9 / Xtr.shape[0]
-    print("Penalty init changed to %.2e" % (penalty_init))
+    centers_init = choose_centers_init(Xtr, model_type, metadata, num_centers, seed)
+    sigma_init, penalty_init = sigma_pen_init(
+        {'Xtr': Xtr}, sigma_type=sigma_type, sigma_init=sigma_init, penalty_init=penalty_init)
 
     model = init_model(
         model_type=model_type,
         data={'X': Xtr, 'Y': Ytr},
         penalty_init=penalty_init,
-        centers_init=centers,
+        centers_init=centers_init,
         sigma_init=sigma_init,
         opt_penalty=False,
         opt_sigma=False,
@@ -147,14 +182,13 @@ def run_fetch_loss(
     print("\n\n\n")
 
 
-
 def run_optimization(
         exp_name: str,
         dataset: Dataset,
         model_type: str,
-        penalty_init: float,
+        penalty_init: str,
         sigma_type: str,
-        sigma_init: float,
+        sigma_init: str,
         opt_centers: bool,
         opt_sigma: bool,
         opt_penalty: bool,
@@ -177,17 +211,9 @@ def run_optimization(
     Xtr, Ytr, Xts, Yts, metadata = get_load_fn(dataset)(np.float32, as_torch=True)
     err_fns = get_err_fns(dataset)
 
-    # Center selection (not on GPR!)
-    if model_type == "gpr":
-        centers = None
-    else:
-        if 'centers' in metadata:
-            print(f"Ignoring default centers and picking new {num_centers} centers.")
-        selector = UniformSelector(np.random.default_rng(seed), num_centers)
-        centers = selector.select(Xtr, None)
-
-    #penalty_init= 0.9 / Xtr.shape[0]
-    print("Penalty init changed to %.2e" % (penalty_init))
+    sigma_init, penalty_init = sigma_pen_init(
+        {'Xtr': Xtr}, sigma_type=sigma_type, sigma_init=sigma_init, penalty_init=penalty_init)
+    centers_init = choose_centers_init(Xtr, model_type, metadata, num_centers, seed)
     if minibatch > 0:
         num_batches = math.ceil(Xtr.shape[0] / minibatch)
         learning_rate = learning_rate / num_batches
@@ -196,7 +222,7 @@ def run_optimization(
     model = init_model(model_type=model_type,
                        data={'X': Xtr, 'Y': Ytr},
                        penalty_init=penalty_init,
-                       centers_init=centers,
+                       centers_init=centers_init,
                        sigma_init=sigma_init,
                        opt_penalty=opt_penalty,
                        opt_sigma=opt_sigma,
@@ -243,8 +269,8 @@ if __name__ == "__main__":
     p.add_argument('--sigma-type', type=str,
                    help="Use diagonal or single lengthscale for the kernel",
                    default='single')
-    p.add_argument('--sigma-init', type=float, default=2.0, help="Starting value for sigma")
-    p.add_argument('--penalty-init', type=float, default=1.0, help="Starting value for penalty")
+    p.add_argument('--sigma-init', type=str, default='2.0', help="Starting value for sigma")
+    p.add_argument('--penalty-init', type=str, default='1.0', help="Starting value for penalty")
     p.add_argument('--oc', action='store_true',
                    help="Whether to optimize Nystrom centers")
     p.add_argument('--os', action='store_true',
@@ -263,7 +289,8 @@ if __name__ == "__main__":
                    help="Maximum number of falkon iterations (for stochastic estimators)")
     p.add_argument('--approx-trace', action='store_true',
                    help="Pass this flag to use STE for the Nystrom trace term.")
-    p.add_argument('--mb', type=int, default=0, required=False, help='mini-batch size. If <= 0 will use full-gradient')
+    p.add_argument('--mb', type=int, default=0, required=False,
+                   help='mini-batch size. If <= 0 will use full-gradient')
     p.add_argument('--cuda', action='store_true')
     p.add_argument('--fetch-loss', action='store_true')
     args = p.parse_args()

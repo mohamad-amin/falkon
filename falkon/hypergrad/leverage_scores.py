@@ -316,7 +316,7 @@ def nystrom_trace_frotrsm_fwd(kernel_args, M, X):
         from falkon.mmv_ops.utils import _get_gpu_info
         gpu_info = _get_gpu_info(opt, slack=0.9)
         single_gpu_info = [g for g in gpu_info if g.Id == X.device.index][0]
-        avail_mem = single_gpu_info.usable_ram / sizeof_dtype(X.dtype)
+        avail_mem = single_gpu_info.usable_memory / sizeof_dtype(X.dtype)
     else:
         avail_mem = opt.max_cpu_mem / sizeof_dtype(X.dtype)
 

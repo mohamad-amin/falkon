@@ -262,7 +262,7 @@ def _batch_fmmv(X1: torch.Tensor,
         gpu_info = _get_gpu_info(opt, slack=0.9)
         single_gpu_info = [g for g in gpu_info if g.Id == data_dev.index][0]
         args = ArgsFmmv(X1=X1, X2=X2, v=v, out=out, kernel=kernel,
-                        max_mem=single_gpu_info.usable_ram)
+                        max_mem=single_gpu_info.usable_memory)
         _call_direct(mmv_run_starter, (args, data_dev.index))
     elif comp_dev_type == 'cuda' and data_dev.type == 'cpu':
         gpu_info = _get_gpu_info(opt, slack=0.9)
@@ -277,7 +277,7 @@ def _batch_fmmv(X1: torch.Tensor,
                     X1=X1.narrow(1, block_sizes[i], bwidth),
                     X2=X2, v=v,
                     out=out.narrow(1, block_sizes[i], bwidth),
-                    kernel=kernel, max_mem=g.usable_ram), g.Id))
+                    kernel=kernel, max_mem=g.usable_memory), g.Id))
         else:
             block_sizes = calc_gpu_block_sizes(gpu_info, B)
             for i, g in enumerate(gpu_info):
@@ -289,7 +289,7 @@ def _batch_fmmv(X1: torch.Tensor,
                     X2=X2.narrow(0, block_sizes[i], bwidth),
                     v=v.narrow(0, block_sizes[i], bwidth),
                     out=out.narrow(0, block_sizes[i], bwidth),
-                    kernel=kernel, max_mem=g.usable_ram), g.Id))
+                    kernel=kernel, max_mem=g.usable_memory), g.Id))
         _start_wait_processes(mmv_run_starter, args)
     else:
         raise RuntimeError("Requested CPU computations with CUDA data. "

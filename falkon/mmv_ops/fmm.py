@@ -254,7 +254,7 @@ def fmm(X1: Union[torch.Tensor, SparseTensor],
         gpu_info = _get_gpu_info(opt, slack=0.9)
         single_gpu_info = [g for g in gpu_info if g.Id == data_dev.index][0]
         args = ArgsFmm(X1=X1, X2=X2, out=out, kernel=kernel, gpu_dtype=comp_dtype,
-                       max_mem=single_gpu_info.usable_ram, num_streams=opt.num_fmm_streams)
+                       max_mem=single_gpu_info.usable_memory, num_streams=opt.num_fmm_streams)
         _call_direct(mm_run_starter, (args, data_dev.index))
     elif comp_dev_type == 'cuda' and data_dev.type == 'cpu':
         gpu_info = _get_gpu_info(opt, slack=0.9)
@@ -269,7 +269,7 @@ def fmm(X1: Union[torch.Tensor, SparseTensor],
             else:
                 X1_block = X1.narrow(0, block_sizes[i], bwidth)
             args.append((ArgsFmm(X1=X1_block, X2=X2, out=out.narrow(0, block_sizes[i], bwidth),
-                                 kernel=kernel, gpu_dtype=comp_dtype, max_mem=g.usable_ram,
+                                 kernel=kernel, gpu_dtype=comp_dtype, max_mem=g.usable_memory,
                                  num_streams=opt.num_fmm_streams), g.Id))
         _start_wait_processes(mm_run_starter, args)
     else:

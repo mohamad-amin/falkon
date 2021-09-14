@@ -231,7 +231,7 @@ def run_keops_mmv(X1: torch.Tensor,
                 other_vars=other_vars,
                 function=fn,
                 backend=backend,
-                gpu_ram=g.usable_ram
+                gpu_ram=g.usable_memory
             ), g.Id))
         _start_wait_processes(_single_gpu_method, args)
     else:  # Run on CPU or GPU with CUDA inputs

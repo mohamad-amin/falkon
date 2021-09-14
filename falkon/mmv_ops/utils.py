@@ -33,7 +33,7 @@ def _get_gpu_info(opt: BaseOptions, slack: float = 0.9) -> List[DeviceInfo]:
     # computations based on device relative speed.
     gpu_info = [v for k, v in devices.get_device_info(opt).items() if v.isGPU]
     for g in gpu_info:
-        g.usable_ram = min(g.free_memory * slack, opt.max_gpu_mem * slack)
+        g.usable_memory = min(g.free_memory * slack, opt.max_gpu_mem * slack)
     return gpu_info
 
 
