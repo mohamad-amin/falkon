@@ -95,7 +95,6 @@ def pred_reporting(model: HyperOptimModel,
                    Xtr, Ytr,
                    err_fn: callable,
                    epoch: int,
-                   time_start: float,
                    cum_time: float,
                    Xval: Optional[torch.Tensor] = None,
                    Yval: Optional[torch.Tensor] = None,
@@ -103,8 +102,6 @@ def pred_reporting(model: HyperOptimModel,
                    mb_size: Optional[int] = None,
                    ) -> Dict[str, float]:
     writer = get_writer()
-    t_elapsed = time.time() - time_start  # Stop the time
-    cum_time += t_elapsed
     model.eval()
     sigma, penalty, centers = model.sigma, model.penalty, model.centers
 
@@ -148,18 +145,17 @@ def pred_reporting(model: HyperOptimModel,
     writer.add_scalar(f'error/{err_name}/train', train_err, epoch)
     writer.add_scalar(f'error/{err_name}/test', test_err, epoch)
 
-    ret = [cum_time, train_err, test_err]
     if Xval is not None and Yval is not None:
         val_preds = model.predict(Xval).detach().cpu()
         val_err, err_name = err_fn(Yval.detach().cpu(), val_preds)
         out_str += f" - Val {err_name} = {val_err:6.4f}"
-        ret.append(val_err)
         writer.add_scalar(f'error/{err_name}/val', val_err, epoch)
     print(out_str, flush=True)
     return {
-        "cum_time": cum_time,
         f"train_{err_name}": train_err,
         f"test_{err_name}": test_err,
+        "train_error": train_err,
+        "test_error": test_err,
     }
 
 
@@ -201,6 +197,55 @@ def create_optimizer(opt_type: str, model: HyperOptimModel, learning_rate: float
     return opt_hp, schedule
 
 
+class EarlyStop(Exception):
+    def __init__(self, msg):
+        super(EarlyStop, self).__init__(msg)
+
+
+def epoch_bookkeeping(
+        epoch: int,
+        model: HyperOptimModel,
+        data: Dict[str, torch.Tensor],
+        err_fn,
+        grads,
+        losses,
+        loss_every: int,
+        early_stop_patience: Optional[int],
+        schedule,
+        minibatch: Optional[int],
+        logs: list,
+        cum_time: float,
+        verbose):
+    Xtr, Ytr, Xts, Yts = data['Xtr'], data['Ytr'], data['Xts'], data['Yts']
+
+    loss_dict = grad_loss_reporting(model.named_parameters(), grads, losses, model.loss_names,
+                                    verbose, epoch, losses_are_grads=model.losses_are_grads)
+    if epoch != 0 and (epoch + 1) % loss_every == 0:
+        pred_dict = pred_reporting(
+            model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
+            err_fn=err_fn, epoch=epoch, cum_time=cum_time,
+            resolve_model=True, mb_size=minibatch)
+        loss_dict.update(pred_dict)
+    logs.append(loss_dict)
+    # Learning rate schedule
+    if schedule is not None:
+        if isinstance(schedule, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            if 'train_error' in loss_dict:
+                schedule.step(loss_dict['train_error'])
+        else:
+            schedule.step()
+    # Early stop if no training-error improvement in the past `early_stop_patience` epochs.
+    if early_stop_patience is not None and len(logs) >= early_stop_patience:
+        if "train_error" in logs[-1]:
+            past_errs = []
+            past_logs = logs[-early_stop_patience:]  # Last n logs from most oldest to most recent
+            for plog in past_logs:
+                if 'train_error' in plog:
+                    past_errs.append(plog['train_error'])
+            if np.argmin(past_errs) == 0:  # The minimal error in the oldest log
+                raise EarlyStop(f"Early stopped at epoch {epoch} with past errors: {past_errs}.")
+
+
 def train_complexity_reg(
         Xtr: torch.Tensor,
         Ytr: torch.Tensor,
@@ -219,14 +264,15 @@ def train_complexity_reg(
     if cuda:
         Xtr, Ytr, Xts, Yts = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
     loss_every = 5
+    early_stop_epochs = 20
     opt_hp, schedule = create_optimizer(optimizer, model, learning_rate)
     print(f"Starting hyperparameter optimization on model {model}.")
     print(f"Will run for {num_epochs} epochs with {opt_hp} optimizer.")
 
     logs = []
     cum_time = 0
-    t_start = time.time()
     for epoch in range(num_epochs):
+        t_start = time.time()
         grads: Any = None
         losses: Any = None
 
@@ -240,30 +286,17 @@ def train_complexity_reg(
             return float(loss)
         opt_hp.step(closure)
 
-        pred_dict = {}
-        if epoch != 0 and (epoch + 1) % loss_every == 0:
-            pred_dict = pred_reporting(
-                model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
-                err_fn=err_fn, epoch=epoch, time_start=t_start, cum_time=cum_time,
-                resolve_model=True)
-            cum_time = pred_dict["cum_time"]
-            t_start = time.time()
-        loss_dict = grad_loss_reporting(model.named_parameters(), grads, losses, model.loss_names,
-                                        verbose, epoch, losses_are_grads=model.losses_are_grads)
-        loss_dict.update(pred_dict)
-        logs.append(loss_dict)
-        if schedule is not None:
-            if isinstance(schedule, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                if 'train_NRMSE' in loss_dict:
-                    schedule.step(loss_dict['train_NRMSE'])
-            else:
-                schedule.step()
+        cum_time += time.time() - t_start
+        epoch_bookkeeping(epoch=epoch, model=model, data={'Xtr': Xtr, 'Ytr': Ytr, 'Xts': Xts, 'Yts': Yts},
+                          err_fn=err_fn, grads=grads, losses=losses, loss_every=loss_every,
+                          early_stop_patience=early_stop_epochs, schedule=schedule, minibatch=None,
+                          logs=logs, cum_time=cum_time, verbose=verbose)
         del grads, losses
     if retrain_nkrr:
         print(f"Final retrain after {num_epochs} epochs:")
         pred_dict = pred_reporting(
             model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
-            err_fn=err_fn, epoch=num_epochs, time_start=time.time(), cum_time=cum_time,
+            err_fn=err_fn, epoch=num_epochs, cum_time=cum_time,
             resolve_model=True)
         logs.append(pred_dict)
 
@@ -290,6 +323,7 @@ def train_complexity_reg_mb(
     if cuda:
         Xtrc, Ytrc, Xtsc, Ytsc = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
     loss_every = 5
+    early_stop_epochs = 20
     opt_hp, schedule = create_optimizer(optimizer, model, learning_rate)
     print(f"Starting hyperparameter optimization on model {model}.")
     print(f"Will run for {num_epochs} epochs with {opt_hp} optimizer, "
@@ -297,9 +331,9 @@ def train_complexity_reg_mb(
 
     logs = []
     cum_time = 0
-    t_start = time.time()
     mb_indices = np.arange(Xtr.shape[0])
     for epoch in range(num_epochs):
+        t_start = time.time()
         np.random.shuffle(mb_indices)
         for mb_start in range(0, Xtr.shape[0], minibatch):
             Xtr_batch = (Xtr[mb_indices[mb_start: mb_start + minibatch], :]).contiguous()
@@ -312,28 +346,16 @@ def train_complexity_reg_mb(
             loss.backward()
             opt_hp.step()
 
-        loss_dict = grad_loss_reporting(model.named_parameters(), None, None, model.loss_names,
-                                        verbose, epoch, losses_are_grads=False)
-        if epoch != 0 and (epoch + 1) % loss_every == 0:
-            pred_dict = pred_reporting(
-                model=model, Xtr=Xtrc, Ytr=Ytrc, Xts=Xtsc, Yts=Ytsc,
-                err_fn=err_fn, epoch=epoch, time_start=t_start, cum_time=cum_time,
-                resolve_model=True, mb_size=minibatch)
-            cum_time = pred_dict["cum_time"]
-            loss_dict.update(pred_dict)
-            t_start = time.time()
-        logs.append(loss_dict)
-        if schedule is not None:
-            if isinstance(schedule, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                if 'train_NRMSE' in pred_dict or 'train_MSE' in pred_dict or 'train_c-error' in pred_dict:
-                    schedule.step(pred_dict['train_NRMSE'])  # TODO: the step uses NRMSE which may not be present...
-            else:
-                schedule.step()
+        cum_time += time.time() - t_start
+        epoch_bookkeeping(epoch=epoch, model=model, data={'Xtr': Xtr, 'Ytr': Ytr, 'Xts': Xts, 'Yts': Yts},
+                          err_fn=err_fn, grads=None, losses=None, loss_every=loss_every,
+                          early_stop_patience=early_stop_epochs, schedule=schedule, minibatch=minibatch,
+                          logs=logs, cum_time=cum_time, verbose=verbose)
     if retrain_nkrr:
         print(f"Final retrain after {num_epochs} epochs:")
         pred_dict = pred_reporting(
             model=model, Xtr=Xtrc, Ytr=Ytrc, Xts=Xtsc, Yts=Ytsc,
-            err_fn=err_fn, epoch=num_epochs, time_start=time.time(), cum_time=cum_time,
+            err_fn=err_fn, epoch=num_epochs, cum_time=cum_time,
             resolve_model=True)
         logs.append(pred_dict)
 
