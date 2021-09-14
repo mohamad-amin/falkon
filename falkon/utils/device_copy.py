@@ -40,6 +40,7 @@ def copy(origin, dest, s=None, allow_dtype_change=False):
     return dest
 
 
+# noinspection PyProtectedMember
 def copy_to_host(rows, cols, D, Di, Dj, H, Hi, Hj, s=None):
     D_narrow = D.narrow(0, Di, rows).narrow(1, Dj, cols)
     H_narrow = H.narrow(0, Hi, rows).narrow(1, Hj, cols)
@@ -90,6 +91,7 @@ def copy_to_host(rows, cols, D, Di, Dj, H, Hi, Hj, s=None):
         H_narrow_final.copy_(H_narrow)  # Blocking copy since it's H->H.
 
 
+# noinspection PyProtectedMember
 def copy_to_device(rows, cols, H, Hi, Hj, D, Di, Dj, s=None):
     H_narrow = H.narrow(0, Hi, rows).narrow(1, Hj, cols)
     D_narrow = D.narrow(0, Di, rows).narrow(1, Dj, cols)
@@ -103,10 +105,6 @@ def copy_to_device(rows, cols, H, Hi, Hj, D, Di, Dj, s=None):
 
     dts = sizeof_dtype(D.dtype)
     if is_contig_vec(H_narrow) and is_contig_vec(D_narrow):
-        #if not is_contig_vec(D_narrow):
-        #    raise RuntimeError(f"H is contiguous vector (shape {H_narrow.shape}, "
-        #                       f"strides {H_narrow.stride()}) but D is not (shape "
-        #                       f"{D_narrow.shape}, strides {D_narrow.stride()}).")
         if s is not None:
             cuda_memcpy_async(
                 src=H_narrow.data_ptr(), dst=D_narrow.data_ptr(),

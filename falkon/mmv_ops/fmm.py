@@ -9,11 +9,11 @@ import falkon
 from falkon.mmv_ops.utils import *
 from falkon.options import BaseOptions
 from falkon.sparse.sparse_tensor import SparseTensor
+from falkon.utils.device_copy import copy
 from falkon.utils.helpers import (
     sizeof_dtype, select_dim_over_nm, calc_gpu_block_sizes
 )
-from falkon.utils.tensor_helpers import extract_same_stride, create_same_stride, create_fortran
-from falkon.utils.device_copy import copy
+from falkon.utils.tensor_helpers import create_same_stride, create_fortran
 
 
 @dataclass(frozen=True)
