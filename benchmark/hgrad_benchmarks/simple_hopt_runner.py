@@ -7,13 +7,13 @@ import numpy as np
 
 
 SIMPLE_HOPT_PATH = pathlib.Path(__file__).parent.joinpath("simple_hopt.py").resolve()
-DEFAULT_SEED = 12319
+DEFAULT_SEED = 123199
 
 
 def gen_exp_name(optimizer, num_centers, learning_rate, penalty, sigma, val_percentage, opt_m,
                  sigma_type, model, dataset, num_trace_vecs, approx_trace, flk_maxiter, cg_tol,
                  extra_name):
-    val_pct_str = f"_val{val_percentage}_" if model in VAL_MODELS else ""
+    val_pct_str = f"_val{val_percentage}_" if True else "" # model in VAL_MODELS else ""
     trace_vec_str = f"_ste{num_trace_vecs}_" if model in STOCH_MODELS else ""
     flk_miter_str = f"_{flk_maxiter}fits_" if model in STOCH_MODELS else ""
     approx_trace_str = f"_trappr_" if model in STOCH_MODELS and approx_trace else ""
@@ -63,6 +63,8 @@ def run_simple_hopt(sigma_init: float,
         f"--cuda",
         f"--name {gen_exp_name(optim, M, lr, pen_init, sigma_init, val_pct, opt_centers, sigma, model, dataset, num_trace_vecs, approx_trace, flk_maxiter, cg_tol, exp_name)}",
     ]
+    if model == "svgp":
+        proc_args.append("--mb 16000")
     if opt_centers:
         proc_args.append("--oc")
     if approx_trace:
@@ -129,10 +131,10 @@ def run_for_valpct(sigma_init: float,
 
 
 SIGMA_PEN_PAIRS = [
-    (15.0, 1e-4),
+    (2.0, 1.5e-5),
     (1.0, 1.0),
+    (15.0, 1e-4),
     (15.0, 1.0),
-    (1.0, 1e-4),
 ]
 VAL_PCTS = [0.1, 0.2, 0.4, 0.6, 0.8, 0.9]
 STOCH_MODELS = [
@@ -145,6 +147,7 @@ STOCH_MODELS = [
 VAL_MODELS = [
     "hgrad-ift",
     "hgrad-closed",
+    "flk-hgrad-closed",
 ]
 MODELS = [
     "loocv",
@@ -152,31 +155,39 @@ MODELS = [
     "gcv",
     "creg-nopenfit",
     "creg-penfit",
+    "hgrad-closed",
 ]
 
 
 def run():
-    dataset = "protein"
-    num_epochs = 200
-    learning_rate = 0.1
-    M = 20
+    # protein, chiet, ictus, kin40k
+    datasets = ["protein", "chiet", "ictus", "codrna", "svmguide1", "phishing",
+                "spacega", "cadata", "mg", "cpusmall", "abalone", "blogfeedback",
+                "energy", "covtype", "ho-higgs", "ijcnn1",
+                "road3d", "buzz", "houseelectric",]
+    #datasets = ["mnist-small", "fashionmnist", "svhn", "cifar10"]
+    dataset = "cadata"
+    num_epochs = 150
+    learning_rate = 0.05
+    M = 100
     opt_m = True
-    val_pct = 0.4
+    val_pct = 0.6
     optim = "adam"
     sigma = "diag"
-    extra_exp_name = "meanrem"
-    sigma_init = 1.0
-    penalty_init = 1.0
+    extra_exp_name = "all_startauto500"
+    sigma_init = 5.0
+    penalty_init = "auto"
     # Stochastic stuff
-    flk_maxiter = 100
+    flk_maxiter = 30
     num_trace_vecs = 20
     cg_tol = 1e-2
     approx_trace = True
     # Models to use for training
-    models = ["stoch-gcv", "stoch-creg-nopenfit", "stoch-creg-penfit", "gcv", "creg-nopenfit", "creg-penfit"]
-    models = ["stoch-creg-penfit"]
+    #models = ["gcv", "sgpr", "hgrad-closed", "creg-penfit", "creg-nopenfit", "creg-nopenfit-divtr", "creg-nopenfit-divtrdeff", "creg-nopenfit-divdeff"]
+    models = ["sgpr", "svgp", "creg-penfit", "creg-nopenfit", "hgrad-closed", "creg-nopenfit-divtr", "creg-nopenfit-divtrdeff", "gcv"]
 
-    if True:
+
+    if False:
         for t in [10, 20, 40, 70, 100]:
             run_for_models(
                 sigma_init=sigma_init, pen_init=penalty_init,
@@ -184,7 +195,7 @@ def run():
                 val_pct=val_pct, models=models, num_rep=5, optim=optim, sigma=sigma,
                 opt_centers=opt_m, exp_name=extra_exp_name, flk_maxiter=flk_maxiter,
                 num_trace_vecs=t, cg_tol=cg_tol, approx_trace=approx_trace)
-    if False:
+    elif False:
         for cg in np.logspace(-1, -6, 10):
             run_for_models(
                 sigma_init=sigma_init, pen_init=penalty_init,
@@ -192,7 +203,7 @@ def run():
                 val_pct=val_pct, models=models, num_rep=5, optim=optim, sigma=sigma,
                 opt_centers=opt_m, exp_name=extra_exp_name, flk_maxiter=flk_maxiter,
                 num_trace_vecs=num_trace_vecs, cg_tol=cg, approx_trace=approx_trace)
-    if False:
+    elif False:
         for si, pi in SIGMA_PEN_PAIRS:
             run_for_models(
                 sigma_init=si, pen_init=pi,
@@ -200,14 +211,31 @@ def run():
                 val_pct=val_pct, models=models, num_rep=5, optim=optim, sigma=sigma,
                 opt_centers=opt_m, exp_name=extra_exp_name, flk_maxiter=flk_maxiter,
                 num_trace_vecs=num_trace_vecs, cg_tol=cg_tol, approx_trace=approx_trace)
-    if False:
+    elif False:  # Changing validation percentages (hgrad-closed)
         for val_pct in VAL_PCTS:
+            run_for_models(
+                sigma_init=sigma_init, pen_init=penalty_init,
+                lr=learning_rate, num_epochs=num_epochs, M=M, dataset=dataset,
+                val_pct=val_pct, models=["hgrad-closed"], num_rep=5, optim=optim, sigma=sigma,
+                opt_centers=opt_m, exp_name=extra_exp_name, flk_maxiter=flk_maxiter,
+                num_trace_vecs=num_trace_vecs, cg_tol=cg_tol, approx_trace=approx_trace)
+    elif False:
+        for si, pi in SIGMA_PEN_PAIRS:
             run_for_models(
                 sigma_init=si, pen_init=pi,
                 lr=learning_rate, num_epochs=num_epochs, M=M, dataset=dataset,
-                val_pct=val_pct, models=["hgrad-closed"], num_rep=10, optim=optim, sigma=sigma,
+                val_pct=val_pct, models=MODELS, num_rep=1, optim=optim, sigma=sigma,
                 opt_centers=opt_m, exp_name=extra_exp_name, flk_maxiter=flk_maxiter,
                 num_trace_vecs=num_trace_vecs, cg_tol=cg_tol, approx_trace=approx_trace)
+    else:
+        for dset in datasets:
+            run_for_models(
+                sigma_init=sigma_init, pen_init=penalty_init,
+                lr=learning_rate, num_epochs=num_epochs, M=M, dataset=dset,
+                val_pct=val_pct, models=models, num_rep=3, optim=optim, sigma=sigma,
+                opt_centers=opt_m, exp_name=extra_exp_name, flk_maxiter=flk_maxiter,
+                num_trace_vecs=num_trace_vecs, cg_tol=cg_tol, approx_trace=approx_trace)
+
 
 
 if __name__ == "__main__":

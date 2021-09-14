@@ -23,7 +23,7 @@ from falkon.hypergrad.training import (
 )
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-AUTO_PEN_MULTIPLIER = 0.5
+AUTO_PEN_MULTIPLIER = 500
 
 
 def median_heuristic(X: torch.Tensor, sigma_type: str, num_rnd_points: Optional[int]):
