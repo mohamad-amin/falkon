@@ -13,15 +13,9 @@ from falkon.utils.devices import _cpu_used_mem
 from falkon.sparse import SparseTensor
 
 if decide_cuda():
-    from falkon.cuda import initialization
-
     @pytest.fixture(scope="session", autouse=True)
     def initialize_cuda():
         torch.cuda.init()
-        # your setup code goes here, executed ahead of first test
-        opt = BaseOptions(compute_arch_speed=False, use_cpu=False)
-        if decide_cuda():
-            initialization.init(opt)
 
 
 @contextmanager

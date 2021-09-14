@@ -61,7 +61,6 @@ def run(exp_num, dset, show_intermediate_errors: bool = False):
         raise ValueError("exp num %d not valid" % (exp_num))
     data = load_data(dset, data_type=dtype)
     torch.cuda.init()
-    initialization.init(opt)
     print("\n\n --- Running Experiment %d -- %s" % (exp_num, opt))
     data = list(data)
     data[0] = data[0].pin_memory()

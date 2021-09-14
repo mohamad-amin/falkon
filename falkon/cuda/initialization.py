@@ -5,9 +5,8 @@ import torch
 
 import falkon.cuda.cusolver_gpu as cusolver
 from falkon.cuda.cublas_gpu import cublasCreate, cublasDestroy
-from falkon.options import BaseOptions
 
-__all__ = ("init", "shutdown", "cublas_handle", "cusolver_handle")
+__all__ = ("shutdown", "cublas_handle", "cusolver_handle")
 
 
 def _normalize_device(device):
@@ -57,10 +56,6 @@ def cusolver_handle(device=None):
         handle = cusolver.cusolverDnCreate()
         _cusolver_handles[name] = handle
         return handle
-
-
-def init(opt: BaseOptions):
-    pass
 
 
 def shutdown():

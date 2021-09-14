@@ -122,7 +122,6 @@ class FLK_NKRR(nn.Module):
     def __init__(self, sigma_init, penalty_init, centers_init, opt, regularizer, opt_centers,
                  tot_n=None):
         super().__init__()
-        falkon.cuda.initialization.init(opt)
         penalty = nn.Parameter(torch.tensor(penalty_init, requires_grad=True))
         self.register_parameter('penalty', penalty)
         sigma = nn.Parameter(torch.tensor(sigma_init, requires_grad=True))
@@ -206,7 +205,6 @@ class FLK_HYP_NKRR(nn.Module):
     def __init__(self, sigma_init, penalty_init, centers_init, opt, regularizer, opt_centers,
                  tot_n=None):
         super().__init__()
-        falkon.cuda.initialization.init(opt)
         penalty = nn.Parameter(torch.tensor(penalty_init, requires_grad=True))
         self.register_parameter('penalty', penalty)
         sigma = nn.Parameter(torch.tensor(sigma_init, requires_grad=True))
@@ -387,7 +385,6 @@ class FLK_HYP_NKRR_FIX(nn.Module):
     def __init__(self, sigma_init, penalty_init, centers_init, opt, opt_centers,
                  nys_d_eff_c, loss_type, tot_n=None):
         super().__init__()
-        falkon.cuda.initialization.init(opt)
         penalty = nn.Parameter(torch.tensor(penalty_init, requires_grad=True))
         self.register_parameter('penalty', penalty)
         sigma = nn.Parameter(torch.tensor(sigma_init, requires_grad=True))

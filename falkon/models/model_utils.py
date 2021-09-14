@@ -68,7 +68,6 @@ class FalkonBase(base.BaseEstimator, ABC):
         if self.use_cuda_:
             torch.cuda.init()
             from falkon.cuda import initialization
-            initialization.init(self._base_opt)
             self.num_gpus = devices.num_gpus(self.options)
 
     def _get_callback_fn(self,

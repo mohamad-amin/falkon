@@ -58,7 +58,6 @@ def run_experiments(experiments):
 if __name__ == "__main__":
     init_opt = falkon.FalkonOptions()
     torch.cuda.init()
-    initialization.init(init_opt)
     gpu_info = [v for k, v in devices.get_device_info(init_opt).items() if k >= 0]
     num_gpu = len(gpu_info)
 
