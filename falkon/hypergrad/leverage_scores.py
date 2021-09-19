@@ -313,48 +313,52 @@ def nystrom_trace_hutch_bwd(kmn_z, kmm_chol, l_solve_1, l_solve_2, n):
 
 
 def nystrom_trace_frotrsm_fwd(kernel_args, M, X):
-    opt = FalkonOptions(keops_active="no", no_single_kernel=False)
+    opt = FalkonOptions(keops_active="no", no_single_kernel=False, use_cpu=not torch.cuda.is_available())
     if X.is_cuda:
         from falkon.mmv_ops.utils import _get_gpu_info
         gpu_info = _get_gpu_info(opt, slack=0.9)
         single_gpu_info = [g for g in gpu_info if g.Id == X.device.index][0]
         avail_mem = single_gpu_info.usable_memory / sizeof_dtype(X.dtype)
+        device = torch.device("cuda:%d" % (single_gpu_info.Id))
+    elif not opt.use_cpu:
+        from falkon.mmv_ops.utils import _get_gpu_info
+        gpu_info = _get_gpu_info(opt, slack=0.9)[0]  # TODO: Splitting across gpus
+        avail_mem = gpu_info.usable_memory / sizeof_dtype(X.dtype)
+        device = torch.device("cuda:%d" % (gpu_info.Id))
     else:
         avail_mem = opt.max_cpu_mem / sizeof_dtype(X.dtype)
+        device = torch.device("cpu")
 
-    coef_nm = 50
+    coef_nm = 100
     blk_n = select_dim_over_n(max_n=X.shape[0], m=M.shape[0], d=X.shape[1], max_mem=avail_mem,
                               coef_nm=coef_nm, coef_nd=1, coef_md=1, coef_n=0,
                               coef_m=0, coef_d=0, rest=0)
+    M_dev = M.to(device)
+    kernel_args_dev = kernel_args.to(device)
 
-    mm_eye = torch.eye(M.shape[0], device=M.device, dtype=M.dtype) * EPS
+    mm_eye = torch.eye(M_dev.shape[0], device=M_dev.device, dtype=M_dev.dtype) * EPS
     with torch.autograd.enable_grad():
-        kmm = full_rbf_kernel(M, M, kernel_args)
+        kmm = full_rbf_kernel(M_dev, M_dev, kernel_args_dev)
         kmm_chol, info = torch.linalg.cholesky_ex(kmm + mm_eye, check_errors=True)
 
     fwd = torch.tensor(0.0, dtype=X.dtype, device=X.device)
     bwd = torch.tensor(0.0, dtype=X.dtype, device=X.device)
     with ExitStack() as stack:
-        if X.device.type == 'cuda':
-            s1 = torch.cuda.current_stream(X.device)
-            stack.enter_context(torch.cuda.device(X.device))
-            stack.enter_context(torch.cuda.stream(s1))
-
         for i in range(0, X.shape[0], blk_n):
             leni = min(blk_n, X.shape[0] - i)
-            c_X = X[i: i + leni, :]
+            c_X = X[i: i + leni, :].to(device)
             with torch.autograd.enable_grad():
-                k_mn = full_rbf_kernel(M, c_X, kernel_args)
+                k_mn = full_rbf_kernel(M_dev, c_X, kernel_args_dev)
 
             # Forward
             with torch.autograd.no_grad():
                 solve1 = trsm(k_mn, kmm_chol, 1.0, lower=True, transpose=False)
                 solve2 = trsm(solve1, kmm_chol, 1.0, lower=True, transpose=True)
-                fwd += solve1.square().sum()  # TODO: make inplace?
+                fwd += solve1.square().sum().to(X.device)  # TODO: make inplace?
 
             with torch.autograd.enable_grad():
-                bwd += 2 * (k_mn * solve2).sum()#.sum(0).mean()
-                bwd -= 2 * (solve2 * (kmm_chol @ solve1)).sum()#.sum(0).mean()
+                bwd += 2 * (k_mn.mul_(solve2)).sum().to(X.device)#.sum(0).mean()
+                bwd -= 2 * ((kmm_chol @ solve1).mul_(solve1)).sum().to(X.device)#.sum(0).mean()
     with torch.autograd.no_grad():
         fwd = (1.0 - fwd / X.shape[0])
     with torch.autograd.enable_grad():
