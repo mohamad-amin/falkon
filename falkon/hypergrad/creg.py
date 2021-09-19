@@ -466,9 +466,9 @@ class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         datafit = torch.square(dfit_vec).sum()#.mean()
         trace = (Kdiag - torch.trace(AAT) ) #/ X.shape[0]
 
-        ndeff /= m
-        datafit /= m
-        trace /= m
+        #ndeff /= m
+        #datafit /= m
+        #trace /= m
 
         if self.div_trace_by_lambda:
             trace = trace / variance
@@ -504,4 +504,5 @@ class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
 
     def __repr__(self):
         return f"DeffNoPenFitTr(sigma={get_scalar(self.sigma)}, penalty={get_scalar(self.penalty)}, num_centers={self.centers.shape[0]}, " \
-               f"opt_centers={self.opt_centers}, opt_sigma={self.opt_sigma}, opt_penalty={self.opt_penalty})"
+               f"opt_centers={self.opt_centers}, opt_sigma={self.opt_sigma}, opt_penalty={self.opt_penalty}, "\
+               f"divtr={self.div_trace_by_lambda}, divdeff={self.div_deff_by_lambda}, divtrdeff={self.div_trdeff_by_lambda})"

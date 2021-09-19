@@ -130,6 +130,7 @@ class FakeTorchModelMixin(abc.ABC):
 
 
 def hp_grad(model: FakeTorchModelMixin, *loss_terms, accumulate_grads=True, verbose=True, losses_are_grads=False):
+    #verbose = True  # TODO: Remove
     grads = []
     hparams = model.parameters()
     if not losses_are_grads:
@@ -141,6 +142,8 @@ def hp_grad(model: FakeTorchModelMixin, *loss_terms, accumulate_grads=True, verb
             grads.append(torch.autograd.grad(loss, hparams, retain_graph=False))
     else:
         grads = loss_terms
+
+    #print(f"Lambda grads: deff={grads[0][1]:.2e} dfit={grads[1][1]:.2e} trace={grads[2][1]:.2e}")
 
     if accumulate_grads:
         for g in grads:
@@ -180,7 +183,7 @@ class NystromKRRModelMixinN(FakeTorchModelMixin, abc.ABC):
         else:
             self.device = torch.device('cpu')
 
-        self.penalty_transform = PositiveTransform(1e-9)
+        self.penalty_transform = PositiveTransform(1e-8)
         #self.penalty_transform = ExpTransform()
         self.penalty = penalty
         self.register_buffer("penalty", self.penalty_)
@@ -238,7 +241,7 @@ class KRRModelMixinN(FakeTorchModelMixin, abc.ABC):
         else:
             self.device = torch.device('cpu')
 
-        self.penalty_transform = PositiveTransform(1e-9)
+        self.penalty_transform = PositiveTransform(1e-8)
         #self.penalty_transform = ExpTransform()
         self.penalty = penalty
         self.register_buffer("penalty", self.penalty_)

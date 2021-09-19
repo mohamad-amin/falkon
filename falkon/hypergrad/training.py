@@ -28,6 +28,9 @@ __all__ = [
     "HPGridPoint",
 ]
 
+LOSS_EVERY = 5
+EARLY_STOP_EPOCHS = 31
+
 
 def report_losses(losses, loss_names, step) -> Dict[str, float]:
     assert len(losses) == len(
@@ -262,8 +265,8 @@ def train_complexity_reg(
 ) -> List[Dict[str, float]]:
     if cuda:
         Xtr, Ytr, Xts, Yts = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
-    loss_every = 5
-    early_stop_epochs = 21
+    loss_every = LOSS_EVERY
+    early_stop_epochs = EARLY_STOP_EPOCHS
     opt_hp, schedule = create_optimizer(optimizer, model, learning_rate)
     print(f"Starting hyperparameter optimization on model {model}.")
     print(f"Will run for {num_epochs} epochs with {opt_hp} optimizer.")
@@ -326,8 +329,8 @@ def train_complexity_reg_mb(
     Xtrc, Ytrc, Xtsc, Ytsc = Xtr, Ytr, Xts, Yts
     if cuda:
         Xtrc, Ytrc, Xtsc, Ytsc = Xtr.cuda(), Ytr.cuda(), Xts.cuda(), Yts.cuda()
-    loss_every = 5
-    early_stop_epochs = 21
+    loss_every = LOSS_EVERY
+    early_stop_epochs = EARLY_STOP_EPOCHS
     opt_hp, schedule = create_optimizer(optimizer, model, learning_rate)
     print(f"Starting hyperparameter optimization on model {model}.")
     print(f"Will run for {num_epochs} epochs with {opt_hp} optimizer, "
@@ -522,7 +525,7 @@ def run_on_grid(
     print(f"Starting grid-search on model {model}.")
     print(f"Will run for {len(grid_spec)} points.")
 
-    if minibatch is None or minibatch < 0:
+    if minibatch is None or minibatch <= 0:
         minibatch = Xtr.shape[0]
     cum_time = 0
     for i, grid_point in enumerate(grid_spec):
@@ -533,8 +536,8 @@ def run_on_grid(
             Xtr_batch = Xtr[mb_start: mb_start + minibatch, :]
             Ytr_batch = Ytr[mb_start: mb_start + minibatch, :]
             mb_losses = model.hp_loss(Xtr_batch, Ytr_batch)
-            for loss, mb_loss in zip(losses, mb_losses):
-                loss += mb_loss
+            for lidx in range(len(mb_losses)):
+                losses[lidx] += get_scalar(mb_losses[lidx])
         cum_time += time.time() - e_start
         grid_point.results = pred_reporting(
             model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts, resolve_model=True,

@@ -100,11 +100,16 @@ class GenericApproxGP(BaseModel):
                  learn_ind_pts: bool,
                  var_distrib: str,
                  likelihood,
+                 cuda: bool,
                  num_classes: int = 1):
         distribution = _choose_var_dist(
-            var_distrib, inducing_points.size(-2), batch_shape=num_classes).cuda()
+            var_distrib, inducing_points.size(-2), batch_shape=num_classes)
+        if cuda:
+            distribution = distribution.cuda()
         strategy = _choose_var_strat(
-            self, var_strat, distribution, inducing_points, learn_ind=learn_ind_pts, num_classes=num_classes).cuda()
+            self, var_strat, distribution, inducing_points, learn_ind=learn_ind_pts, num_classes=num_classes)
+        if cuda:
+            strategy = strategy.cuda()
 
         super().__init__(strategy, likelihood)
 

@@ -1,3 +1,5 @@
+import warnings
+
 import torch
 import gpytorch
 
@@ -34,47 +36,55 @@ class SVGP(HyperOptimModel):
             self.device = torch.device('cpu')
 
         if not opt_sigma or not opt_penalty:
-            raise ValueError("Sigma, Penalty always optimized...")
+            raise ValueError("Sigma, Penalty must be optimized...")
         self.opt_sigma, self.opt_centers, self.opt_penalty = opt_sigma, opt_centers, opt_penalty
         self.variational_distribution = "diag"
         self.num_data = num_data
 
         if multi_class > 1:
             self.kernel = gpytorch.kernels.RBFKernel(
-                ard_num_dims=sigma_init.shape[0], batch_shape=torch.Size([multi_class]))
-            mean_module = gpytorch.means.ConstantMean(batch_shape=torch.Size([multi_class]))
-            likelihood = gpytorch.likelihoods.SoftmaxLikelihood(
-                num_classes=multi_class, mixing_weights=False)
+                ard_num_dims=sigma_init.shape[0], batch_shape=torch.Size([1]))
+            mean_module = gpytorch.means.ConstantMean(batch_shape=torch.Size([1]))
+            self.likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(
+                    num_tasks=multi_class, has_task_noise=False)
             var_strat = "multi_task"
         else:
-            self.kernel = gpytorch.kernels.RBFKernel(ard_num_dims=sigma_init.shape[0])
+            if len(sigma_init) == 1:
+                self.kernel = gpytorch.kernels.RBFKernel(ard_num_dims=None)
+            else:
+                self.kernel = gpytorch.kernels.RBFKernel(ard_num_dims=sigma_init.shape[0])
             mean_module = gpytorch.means.ConstantMean()
-            likelihood = gpytorch.likelihoods.GaussianLikelihood()
-            likelihood.noise = penalty_init * self.num_data
+            self.likelihood = gpytorch.likelihoods.GaussianLikelihood()
             var_strat = "var_strat"
+        self.penalty = penalty_init
 
         self.kernel.lengthscale = sigma_init
         if cuda:
             mean_module = mean_module.cuda()
             self.kernel = self.kernel.cuda()
-
+        if centers_init.dtype == torch.float64:
+            mean_module = mean_module.double()
+            self.kernel = self.kernel.double()
         self.model = GenericApproxGP(centers_init.to(device=self.device),
                                      mean_module=mean_module,
                                      covar_module=self.kernel,
                                      var_strat=var_strat,
                                      var_distrib=self.variational_distribution,
-                                     likelihood=likelihood,
+                                     likelihood=self.likelihood,
                                      learn_ind_pts=self.opt_centers,
                                      num_classes=multi_class,
+                                     cuda=cuda
                                      )
-        self.loss_fn = gpytorch.mlls.VariationalELBO(likelihood, self.model, num_data=self.num_data)
+        self.loss_fn = gpytorch.mlls.VariationalELBO(self.likelihood, self.model, num_data=self.num_data)
         if cuda:
             self.model = self.model.cuda()
+        if centers_init.dtype == torch.float64:
+            self.model = self.model.double()
 
     @property
     def penalty(self):
         try:
-            return self.model.likelihood.noise / self.num_data
+            return self.likelihood.noise / self.num_data
         except AttributeError:
             return 0.0
 
@@ -95,18 +105,26 @@ class SVGP(HyperOptimModel):
 
     @sigma.setter
     def sigma(self, value):
-        raise NotImplementedError("No setter implemented for sigma")
+        self.kernel.lengthscale = value
+        #raise NotImplementedError("No setter implemented for sigma")
 
     @penalty.setter
     def penalty(self, value):
-        raise NotImplementedError("No setter implemented for penalty")
+        try:
+            #print("Setting likelihood noise to ", value * self.num_data)
+            self.likelihood.noise = value * self.num_data
+            #print("Likelihood noise is %f, raw %f" % (self.likelihood.noise, self.likelihood.raw_noise))
+        except RuntimeError:
+            warnings.warn(f"Setting lambda to {value * self.num_data} failed. Setting to 1e-4")
+            self.likelihood.noise = 1e-4
+        #raise NotImplementedError("No setter implemented for penalty")
 
     def hp_loss(self, X, Y):
         with gpytorch.settings.fast_computations(False, False, False):
             output = self.model(X)
             if Y.shape[1] == 1:
                 Y = Y.reshape(-1)
-            loss = -self.loss_fn(output, Y.T)
+            loss = -self.loss_fn(output, Y)
             return (loss,)
 
     def predict(self, X):
