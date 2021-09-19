@@ -270,6 +270,7 @@ def calc_grads(ctx, backward, num_diff_args):
 
 
 def nystrom_trace_fwd(kernel_args, M, X, kmn_z=None, use_ste=False):
+    return nystrom_trace_frotrsm_fwd(kernel_args, M, X)
     if use_ste:
         if kmn_z is None:
             raise RuntimeError("Cannot calculate nystrom-kernel trace with STE if kmn_z is not specified.")
@@ -279,6 +280,7 @@ def nystrom_trace_fwd(kernel_args, M, X, kmn_z=None, use_ste=False):
 
 
 def nystrom_trace_bwd(ctx: Dict[str, torch.Tensor], use_ste=False):
+    return nystrom_trace_frotrsm_bwd(ctx)
     if use_ste:
         return nystrom_trace_hutch_bwd(**ctx)
     return nystrom_trace_trinv_bwd(**ctx)
