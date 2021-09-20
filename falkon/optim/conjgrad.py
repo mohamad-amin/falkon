@@ -269,6 +269,20 @@ class FalkonConjugateGradient(Optimizer):
 
         return beta
 
+    def solve_val_rhs(self, Xtr, Xval, M, Y, _lambda, initial_solution, max_iter, callback=None):
+        n = Xtr.size(0)
+        prec = self.preconditioner
+
+        with TicToc("ConjGrad preparation", False):
+            B = self.kernel.mmv(M, Xval, Y / n, opt=self.params)
+            B = prec.apply_t(B)
+
+            # Define the Matrix-vector product iteration
+            capture_mmv = functools.partial(self.falkon_mmv, penalty=_lambda, X=Xtr, M=M, Knm=None)
+
+        # Run the conjugate gradient solver
+        return self.optimizer.solve(initial_solution, B, capture_mmv, max_iter, callback)
+
     @property
     def is_weighted(self):
         return self.weight_fn is not None
