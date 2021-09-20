@@ -343,7 +343,8 @@ def nystrom_trace_frotrsm_fwd(kernel_args, M, X):
 
     grad_wrt = [arg for arg in [kernel_args_dev, M_dev] if arg.requires_grad]
     fwd = torch.tensor(0.0, dtype=X.dtype, device=X.device)
-    # bwd = torch.tensor(0.0, dtype=X.dtype, device=X.device)
+    print(f"Starting trace calc. blk_n={blk_n}")
+    print(torch.cuda.memory_summary())
     grads = None
     with ExitStack() as stack:
         for i in range(0, X.shape[0], blk_n):
@@ -368,6 +369,8 @@ def nystrom_trace_frotrsm_fwd(kernel_args, M, X):
             else:
                 for gi in range(len(grads)):
                     grads[gi] += new_grads[gi]
+            print(f"Iteration {i}")
+            print(torch.cuda.memory_summary())
     with torch.autograd.no_grad():
         fwd = (1.0 - fwd / X.shape[0])
     return fwd, grads
