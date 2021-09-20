@@ -341,8 +341,10 @@ def nystrom_trace_frotrsm_fwd(kernel_args, M, X):
         kmm = full_rbf_kernel(M_dev, M_dev, kernel_args_dev)
         kmm_chol, info = torch.linalg.cholesky_ex(kmm + mm_eye, check_errors=True)
 
+    grad_wrt = [arg for arg in [kernel_args_dev, M_dev] if arg.requires_grad]
     fwd = torch.tensor(0.0, dtype=X.dtype, device=X.device)
-    bwd = torch.tensor(0.0, dtype=X.dtype, device=X.device)
+    # bwd = torch.tensor(0.0, dtype=X.dtype, device=X.device)
+    grads = None
     with ExitStack() as stack:
         for i in range(0, X.shape[0], blk_n):
             leni = min(blk_n, X.shape[0] - i)
@@ -357,13 +359,18 @@ def nystrom_trace_frotrsm_fwd(kernel_args, M, X):
                 fwd += solve1.square().sum().to(X.device)  # TODO: make inplace?
 
             with torch.autograd.enable_grad():
-                bwd += 2 * (k_mn.mul(solve2)).sum().to(X.device)#.sum(0).mean()
+                bwd = 2 * (k_mn.mul(solve2)).sum().to(X.device)#.sum(0).mean()
                 bwd -= 2 * ((kmm_chol @ solve1).mul(solve2)).sum().to(X.device)#.sum(0).mean()
+                bwd = (- bwd / X.shape[0])
+            new_grads = torch.autograd.grad(bwd, grad_wrt, retain_graph=False, allow_unused=False)
+            if grads is None:
+                grads = new_grads
+            else:
+                for gi in range(len(grads)):
+                    grads[gi] += new_grads[gi]
     with torch.autograd.no_grad():
         fwd = (1.0 - fwd / X.shape[0])
-    with torch.autograd.enable_grad():
-        bwd = (- bwd / X.shape[0])
-    return fwd, bwd
+    return fwd, grads
 
 
 def nystrom_trace_frotrsm_bwd(bwd):
@@ -851,11 +858,14 @@ class RegLossAndDeffv2(torch.autograd.Function):
         data = ctx.data
         deff_bwd, data = nystrom_deff_bwd(kernel_args=kernel_args, penalty=penalty, M=M, X=ctx.X, data=data)
         dfit_bwd, data = penalized_datafit_bwd(kernel_args=kernel_args, penalty=penalty, M=M, X=ctx.X, data=data)
-        tr_bwd = nystrom_trace_bwd(ctx.tr_ctx, use_ste=ctx.use_stoch_trace)
+        tr_grads = nystrom_trace_bwd(ctx.tr_ctx, use_ste=ctx.use_stoch_trace)
 
         with torch.autograd.enable_grad():
-            bg = out * (deff_bwd + dfit_bwd + tr_bwd)
-        return calc_grads(ctx, bg, RegLossAndDeffv2.NUM_DIFF_ARGS)
+            bg = out * (deff_bwd + dfit_bwd)
+        grads = list(calc_grads(ctx, bg, RegLossAndDeffv2.NUM_DIFF_ARGS))
+        grads[0] += tr_grads[0] * out
+        grads[2] += tr_grads[1] * out
+        return tuple(grads)
 
     @staticmethod
     def grad_check():
