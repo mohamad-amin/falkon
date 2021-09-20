@@ -226,7 +226,7 @@ ERROR_FN_TYPE = Callable[[Any, Any, Dict[str, Any]], Tuple[float, str]]
 ERROR_METRICS: Dict[Dataset, List[ERROR_FN_TYPE]] = {
     Dataset.TIMIT: [timit_calc_error],
     Dataset.MILLIONSONGS: [ms_calc_relerr, ms_calc_mse],
-    Dataset.HIGGS: [higgs_calc_auc, binary_cerr],
+    Dataset.HIGGS: [binary_cerr, higgs_calc_auc],
     Dataset.HOHIGGS: [binary_cerr, higgs_calc_auc],
     Dataset.TAXI: [rmse_with_std],
     Dataset.YELP: [rmse],

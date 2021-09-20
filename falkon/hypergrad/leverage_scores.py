@@ -332,9 +332,9 @@ def nystrom_trace_frotrsm_fwd(kernel_args, M, X):
     blk_n = select_dim_over_n(max_n=X.shape[0], m=M.shape[0], d=X.shape[1], max_mem=avail_mem,
                               coef_nm=coef_nm, coef_nd=1, coef_md=1, coef_n=0,
                               coef_m=0, coef_d=0, rest=0)
-    blk_n = blk_n // 5
-    M_dev = M.to(device)
-    kernel_args_dev = kernel_args.to(device)
+    with torch.autograd.enable_grad():
+        M_dev = M.to(device)
+        kernel_args_dev = kernel_args.to(device)
 
     mm_eye = torch.eye(M_dev.shape[0], device=M_dev.device, dtype=M_dev.dtype) * EPS
     with torch.autograd.enable_grad():
@@ -849,7 +849,6 @@ class RegLossAndDeffv2(torch.autograd.Function):
     def backward(ctx, out):
         kernel_args, penalty, M = ctx.saved_tensors
         data = ctx.data
-
         deff_bwd, data = nystrom_deff_bwd(kernel_args=kernel_args, penalty=penalty, M=M, X=ctx.X, data=data)
         dfit_bwd, data = penalized_datafit_bwd(kernel_args=kernel_args, penalty=penalty, M=M, X=ctx.X, data=data)
         tr_bwd = nystrom_trace_bwd(ctx.tr_ctx, use_ste=ctx.use_stoch_trace)
