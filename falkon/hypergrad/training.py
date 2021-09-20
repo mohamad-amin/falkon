@@ -273,32 +273,34 @@ def train_complexity_reg(
 
     logs = []
     cum_time = 0
-    for epoch in range(num_epochs):
-        t_start = time.time()
-        grads: Any = None
-        losses: Any = None
+    with torch.autograd.profiler.profile() as prof:
+        for epoch in range(num_epochs):
+            t_start = time.time()
+            grads: Any = None
+            losses: Any = None
 
-        def closure():
-            opt_hp.zero_grad()
-            nonlocal grads, losses
-            losses = model.hp_loss(Xtr, Ytr)
-            grads = hp_grad(model, *losses, accumulate_grads=True,
-                            losses_are_grads=model.losses_are_grads)
-            loss = reduce(torch.add, losses)
-            return float(loss)
-        opt_hp.step(closure)
+            def closure():
+                opt_hp.zero_grad()
+                nonlocal grads, losses
+                losses = model.hp_loss(Xtr, Ytr)
+                grads = hp_grad(model, *losses, accumulate_grads=True,
+                                losses_are_grads=model.losses_are_grads, verbose=False)
+                loss = reduce(torch.add, losses)
+                return float(loss)
+            opt_hp.step(closure)
 
-        cum_time += time.time() - t_start
-        try:
-            epoch_bookkeeping(epoch=epoch, model=model, data={'Xtr': Xtr, 'Ytr': Ytr, 'Xts': Xts, 'Yts': Yts},
-                              err_fn=err_fn, grads=grads, losses=losses, loss_every=loss_every,
-                              early_stop_patience=early_stop_epochs, schedule=schedule, minibatch=None,
-                              logs=logs, cum_time=cum_time, verbose=verbose)
-        except EarlyStop as e:
-            print(e)
-            break
-        finally:
-            del grads, losses
+            cum_time += time.time() - t_start
+            try:
+                epoch_bookkeeping(epoch=epoch, model=model, data={'Xtr': Xtr, 'Ytr': Ytr, 'Xts': Xts, 'Yts': Yts},
+                                  err_fn=err_fn, grads=grads, losses=losses, loss_every=loss_every,
+                                  early_stop_patience=early_stop_epochs, schedule=schedule, minibatch=None,
+                                  logs=logs, cum_time=cum_time, verbose=verbose)
+            except EarlyStop as e:
+                print(e)
+                break
+            finally:
+                del grads, losses
+    print(prof.key_averages().table())
     if retrain_nkrr:
         print(f"Final retrain after {num_epochs} epochs:")
         pred_dict = pred_reporting(

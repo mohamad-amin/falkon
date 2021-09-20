@@ -8,6 +8,7 @@ import torch
 from falkon import FalkonOptions
 from falkon.hypergrad.common import full_rbf_kernel
 from falkon.kernels import GaussianKernel
+from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
 from falkon.la_helpers import trsm
 from falkon.optim import FalkonConjugateGradient
 from falkon.preconditioner import FalkonPreconditioner
@@ -253,7 +254,7 @@ def calc_grads(ctx, backward, num_diff_args):
     for i in range(num_diff_args):
         if ctx.needs_input_grad[i]:
             needs_grad.append(ctx.saved_tensors[i])
-    grads = torch.autograd.grad(backward, needs_grad, retain_graph=True, allow_unused=True)
+    grads = torch.autograd.grad(backward, needs_grad, retain_graph=False, allow_unused=True)
     result = []
     j = 0
     for i in range(len(ctx.needs_input_grad)):
@@ -328,13 +329,12 @@ def nystrom_trace_frotrsm_fwd(kernel_args, M, X):
         avail_mem = opt.max_cpu_mem / sizeof_dtype(X.dtype)
         device = torch.device("cpu")
 
-    coef_nm = 100
+    coef_nm = 10
     blk_n = select_dim_over_n(max_n=X.shape[0], m=M.shape[0], d=X.shape[1], max_mem=avail_mem,
                               coef_nm=coef_nm, coef_nd=1, coef_md=1, coef_n=0,
                               coef_m=0, coef_d=0, rest=0)
-    with torch.autograd.enable_grad():
-        M_dev = M.to(device)
-        kernel_args_dev = kernel_args.to(device)
+    M_dev = M.to(device).requires_grad_()
+    kernel_args_dev = kernel_args.to(device).requires_grad_()
 
     mm_eye = torch.eye(M_dev.shape[0], device=M_dev.device, dtype=M_dev.dtype) * EPS
     with torch.autograd.enable_grad():
@@ -343,8 +343,8 @@ def nystrom_trace_frotrsm_fwd(kernel_args, M, X):
 
     grad_wrt = [arg for arg in [kernel_args_dev, M_dev] if arg.requires_grad]
     fwd = torch.tensor(0.0, dtype=X.dtype, device=X.device)
-    print(f"Starting trace calc. blk_n={blk_n}")
-    print(torch.cuda.memory_summary())
+    #print(f"Starting trace calc. blk_n={blk_n}")
+    #print(torch.cuda.memory_summary())
     grads = None
     with ExitStack() as stack:
         for i in range(0, X.shape[0], blk_n):
@@ -362,17 +362,17 @@ def nystrom_trace_frotrsm_fwd(kernel_args, M, X):
             with torch.autograd.enable_grad():
                 bwd = 2 * (k_mn.mul(solve2)).sum().to(X.device)#.sum(0).mean()
                 bwd -= 2 * ((kmm_chol @ solve1).mul(solve2)).sum().to(X.device)#.sum(0).mean()
-                bwd = (- bwd / X.shape[0])
-            new_grads = torch.autograd.grad(bwd, grad_wrt, retain_graph=False, allow_unused=False)
+                bwd = (- bwd)
+            new_grads = torch.autograd.grad(bwd, grad_wrt, retain_graph=True, allow_unused=False)
             if grads is None:
-                grads = new_grads
+                grads = [g.to(device=X.device) for g in new_grads]
             else:
                 for gi in range(len(grads)):
-                    grads[gi] += new_grads[gi]
-            print(f"Iteration {i}")
-            print(torch.cuda.memory_summary())
+                    grads[gi] += new_grads[gi].to(X.device)
+            #print(f"Iteration {i}")
+            #print(torch.cuda.memory_summary())
     with torch.autograd.no_grad():
-        fwd = (1.0 - fwd / X.shape[0])
+        fwd = (X.shape[0] - fwd)
     return fwd, grads
 
 
@@ -412,7 +412,7 @@ def nystrom_trace_trinv_bwd(linv, k_linv, kmm_chol):
 
 def nystrom_deff_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxiter,
                      last_solve_zy: Optional[torch.Tensor], data: NoRegLossAndDeffCtx):
-    diff_kernel = GaussianKernel(kernel_args, opt=solve_opt)
+    diff_kernel = DiffGaussianKernel(kernel_args, opt=solve_opt)
 
     ZY = torch.cat((data.z, Y), dim=1)
     if data.kmn_zy is None:
@@ -424,13 +424,13 @@ def nystrom_deff_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxiter,
                 X, M, penalty, ZY, kernel_args, solve_opt, solve_maxiter, init_sol=last_solve_zy)
 
     with torch.autograd.no_grad():
-        d_eff = (data.kmn_z * data.solve_z).sum(0).mean() / X.shape[0]
+        d_eff = (data.kmn_z * data.solve_z).sum(0).mean()
 
     return d_eff, data
 
 
 def nystrom_deff_bwd(kernel_args, penalty, M, X, data):
-    diff_kernel = GaussianKernel(kernel_args)
+    diff_kernel = DiffGaussianKernel(kernel_args)
     with torch.autograd.enable_grad():
         if data.knm_solve_zy is None:
             data.knm_solve_zy = diff_kernel.mmv(X, M, data.solve_zy)  # k_nm @ alpha  and  k_nm @ eta
@@ -443,7 +443,7 @@ def nystrom_deff_bwd(kernel_args, penalty, M, X, data):
             2 * (data.kmn_z * data.solve_z).sum(0).mean()
             - (data.knm_solve_z.square().sum(0).mean() +
                pen_n * (data.solve_z * data.kmm_solve_z).sum(0).mean())
-        ) / X.shape[0]
+        )
     return deff_bg, data
 
 
@@ -522,7 +522,6 @@ def penalized_datafit_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxite
     with torch.autograd.no_grad():
         loss = Y.square().sum()
         loss -= (data.kmn_y * data.solve_y).sum(0).mean()
-        loss /= X.shape[0]
 
     return loss, data
 
@@ -544,7 +543,7 @@ def penalized_datafit_bwd(kernel_args, penalty, M, X, data: NoRegLossAndDeffCtx)
             -2 * (data.kmn_y * data.solve_y).sum(0).mean()
             + (knm_solve_y.square().sum(0).mean() +
                pen_n * (kmm_solve_y * data.solve_y).sum(0).mean())
-        ) / X.shape[0]
+        )
     return loss_bg, data
 
 

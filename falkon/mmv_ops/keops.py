@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 import torch
-from falkon.kernels.tiling_red import TilingGenred
 
 from falkon.utils.stream_utils import sync_current_stream
 
@@ -203,23 +202,23 @@ def run_keops_mmv(X1: torch.Tensor,
         backend = "GPU_1D"
 
     if differentiable:
+        from falkon.kernels.tiling_red import TilingGenred
         fn = TilingGenred(formula, aliases, reduction_op='Sum', axis=1, dtype=dtype,
                           dtype_acc="auto", sum_scheme="auto", opt=opt)
-    else:
-        # Define formula wrapper
-        fn = Genred(formula, aliases,
-                    reduction_op=reduction, axis=axis,
-                    dtype=dtype, dtype_acc=opt.keops_acc_dtype,
-                    sum_scheme=opt.keops_sum_scheme)
+        return fn(X1, X2, v, *other_vars, out=out, backend=backend)
+
+    # Define formula wrapper
+    fn = Genred(formula, aliases,
+                reduction_op=reduction, axis=axis,
+                dtype=dtype, dtype_acc=opt.keops_acc_dtype,
+                sum_scheme=opt.keops_sum_scheme)
+
 
     # Create output matrix
     if out is None:
         # noinspection PyArgumentList
         out = torch.empty(N, T, dtype=X1.dtype, device=device,
                           pin_memory=(backend != 'CPU') and (device.type == 'cpu'))
-
-    if differentiable:
-        return fn(X1, X2, v, *other_vars, out=out, backend=backend)
 
     if backend.startswith("GPU") and device.type == 'cpu':
         # slack is high due to imprecise memory usage estimates for keops

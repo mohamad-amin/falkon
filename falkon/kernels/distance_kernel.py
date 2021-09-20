@@ -224,12 +224,12 @@ class GaussianKernel(L2DistanceKernel, KeopsKernelMixin):
 
     def _keops_mmv_impl(self, X1, X2, v, kernel, out, differentiable: bool, opt: FalkonOptions):
         if self.gaussian_type in {'single', 'diag'}:
-            formula = 'Exp(IntInv(-2) * SqDist(x1 / s, x2 / s)) * v'
+            formula = 'Exp(SqDist(x1 / g, x2 / g) * IntInv(-2)) * v'
             aliases = [
                 'x1 = Vi(%d)' % (X1.shape[1]),
                 'x2 = Vj(%d)' % (X2.shape[1]),
                 'v = Vj(%d)' % (v.shape[1]),
-                's = Pm(%d)' % (self.sigma.shape[0])
+                'g = Pm(%d)' % (self.sigma.shape[0])
             ]
             other_vars = [self.sigma.to(device=X1.device, dtype=X1.dtype)]
         elif self.gaussian_type == 'full':

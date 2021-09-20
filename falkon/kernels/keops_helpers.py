@@ -1,7 +1,6 @@
 from typing import Optional, List, Union
 
 import torch
-from falkon.kernels.tiling_red import TilingGenred
 
 from falkon.options import FalkonOptions, KeopsOptions
 from falkon.utils.switches import decide_keops

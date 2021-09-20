@@ -23,7 +23,7 @@ class DiffGaussianKernel(GaussianKernel):
     def _sigma2gamma(self, sigma: torch.Tensor):
         return sigma
 
-    def _keops_mmv_impl(self, X1, X2, v, kernel, out, opt: FalkonOptions):
+    def _keops_mmv_impl(self, X1, X2, v, kernel, out, differentiable, opt: FalkonOptions):
         formula = 'Exp(SqDist(x1 / g, x2 / g) * IntInv(-2)) * v'
         aliases = [
             'x1 = Vi(%d)' % (X1.shape[1]),
