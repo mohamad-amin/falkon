@@ -8,10 +8,9 @@ import torch
 from falkon import FalkonOptions
 from falkon.hypergrad.common import full_rbf_kernel
 from falkon.kernels import GaussianKernel
-from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
+from falkon.la_helpers import trsm
 from falkon.optim import FalkonConjugateGradient
 from falkon.preconditioner import FalkonPreconditioner
-from falkon.la_helpers import trsm
 from falkon.utils.helpers import sizeof_dtype, select_dim_over_n
 
 __all__ = (
@@ -313,7 +312,7 @@ def nystrom_trace_hutch_bwd(kmn_z, kmm_chol, l_solve_1, l_solve_2, n):
 
 
 def nystrom_trace_frotrsm_fwd(kernel_args, M, X):
-    opt = FalkonOptions(keops_active="no", no_single_kernel=False, use_cpu=not torch.cuda.is_available())
+    opt = FalkonOptions(no_single_kernel=False, use_cpu=not torch.cuda.is_available())
     if X.is_cuda:
         from falkon.mmv_ops.utils import _get_gpu_info
         gpu_info = _get_gpu_info(opt, slack=0.9)
@@ -333,6 +332,7 @@ def nystrom_trace_frotrsm_fwd(kernel_args, M, X):
     blk_n = select_dim_over_n(max_n=X.shape[0], m=M.shape[0], d=X.shape[1], max_mem=avail_mem,
                               coef_nm=coef_nm, coef_nd=1, coef_md=1, coef_n=0,
                               coef_m=0, coef_d=0, rest=0)
+    blk_n = blk_n // 5
     M_dev = M.to(device)
     kernel_args_dev = kernel_args.to(device)
 
@@ -357,8 +357,8 @@ def nystrom_trace_frotrsm_fwd(kernel_args, M, X):
                 fwd += solve1.square().sum().to(X.device)  # TODO: make inplace?
 
             with torch.autograd.enable_grad():
-                bwd += 2 * (k_mn.mul_(solve2)).sum().to(X.device)#.sum(0).mean()
-                bwd -= 2 * ((kmm_chol @ solve1).mul_(solve1)).sum().to(X.device)#.sum(0).mean()
+                bwd += 2 * (k_mn.mul(solve2)).sum().to(X.device)#.sum(0).mean()
+                bwd -= 2 * ((kmm_chol @ solve1).mul(solve2)).sum().to(X.device)#.sum(0).mean()
     with torch.autograd.no_grad():
         fwd = (1.0 - fwd / X.shape[0])
     with torch.autograd.enable_grad():
@@ -371,7 +371,7 @@ def nystrom_trace_frotrsm_bwd(bwd):
 
 
 def nystrom_trace_trinv_fwd(kernel_args, M, X):
-    diff_kernel = DiffGaussianKernel(kernel_args, opt=FalkonOptions(keops_active="no"))
+    diff_kernel = GaussianKernel(kernel_args)
     mm_eye = torch.eye(M.shape[0], device=M.device, dtype=M.dtype) * EPS
     with torch.autograd.enable_grad():
         kmm = full_rbf_kernel(M, M, kernel_args)
@@ -402,7 +402,7 @@ def nystrom_trace_trinv_bwd(linv, k_linv, kmm_chol):
 
 def nystrom_deff_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxiter,
                      last_solve_zy: Optional[torch.Tensor], data: NoRegLossAndDeffCtx):
-    diff_kernel = DiffGaussianKernel(kernel_args, opt=solve_opt)
+    diff_kernel = GaussianKernel(kernel_args, opt=solve_opt)
 
     ZY = torch.cat((data.z, Y), dim=1)
     if data.kmn_zy is None:
@@ -420,7 +420,7 @@ def nystrom_deff_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxiter,
 
 
 def nystrom_deff_bwd(kernel_args, penalty, M, X, data):
-    diff_kernel = DiffGaussianKernel(kernel_args)
+    diff_kernel = GaussianKernel(kernel_args)
     with torch.autograd.enable_grad():
         if data.knm_solve_zy is None:
             data.knm_solve_zy = diff_kernel.mmv(X, M, data.solve_zy)  # k_nm @ alpha  and  k_nm @ eta
@@ -444,7 +444,7 @@ def datafit_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxiter,
                 last_solve_zy: Optional[torch.Tensor],
                 last_solve_ytilde: Optional[torch.Tensor],
                 data: NoRegLossAndDeffCtx):
-    diff_kernel = DiffGaussianKernel(kernel_args, opt=solve_opt)
+    diff_kernel = GaussianKernel(kernel_args, opt=solve_opt)
 
     ZY = torch.cat((data.z, Y), dim=1)
     if data.kmn_zy is None:
@@ -477,7 +477,7 @@ def datafit_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxiter,
 
 
 def datafit_bwd(kernel_args, penalty, M, X, data):
-    diff_kernel = DiffGaussianKernel(kernel_args)
+    diff_kernel = GaussianKernel(kernel_args)
     with torch.autograd.enable_grad():
         pen_n = penalty * X.shape[0]
         if data.kmm_solve_y is None:
@@ -501,7 +501,7 @@ def datafit_bwd(kernel_args, penalty, M, X, data):
 
 def penalized_datafit_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxiter,
                           data: NoRegLossAndDeffCtx):
-    diff_kernel = DiffGaussianKernel(kernel_args, opt=solve_opt)
+    diff_kernel = GaussianKernel(kernel_args, opt=solve_opt)
     if data.solve_y is None:
         with torch.autograd.no_grad():
             data.solve_y, _ = solve_falkon(X, M, penalty, Y, kernel_args, solve_opt, solve_maxiter)
@@ -518,7 +518,7 @@ def penalized_datafit_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxite
 
 
 def penalized_datafit_bwd(kernel_args, penalty, M, X, data: NoRegLossAndDeffCtx):
-    diff_kernel = DiffGaussianKernel(kernel_args)
+    diff_kernel = GaussianKernel(kernel_args)
     with torch.autograd.enable_grad():
         pen_n = penalty * X.shape[0]
         if data.kmm_solve_y is None:
@@ -619,10 +619,6 @@ class NoRegLossAndDeff(torch.autograd.Function):
         NoRegLossAndDeff.last_alpha = data.solve_y.detach()
         ctx.save_for_backward(kernel_args, penalty, M)
         ctx.data, ctx.tr_ctx, ctx.X, ctx.use_stoch_trace = data, tr_ctx, X, use_stoch_trace
-        _pen = penalty * X.shape[0]
-        #d_eff = d_eff / _pen
-        #trace = trace / _pen
-        #datafit = datafit / _pen
         ctx.deff = d_eff.detach()
         ctx.dfit = datafit.detach()
         ctx.trace = trace.detach()
@@ -908,16 +904,15 @@ class ValidationLoss(torch.autograd.Function):
             warm_start: bool,
             ):
         with torch.autograd.no_grad():
-            diff_kernel = DiffGaussianKernel(kernel_args, opt=solve_options)
-            nondiff_kernel = GaussianKernel(kernel_args, opt=solve_options)
-            pc = FalkonPreconditioner(penalty.item(), nondiff_kernel, opt=solve_options)
+            kernel = GaussianKernel(kernel_args, opt=solve_options)
+            pc = FalkonPreconditioner(penalty.item(), kernel, opt=solve_options)
             pc.init(M.detach())
-            optim = FalkonConjugateGradient(nondiff_kernel, pc, opt=solve_options)
+            optim = FalkonConjugateGradient(kernel, pc, opt=solve_options)
             beta1 = optim.solve(Xtr, M.detach(), Ytr, penalty.item(), ValidationLoss._last_alpha_prec, solve_maxiter)
             alpha1 = pc.apply(beta1)
 
         with torch.autograd.enable_grad():
-            kvm_alpha = diff_kernel.mmv(Xval, M, alpha1)
+            kvm_alpha = kernel.mmv(Xval, M, alpha1)
 
         if warm_start:
             ValidationLoss._last_alpha_prec = beta1
@@ -925,7 +920,7 @@ class ValidationLoss(torch.autograd.Function):
 
         ctx.save_for_backward(kernel_args, penalty, M)
         ctx.alpha1, ctx.kvm_alpha = alpha1, kvm_alpha
-        ctx.pc, ctx.solve_maxiter, ctx.diff_kernel, ctx.optim = pc, solve_maxiter, diff_kernel, optim
+        ctx.pc, ctx.solve_maxiter, ctx.kernel, ctx.optim = pc, solve_maxiter, kernel, optim
         ctx.Xtr, ctx.Xval, ctx.Ytr, ctx.Yval = Xtr, Xval, Ytr, Yval
         ctx.warm_start = warm_start
 
@@ -937,7 +932,7 @@ class ValidationLoss(torch.autograd.Function):
     def backward(ctx, out):
         kernel_args, penalty, M = ctx.saved_tensors
         alpha1, kvm_alpha = ctx.alpha1, ctx.kvm_alpha
-        pc, solve_maxiter, diff_kernel, optim = ctx.pc, ctx.solve_maxiter, ctx.diff_kernel, ctx.optim
+        pc, solve_maxiter, kernel, optim = ctx.pc, ctx.solve_maxiter, ctx.kernel, ctx.optim
         Xtr, Xval, Ytr, Yval = ctx.Xtr, ctx.Xval, ctx.Ytr, ctx.Yval
 
         with torch.autograd.no_grad():
@@ -954,11 +949,11 @@ class ValidationLoss(torch.autograd.Function):
             a2, a3 = torch.split(alpha_slv2, slv_shape, dim=1)
 
         with torch.autograd.enable_grad():
-            kmn_y = diff_kernel.mmv(M, Xtr, Ytr)
-            kmv_yv = diff_kernel.mmv(M, Xval, Yval)
-            knm_slv_all = diff_kernel.mmv(Xtr, M, all_alphas)
+            kmn_y = kernel.mmv(M, Xtr, Ytr)
+            kmv_yv = kernel.mmv(M, Xval, Yval)
+            knm_slv_all = kernel.mmv(Xtr, M, all_alphas)
             knm_a1, knm_a2, knm_a3 = torch.split(knm_slv_all, slv_shape, dim=1)
-            kmm_a1 = diff_kernel.mmv(M, M, alpha1)
+            kmm_a1 = kernel.mmv(M, M, alpha1)
 
             pen_n = penalty * Xtr.shape[0]
             bg = out * (

@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 import scipy
 import torch
+from falkon.la_helpers.square_norm_fn import SquareNormFunction, square_norm_diff
 
 from falkon.la_helpers import copy_triang, potrf, mul_triang, vec_mul_triang, zero_triang, trsm
 from falkon.c_ext import copy_transpose
@@ -62,7 +63,7 @@ class TestCopyTranspose:
 @pytest.mark.parametrize("device", [
     "cpu", pytest.param("cuda:0", marks=pytest.mark.skipif(not decide_cuda(), reason="No GPU found."))])
 class TestNormSquare():
-    t = 100
+    t = 3
 
     @pytest.fixture(scope="class")
     def mat(self):
@@ -75,6 +76,14 @@ class TestNormSquare():
         act = square_norm(mat, dim=0, keepdim=True)
         torch.testing.assert_allclose(exp, act)
 
+    def test_simple_grad(self, mat, order, dtype, device):
+        mat = fix_mat(mat, order=order, dtype=dtype, numpy=False).to(device=device).requires_grad_()
+        exp = torch.norm(mat, p=2, dim=0, keepdim=True).pow(2)
+        act = square_norm_diff(mat, 0, True)
+        torch.testing.assert_allclose(exp, act)
+        torch.autograd.gradcheck(lambda m: square_norm_diff(m, 0, True), inputs=[mat])
+        torch.autograd.gradcheck(lambda m: square_norm_diff(m, 1, True), inputs=[mat])
+
     def test_negdim(self, mat, order, dtype, device):
         from falkon.c_ext import square_norm
         mat = fix_mat(mat, order=order, dtype=dtype, numpy=False).to(device=device)
@@ -82,12 +91,28 @@ class TestNormSquare():
         act = square_norm(mat, dim=-1, keepdim=True)
         torch.testing.assert_allclose(exp, act)
 
+    def test_negdim_grad(self, mat, order, dtype, device):
+        mat = fix_mat(mat, order=order, dtype=dtype, numpy=False).to(device=device).requires_grad_()
+        exp = torch.norm(mat, p=2, dim=-1, keepdim=False).pow(2)
+        act = square_norm_diff(mat, dim=-1, keepdim=False)
+        torch.testing.assert_allclose(exp, act)
+        torch.autograd.gradcheck(lambda m: square_norm_diff(m, dim=-1, keepdim=False), inputs=[mat])
+        torch.autograd.gradcheck(lambda m: square_norm_diff(m, dim=-2, keepdim=False), inputs=[mat])
+
     def test_nokeep(self, mat, order, dtype, device):
         from falkon.c_ext import square_norm
         mat = fix_mat(mat, order=order, dtype=dtype, numpy=False).to(device=device)
         exp = torch.norm(mat, p=2, dim=1, keepdim=False).pow_(2)
         act = square_norm(mat, dim=1, keepdim=False)
         torch.testing.assert_allclose(exp, act)
+
+    def test_nokeep_grad(self, mat, order, dtype, device):
+        mat = fix_mat(mat, order=order, dtype=dtype, numpy=False).to(device=device).requires_grad_()
+        exp = torch.norm(mat, p=2, dim=0, keepdim=False).pow(2)
+        act = square_norm_diff(mat, dim=0, keepdim=False)
+        torch.testing.assert_allclose(exp, act)
+        torch.autograd.gradcheck(lambda m: square_norm_diff(m, dim=0, keepdim=False), inputs=[mat])
+        torch.autograd.gradcheck(lambda m: square_norm_diff(m, dim=1, keepdim=False), inputs=[mat])
 
 
 @pytest.mark.parametrize("order", ["F", "C"])

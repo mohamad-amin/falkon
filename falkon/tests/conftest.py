@@ -73,8 +73,10 @@ def torch_to_numpy_type(dt):
 def fix_mat(t, dtype, order, device="cpu", copy=False, numpy=False):
     if dtype is None or order is None:
         return None
+    requires_grad = False
     if isinstance(t, torch.Tensor):
-        t = t.numpy()
+        requires_grad = t.requires_grad
+        t = t.detach().numpy()
     if isinstance(t, np.ndarray):
         t = np.array(t, dtype=dtype, order=order, copy=copy)
         if numpy:
@@ -82,6 +84,8 @@ def fix_mat(t, dtype, order, device="cpu", copy=False, numpy=False):
         t = move_tensor(torch.from_numpy(t), device)
         if t.is_cuda:
             torch.cuda.synchronize()
+        if requires_grad:
+            t.requires_grad_()
     return t
 
 

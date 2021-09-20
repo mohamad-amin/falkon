@@ -103,14 +103,14 @@ class KeopsKernelMixin():
 
         """
         if v is not None and w is not None:
-            out1 = mmv_fn(X1, X2, v, kernel, None, opt)
+            out1 = mmv_fn(X1, X2, v, kernel, None, False, opt)
             out1.add_(w)
-            return mmv_fn(X2, X1, out1, kernel, out, opt)
+            return mmv_fn(X2, X1, out1, kernel, out, False, opt)
         elif v is None:
-            return mmv_fn(X2, X1, w, kernel, out, opt)
+            return mmv_fn(X2, X1, w, kernel, out, False, opt)
         elif w is None:
-            out1 = mmv_fn(X1, X2, v, kernel, None, opt)
-            return mmv_fn(X2, X1, out1, kernel, out, opt)
+            out1 = mmv_fn(X1, X2, v, kernel, None, False, opt)
+            return mmv_fn(X2, X1, out1, kernel, out, False, opt)
 
     # noinspection PyUnusedLocal
     def keops_can_handle_mm(self, X1, X2, opt) -> bool:

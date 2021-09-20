@@ -1,12 +1,10 @@
 import dataclasses
-import warnings
 from abc import ABC, abstractmethod
 from typing import Optional, Any, Dict
 
 from falkon.mmv_ops.fmm import fmm
-
+from falkon.mmv_ops.fmmv import fmmv, fdmmv
 from falkon.utils.helpers import check_same_dtype, check_sparse, check_same_device
-from falkon.utils import decide_cuda
 from falkon.options import FalkonOptions
 
 
@@ -196,28 +194,10 @@ class Kernel(ABC):
         the sparse implementations; if CUDA is detected, it will choose the CUDA implementation;
         otherwise it will simply choose the basic CPU implementation.
         """
-        use_cuda = decide_cuda(opt)
         sparsity = check_sparse(X1, X2)
         if not all(sparsity) and any(sparsity):
             raise ValueError("Either all or none of 'X1', 'X2' must be sparse.")
-        sparsity = all(sparsity)
-        if (X1.device.type == 'cuda') and (not use_cuda):
-            warnings.warn("kernel backend was chosen to be CPU, but GPU input tensors found. "
-                          "Defaulting to use the GPU (note this may cause issues later). "
-                          "To force usage of the CPU backend, please pass CPU tensors; "
-                          "to avoid this warning if the GPU backend is "
-                          "desired, check your options (i.e. set 'use_cpu=False').")
-            use_cuda = True
-        if use_cuda:
-            if sparsity:
-                return fmm
-            else:
-                return fmm
-        else:
-            if sparsity:
-                return fmm
-            else:
-                return fmm
+        return fmm
 
     def mmv(self, X1, X2, v, out=None, opt: Optional[FalkonOptions] = None):
         # noinspection PyShadowingNames
@@ -264,7 +244,11 @@ class Kernel(ABC):
         if opt is not None:
             params = dataclasses.replace(self.params, **dataclasses.asdict(opt))
         mmv_impl = self._decide_mmv_impl(X1, X2, v, params)
-        return mmv_impl(X1, X2, v, self, out, params)
+        sparsity = check_sparse(X1, X2)
+        diff = False
+        if not any(sparsity):
+            diff = any([t.requires_grad for t in (X1, X2, v)])
+        return mmv_impl(X1, X2, v, self, out, diff, params)
 
     def _decide_mmv_impl(self, X1, X2, v, opt: FalkonOptions):
         """Choose which `mmv` function to use for this data.
@@ -293,20 +277,9 @@ class Kernel(ABC):
         the sparse implementations; if CUDA is detected, it will choose the CUDA implementation;
         otherwise it will simply choose the basic CPU implementation.
         """
-        use_cuda = decide_cuda(opt)
         sparsity = check_sparse(X1, X2)
         if not all(sparsity) and any(sparsity):
             raise ValueError("Either all or none of 'X1', 'X2' must be sparse.")
-        if (X1.device.type == 'cuda') and (not use_cuda):
-            # TODO: This doesn't work correctly.
-            warnings.warn("kernel-vector product backend was chosen to be CPU, but GPU input "
-                          "tensors found. Defaulting to use the GPU (note this may "
-                          "cause issues later). To force usage of the CPU backend, "
-                          "please pass CPU tensors; to avoid this warning if the GPU backend is "
-                          "desired, check your options (i.e. set 'use_cpu=False').")
-            use_cuda = True
-        sparsity = all(sparsity)
-        from falkon.mmv_ops.fmmv import fmmv
         return fmmv
 
     def dmmv(self, X1, X2, v, w, out=None, opt: Optional[FalkonOptions] = None):
@@ -394,19 +367,9 @@ class Kernel(ABC):
         the sparse implementations; if CUDA is detected, it will choose the CUDA implementation;
         otherwise it will simply choose the basic CPU implementation.
         """
-        use_cuda = decide_cuda(opt)
         sparsity = check_sparse(X1, X2)
         if not all(sparsity) and any(sparsity):
             raise ValueError("Either all or none of 'X1', 'X2' must be sparse.")
-        if (X1.device.type == 'cuda') and (not use_cuda):
-            warnings.warn("kernel-vector double product backend was chosen to be CPU, but GPU "
-                          "input tensors found. Defaulting to use the GPU (note this may "
-                          "cause issues later). To force usage of the CPU backend, "
-                          "please pass CPU tensors; to avoid this warning if the GPU backend is "
-                          "desired, check your options (i.e. set 'use_cpu=False').")
-            use_cuda = True
-        sparsity = all(sparsity)
-        from falkon.mmv_ops.fmmv import fdmmv
         return fdmmv
 
     @abstractmethod

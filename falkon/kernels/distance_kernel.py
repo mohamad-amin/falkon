@@ -5,6 +5,8 @@ from abc import ABC, abstractmethod
 from typing import Optional, Union, Tuple, Dict
 
 import torch
+from falkon.la_helpers.square_norm_fn import square_norm_diff
+
 from falkon.utils.tensor_helpers import batchify_tensors
 
 from falkon import sparse
@@ -97,6 +99,20 @@ def rbf_core(sigmas, mat1, mat2, out):
     norm_sq_mat2 = square_norm(mat2_div_sig, -1, True)  # b*m*1
 
     torch.baddbmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1, out=out)  # b*n*m
+    out.add_(norm_sq_mat2.transpose(-2, -1))
+    out.clamp_min_(1e-30)
+    out.mul_(-0.5)
+    out.exp_()
+    return out
+
+
+def rbf_core_diff(sigmas, mat1, mat2):
+    mat1_div_sig = mat1 / sigmas
+    mat2_div_sig = mat2 / sigmas
+    norm_sq_mat1 = square_norm_diff(mat1_div_sig, dim=-1, keepdim=True)  # b*n*1
+    norm_sq_mat2 = square_norm_diff(mat2_div_sig, dim=-1, keepdim=True)  # b*m*1
+
+    out = torch.baddbmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1)  # b*n*m
     out.add_(norm_sq_mat2.transpose(-2, -1))
     out.clamp_min_(1e-30)
     out.mul_(-0.5)
@@ -206,7 +222,7 @@ class GaussianKernel(L2DistanceKernel, KeopsKernelMixin):
             except TypeError:
                 raise TypeError("Sigma must be a scalar or a tensor.")
 
-    def _keops_mmv_impl(self, X1, X2, v, kernel, out, opt: FalkonOptions):
+    def _keops_mmv_impl(self, X1, X2, v, kernel, out, differentiable: bool, opt: FalkonOptions):
         if self.gaussian_type in {'single', 'diag'}:
             formula = 'Exp(IntInv(-2) * SqDist(x1 / s, x2 / s)) * v'
             aliases = [
@@ -315,6 +331,14 @@ class GaussianKernel(L2DistanceKernel, KeopsKernelMixin):
         X1_b, X2_b, out_b = batchify_tensors(X1, X2, out)
         out_b = rbf_core(sigma, X1_b, X2_b, out_b)
         if out_b.dim() != out.dim():
+            return out_b[0]
+        return out_b
+
+    def compute_diff(self, X1, X2):
+        sigma = self.sigma.to(X1)
+        X1_b, X2_b = batchify_tensors(X1, X2)
+        out_b = rbf_core_diff(sigma, X1_b, X2_b)
+        if X1_b.dim() != X1.dim():  # Batchification was performed
             return out_b[0]
         return out_b
 

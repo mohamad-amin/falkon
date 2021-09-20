@@ -31,6 +31,7 @@ class ArgsFmmv:
     out: torch.Tensor
     kernel: 'falkon.kernels.Kernel'
     max_mem: float
+    differentiable: bool = False
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,7 @@ def mmv_run_starter(proc_idx, queue, device_id):
     X1, X2, v, out = a.X1, a.X2, a.v, a.out
     kernel = a.kernel
     max_mem = a.max_mem
+    differentiable = a.differentiable
     dev = _dev_from_id(device_id)
     incore = _is_incore(dev, X1.device)
     is_sparse = isinstance(X1, SparseTensor) and isinstance(X2, SparseTensor)
@@ -101,15 +103,26 @@ def mmv_run_starter(proc_idx, queue, device_id):
     extra_mem = kernel.extra_mem()
     n, d = X1.shape
     m, t = v.shape
+    if differentiable:
+        assert not is_sparse, "Sparse + differentiable mmvs are not supported"
+        blk_n, blk_m = select_dim_over_nm_v2(
+            max_n=n, max_m=m, max_mem=avail_mem,
+            coef_nm=50 + extra_mem.get('nm', 0),
+            coef_n=d + t + extra_mem.get('n', 0) + extra_mem.get('nd', 0) * d,
+            coef_m=d + t + extra_mem.get('m', 0) + extra_mem.get('md', 0) * d,
+            rest=extra_mem.get('d', 0))
+        blk_n = blk_n // 5
+        blk_m = blk_m // 5
+        return mmv_diff_run_thread(X1, X2, v, out, kernel, blk_n, blk_m, dev)
     if is_sparse:
         blk_n, blk_m, mem_needed = _sparse_mmv_blk_sizes(
             n=n, m=m, d=d, t=t, avail_mem=avail_mem, extra_mem=extra_mem, incore=incore,
             m1_density=X1.density, m2_density=X2.density)
-        sparse_mmv_run_thread(X1, X2, v, out, kernel, blk_n, blk_m, mem_needed, dev)
+        return sparse_mmv_run_thread(X1, X2, v, out, kernel, blk_n, blk_m, mem_needed, dev)
     else:
         blk_n, blk_m, mem_needed = _dense_mmv_blk_sizes(
             n=n, m=m, d=d, t=t, avail_mem=avail_mem, extra_mem=extra_mem, incore=incore)
-        mmv_run_thread(X1, X2, v, out, kernel, blk_n, blk_m, mem_needed, dev)
+        return mmv_run_thread(X1, X2, v, out, kernel, blk_n, blk_m, mem_needed, dev)
 
 
 def sparse_mmv_run_thread(m1: SparseTensor, m2: SparseTensor, v: torch.Tensor,
@@ -233,6 +246,45 @@ def mmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Tensor]
                 copy(c_dev_out, out[i: i + leni], s=s1)
         # end iter over N
     # exit context manager (device, stream)
+
+
+def mmv_diff_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Tensor],
+                        out: torch.Tensor, kernel: 'falkon.kernels.Kernel', blk_n: int, blk_m: int,
+                        dev: torch.device):
+    # data(CUDA), dev(CUDA) or data(CPU), dev(CPU)
+    incore = _is_incore(dev, m1.device)
+    N, D = m1.shape
+    M, T = v.shape
+
+    with ExitStack() as stack:
+        if dev.type == 'cuda':
+            s1, s2 = tcd.current_stream(dev), tcd.Stream(dev)
+            stack.enter_context(tcd.device(dev))
+            stack.enter_context(tcd.stream(s1))
+        for i in range(0, N, blk_n):
+            leni = min(blk_n, N - i)
+            c_dev_m1 = m1[i: i + leni, :].to(dev, non_blocking=True, copy=False)
+            c_dev_out = torch.zeros((leni, T), device=dev, dtype=m1.dtype)
+
+            for j in range(0, M, blk_m):
+                lenj = min(blk_m, M - j)
+                c_dev_m2 = m2[j: j + lenj, :].to(dev, non_blocking=True, copy=False)
+                with ExitStack() as stack_s2:
+                    if not incore:
+                        stack_s2.enter_context(tcd.stream(s2))
+                    c_dev_v = v[j: j + lenj, :].to(dev, non_blocking=True, copy=False)
+                c_dev_ker = kernel.compute_diff(c_dev_m1, c_dev_m2)
+                if not incore:
+                    s2.synchronize()
+                c_dev_out.addmm_(c_dev_ker, c_dev_v)
+                #c_dev_out = c_dev_out.addmm(c_dev_ker, c_dev_v)
+                if not incore:
+                    s1.synchronize()  # sync necessary to avoid s2 overwriting dev_v/dev_w
+            # end iter over M
+            out[i: i + leni] = c_dev_out.to(m1.device, non_blocking=True, copy=False)
+        # end iter over N
+    # exit context manager (device, stream)
+    return out
 
 
 def _sparse_dmmv_blk_sizes(n, d, m, t, avail_mem, extra_mem: dict, incore: bool,
@@ -450,7 +502,10 @@ def dmmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor,
 
 def fmmv(X1: Union[torch.Tensor, SparseTensor],
          X2: Union[torch.Tensor, SparseTensor],
-         v: torch.Tensor, kernel: 'falkon.kernels.Kernel', out: Optional[torch.Tensor] = None,
+         v: torch.Tensor,
+         kernel: 'falkon.kernels.Kernel',
+         out: Optional[torch.Tensor] = None,
+         differentiable: bool = False,
          opt: Optional[BaseOptions] = None) -> torch.Tensor:
     is_sparse = isinstance(X1, SparseTensor)
     if not is_sparse:
@@ -469,7 +524,7 @@ def fmmv(X1: Union[torch.Tensor, SparseTensor],
                                      pin_memory=data_dev.type != 'cuda' and comp_dev_type == 'cuda')
 
     if comp_dev_type == 'cpu' and data_dev.type == 'cpu':
-        args = ArgsFmmv(X1=X1, X2=X2, v=v, out=out, kernel=kernel, max_mem=opt.max_cpu_mem)
+        args = ArgsFmmv(X1=X1, X2=X2, v=v, out=out, kernel=kernel, max_mem=opt.max_cpu_mem, differentiable=differentiable)
         _call_direct(mmv_run_starter, (args, -1))
     elif comp_dev_type == 'cuda' and data_dev.type == 'cuda':
         if is_sparse:
@@ -478,7 +533,7 @@ def fmmv(X1: Union[torch.Tensor, SparseTensor],
         gpu_info = _get_gpu_info(opt, slack=0.9)
         single_gpu_info = [g for g in gpu_info if g.Id == data_dev.index][0]
         args = ArgsFmmv(X1=X1, X2=X2, v=v, out=out, kernel=kernel,
-                        max_mem=single_gpu_info.usable_memory)
+                        max_mem=single_gpu_info.usable_memory, differentiable=differentiable)
         _call_direct(mmv_run_starter, (args, data_dev.index))
     elif comp_dev_type == 'cuda' and data_dev.type == 'cpu':
         gpu_info = _get_gpu_info(opt, slack=0.9)
@@ -496,7 +551,8 @@ def fmmv(X1: Union[torch.Tensor, SparseTensor],
                 X1=X1_block,
                 X2=X2, v=v,
                 out=out.narrow(0, block_sizes[i], bwidth),
-                kernel=kernel, max_mem=g.usable_memory), g.Id))
+                kernel=kernel, max_mem=g.usable_memory,
+                differentiable=differentiable), g.Id))
         _start_wait_processes(mmv_run_starter, args)
     else:
         raise RuntimeError("Requested CPU computations with CUDA data. This should not happen.")

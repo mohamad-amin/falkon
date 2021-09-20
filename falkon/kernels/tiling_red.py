@@ -76,6 +76,7 @@ def load_keops_fn(formula, aliases, backend, dtype, optional_flags, rec_multVar_
     tags = KeopsTags(tagCPUGPU=tagCPUGPU, tag1D2D=tag1D2D, tagHostDevice=tagHostDevice)
     return fn, tags
 
+
 def run_keops_formula(formula, aliases, backend, dtype, device, ranges, nx, ny, optional_flags, rec_multVar_highdim, out, *args):
     myconv, tags = load_keops_fn(formula, aliases, backend, dtype, optional_flags, rec_multVar_highdim, out, *args)
     device_id = device.index or -1

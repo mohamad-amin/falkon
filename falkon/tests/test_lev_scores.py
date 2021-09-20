@@ -52,9 +52,10 @@ def test_gpytorch_quad_derivative():
 
 
 def test_complexity_reg_impl():
-    # RegLossAndDeffv2.grad_check()
-    # GCV.grad_check()
-    # NoRegLossAndDeff.grad_check()
+    torch.autograd.set_detect_anomaly(True)
+    GCV.grad_check()
+    NoRegLossAndDeff.grad_check()
+    RegLossAndDeffv2.grad_check()
     ValidationLoss.grad_check()
 
 
