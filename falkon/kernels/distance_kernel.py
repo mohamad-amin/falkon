@@ -251,7 +251,7 @@ class GaussianKernel(L2DistanceKernel, KeopsKernelMixin):
         else:
             raise ValueError(f"Gaussian type '{self.gaussian_type}' invalid.")
 
-        return self.keops_mmv(X1, X2, v, out, formula, aliases, other_vars, opt)
+        return self.keops_mmv(X1, X2, v, out, formula, aliases, other_vars, differentiable, opt)
 
     def _decide_mmv_impl(self, X1, X2, v, opt: FalkonOptions):
         if self.keops_can_handle_mmv(X1, X2, v, opt):

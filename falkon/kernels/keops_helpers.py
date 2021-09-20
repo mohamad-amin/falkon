@@ -1,6 +1,8 @@
 from typing import Optional, List, Union
 
 import torch
+from falkon.kernels.tiling_red import TilingGenred
+
 from falkon.options import FalkonOptions, KeopsOptions
 from falkon.utils.switches import decide_keops
 from falkon.sparse import SparseTensor
@@ -60,6 +62,7 @@ class KeopsKernelMixin():
                   formula: str,
                   aliases: List[str],
                   other_vars: List[torch.Tensor],
+                  differentiable: bool,
                   opt: FalkonOptions):
         if not _has_keops:
             raise ModuleNotFoundError("Module 'pykeops' is not properly installed. "
@@ -68,7 +71,7 @@ class KeopsKernelMixin():
             other_vars = []
         return run_keops_mmv(X1=X1, X2=X2, v=v, other_vars=other_vars,
                              out=out, formula=formula, aliases=aliases, axis=1,
-                             reduction='Sum', opt=opt)
+                             reduction='Sum', differentiable=differentiable, opt=opt)
 
     def keops_dmmv_helper(self, X1, X2, v, w, kernel, out, opt, mmv_fn):
         """

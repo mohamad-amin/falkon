@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 import torch
+from falkon.kernels.tiling_red import TilingGenred
+
 from falkon.utils.stream_utils import sync_current_stream
 
 from falkon.mmv_ops.utils import _get_gpu_info
@@ -123,7 +125,7 @@ def _estimate_split(N, M, D, T, R, ds):
     if N <= 0 or M <= 0:
         raise RuntimeError(
             "Insufficient available GPU "
-            "memory (available %.2fGB)" % (R * ds / 2**30))
+            "memory (available %.2fGB)" % (R * ds / 2 ** 30))
 
     return int(N), int(M)
 
@@ -180,6 +182,7 @@ def run_keops_mmv(X1: torch.Tensor,
                   aliases: List[str],
                   axis: int,
                   reduction: str = 'Sum',
+                  differentiable: bool = False,
                   opt: Optional[FalkonOptions] = None) -> torch.Tensor:
     if opt is None:
         opt = FalkonOptions()
@@ -199,17 +202,24 @@ def run_keops_mmv(X1: torch.Tensor,
                       "desired, check your options (i.e. set 'use_cpu=False').")
         backend = "GPU_1D"
 
-    # Define formula wrapper
-    fn = Genred(formula, aliases,
-                reduction_op=reduction, axis=axis,
-                dtype=dtype, dtype_acc=opt.keops_acc_dtype,
-                sum_scheme=opt.keops_sum_scheme)
+    if differentiable:
+        fn = TilingGenred(formula, aliases, reduction_op='Sum', axis=1, dtype=dtype,
+                          dtype_acc="auto", sum_scheme="auto", opt=opt)
+    else:
+        # Define formula wrapper
+        fn = Genred(formula, aliases,
+                    reduction_op=reduction, axis=axis,
+                    dtype=dtype, dtype_acc=opt.keops_acc_dtype,
+                    sum_scheme=opt.keops_sum_scheme)
 
     # Create output matrix
     if out is None:
         # noinspection PyArgumentList
         out = torch.empty(N, T, dtype=X1.dtype, device=device,
                           pin_memory=(backend != 'CPU') and (device.type == 'cpu'))
+
+    if differentiable:
+        return fn(X1, X2, v, *other_vars, out=out, backend=backend)
 
     if backend.startswith("GPU") and device.type == 'cpu':
         # slack is high due to imprecise memory usage estimates for keops
