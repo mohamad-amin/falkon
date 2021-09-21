@@ -1,6 +1,6 @@
 import time
 from contextlib import ExitStack
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple, Sequence
 
 import scipy.linalg
 import torch
@@ -9,10 +9,11 @@ from falkon import FalkonOptions
 from falkon.hypergrad.common import full_rbf_kernel
 from falkon.kernels import GaussianKernel
 from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
-from falkon.la_helpers import trsm
 from falkon.optim import FalkonConjugateGradient
 from falkon.preconditioner import FalkonPreconditioner
 from falkon.utils.helpers import sizeof_dtype, select_dim_over_n
+from falkon.la_helpers import trsm
+
 
 __all__ = (
     "NoRegLossAndDeff",
@@ -249,21 +250,32 @@ def solve_falkon(X, centers, penalty, rhs, kernel_args, solve_options, solve_max
     return sol_full, beta
 
 
-def calc_grads(ctx, backward, num_diff_args):
+def calc_grads_tensors(inputs: Sequence[torch.Tensor],
+                       inputs_need_grad: Sequence[bool],
+                       backward: torch.Tensor,
+                       retain_graph: bool,
+                       allow_unused: bool) -> Tuple[Optional[torch.Tensor], ...]:
+    assert len(inputs) <= len(inputs_need_grad)
     needs_grad = []
-    for i in range(num_diff_args):
-        if ctx.needs_input_grad[i]:
-            needs_grad.append(ctx.saved_tensors[i])
-    grads = torch.autograd.grad(backward, needs_grad, retain_graph=False, allow_unused=True)
-    result = []
+    for i in range(len(inputs)):
+        if inputs_need_grad[i]:
+            needs_grad.append(inputs[i])
+    grads = torch.autograd.grad(
+        backward, needs_grad, retain_graph=retain_graph, allow_unused=allow_unused)
     j = 0
-    for i in range(len(ctx.needs_input_grad)):
-        if ctx.needs_input_grad[i]:
-            result.append(grads[j])
+    results = []
+    for i in range(len(inputs_need_grad)):
+        if inputs_need_grad[i]:
+            results.append(grads[j])
             j += 1
         else:
-            result.append(None)
-    return tuple(result)
+            results.append(None)
+    return tuple(results)
+
+
+def calc_grads(ctx, backward, num_diff_args):
+    return calc_grads_tensors(ctx.saved_tensors, ctx.needs_input_grad, backward, 
+                              retain_graph=True, allow_unused=True)
 
 
 """ Nystrom Kernel Trace (2 methods) """
@@ -804,7 +816,6 @@ def creg_penfit(kernel_args, penalty, centers, X, Y, num_estimators, determinist
 
 # noinspection PyMethodOverriding
 class RegLossAndDeffv2(torch.autograd.Function):
-    NUM_DIFF_ARGS = 3
     _last_solve_zy = None
     last_alpha = None
     _last_t = None
@@ -829,45 +840,135 @@ class RegLossAndDeffv2(torch.autograd.Function):
             RegLossAndDeffv2._last_solve_zy = None
             RegLossAndDeffv2.last_alpha = None
         RegLossAndDeffv2._last_t = t
-        data = NoRegLossAndDeffCtx(t)
         if deterministic:
             torch.manual_seed(12)
-        data.z = init_random_vecs(X.shape[0], t, dtype=X.dtype, device=X.device, gaussian_random=gaussian_random)
 
-        d_eff, data = nystrom_deff_fwd(
-            kernel_args=kernel_args, penalty=penalty, M=M, X=X, Y=Y,
-            solve_opt=solve_options, solve_maxiter=solve_maxiter,
-            last_solve_zy=RegLossAndDeffv2._last_solve_zy, data=data)
-        datafit, data = penalized_datafit_fwd(
-            kernel_args=kernel_args, penalty=penalty, M=M, X=X, Y=Y,
-            solve_maxiter=solve_maxiter, solve_opt=solve_options, data=data)
-        with torch.autograd.enable_grad():
-            kmn_z = data.kmn_z  # Need to diff through the slicing
-        trace, tr_ctx = nystrom_trace_fwd(
-            kernel_args=kernel_args, M=M, X=X, kmn_z=kmn_z, use_ste=use_stoch_trace)
+        # Preliminaries: choose computation device and avail_mem
+        if X.is_cuda:  # CUDA in-core
+            from falkon.mmv_ops.utils import _get_gpu_info
+            gpu_info = _get_gpu_info(solve_options, slack=0.9)
+            single_gpu_info = [g for g in gpu_info if g.Id == X.device.index][0]
+            avail_mem = single_gpu_info.usable_memory / sizeof_dtype(X.dtype)
+            device = torch.device("cuda:%d" % (single_gpu_info.Id))
+        elif not solve_options.use_cpu and torch.cuda.is_available():  # CUDA out-of-core
+            from falkon.mmv_ops.utils import _get_gpu_info
+            gpu_info = _get_gpu_info(solve_options, slack=0.9)[0]  # TODO: Splitting across gpus
+            avail_mem = gpu_info.usable_memory / sizeof_dtype(X.dtype)
+            device = torch.device("cuda:%d" % (gpu_info.Id))
+        else:  # CPU in-core
+            avail_mem = solve_options.max_cpu_mem / sizeof_dtype(X.dtype)
+            device = torch.device("cpu")
 
+        # Decide block size (this is super random for now: if OOM increase `coef_nm`).
+        coef_nm = 10
+        blk_n = select_dim_over_n(max_n=X.shape[0], m=M.shape[0], d=X.shape[1], max_mem=avail_mem,
+                                  coef_nm=coef_nm, coef_nd=1, coef_md=1, coef_n=0,
+                                  coef_m=0, coef_d=0, rest=0)
+
+        # Initialize hutch trace estimation vectors (t of them)
+        Z = init_random_vecs(X.shape[0], t, dtype=X.dtype, device=X.device, gaussian_random=gaussian_random)
+        ZY = torch.cat((Z, Y), dim=1)
+        # Solve falkon with right-hand side `ZY`
+        solve_zy, solve_zy_prec = solve_falkon(
+            X, M, penalty, ZY, kernel_args, solve_options, solve_maxiter,
+            init_sol=RegLossAndDeffv2._last_solve_zy)
         if warm_start:
-            RegLossAndDeffv2._last_solve_zy = data.solve_zy_prec.detach().clone()
-        RegLossAndDeffv2.last_alpha = data.solve_y.detach()
-        ctx.save_for_backward(kernel_args, penalty, M)
-        ctx.data, ctx.tr_ctx, ctx.X, ctx.use_stoch_trace = data, tr_ctx, X, use_stoch_trace
-        print(f"Stochastic: D-eff {d_eff:.3e} Data-Fit {datafit:.3e} Trace {trace:.3e}")
-        return d_eff + datafit + trace
+            RegLossAndDeffv2._last_solve_zy = solve_zy_prec.detach().clone()
+        RegLossAndDeffv2.last_alpha = solve_zy[t:].detach().clone()
+
+        # Move small matrices to the computation device.
+        solve_zy_dev = solve_zy.to(device)
+        M_dev = M.to(device, copy=False).requires_grad_(M.requires_grad)
+        kernel_args_dev = kernel_args.to(device, copy=False).requires_grad_(kernel_args.requires_grad)
+        penalty_dev = penalty.to(device, copy=False).requires_grad_(penalty.requires_grad)
+
+        with torch.autograd.enable_grad():
+            kmm = full_rbf_kernel(M_dev, M_dev, kernel_args_dev)
+            zy_solve_kmm_solve_zy = (kmm @ solve_zy_dev * solve_zy_dev).sum(0)  # (T+1)
+            # The following should be identical but seems to introduce errors in the bwd pass.
+            # zy_solve_kmm_solve_zy = (kmm_chol.T @ solve_zy_dev).square().sum(0)  # (T+1)
+            pen_n = penalty_dev * X.shape[0]
+        with torch.autograd.no_grad():
+            mm_eye = torch.eye(M_dev.shape[0], device=device, dtype=M_dev.dtype) * EPS
+            kmm_chol, info = torch.linalg.cholesky_ex(kmm + mm_eye, check_errors=True)
+
+        # Initialize forward pass elements.
+        dfit_fwd = Y.square().sum()
+        deff_fwd = torch.tensor(0, dtype=X.dtype, device=X.device)
+        trace_fwd = torch.tensor(X.shape[0], dtype=X.dtype, device=X.device)
+        grads = None
+        for i in range(0, X.shape[0], blk_n):
+            leni = min(blk_n, X.shape[0] - i)
+            c_X = X[i: i + leni, :].to(device)
+            c_zy = ZY[i: i + leni, :].to(device)
+            with torch.autograd.enable_grad():
+                k_mn = full_rbf_kernel(M_dev, c_X, kernel_args_dev)
+                k_mn_zy = k_mn @ c_zy  # MxN * Nx(T+1) = Mx(T+1)
+                zy_knm_solve_zy = (k_mn_zy * solve_zy_dev).sum(0)  # (T+1)
+                zy_solve_knm_knm_solve_zy = (k_mn.T @ solve_zy_dev).square().sum(0)  # (T+1)
+
+            with torch.autograd.no_grad():
+                # Nystrom kernel trace forward
+                solve1 = trsm(k_mn, kmm_chol, 1.0, lower=True, transpose=False)
+                solve2 = trsm(solve1, kmm_chol, 1.0, lower=True, transpose=True)
+                trace_fwd -= solve1.square().sum().to(X.device)  # TODO: make inplace?
+                # Nystrom effective dimension forward
+                deff_fwd += zy_knm_solve_zy[:t].mean().to(X.device)
+                # Data-fit forward
+                dfit_fwd -= zy_knm_solve_zy[t:].mean().to(X.device)
+
+            with torch.autograd.enable_grad():
+                # Nystrom kernel trace backward
+                trace_bwd = -(
+                    2 * (k_mn.mul(solve2)).sum() -
+                    (solve2 * (kmm @ solve2)).sum()
+                )
+                # Nystrom effective dimension backward
+                deff_bwd = (
+                    2 * zy_knm_solve_zy[:t].mean() -
+                    zy_solve_knm_knm_solve_zy[:t].mean()
+                )
+                if i == 0:
+                    deff_bwd -= pen_n * zy_solve_kmm_solve_zy[:t].mean()
+                # Data-fit backward
+                dfit_bwd = -(
+                    2 * zy_knm_solve_zy[t:].mean() -
+                    zy_solve_knm_knm_solve_zy[t:].mean()
+                )
+                if i == 0:
+                    dfit_bwd += pen_n * zy_solve_kmm_solve_zy[t:].mean()
+                bwd = trace_bwd + deff_bwd + dfit_bwd
+
+            # Calc grads
+            new_grads = calc_grads_tensors(inputs=(kernel_args_dev, penalty_dev, M_dev),
+                                           inputs_need_grad=ctx.needs_input_grad, backward=bwd,
+                                           retain_graph=True, allow_unused=True)
+            if grads is None:
+                grads = []
+                for g in new_grads:
+                    if g is not None:
+                        grads.append(g.to(device=X.device))
+                    else:
+                        grads.append(None)
+            else:
+                for gi in range(len(grads)):
+                    if (grads[gi] is None) != (new_grads[gi] is None):
+                        continue  # This can happen since bwd at iter-0 is different from following iters.
+                    if grads[gi] is not None:
+                        grads[gi] += new_grads[gi].to(X.device)
+
+        ctx.grads = grads
+        print(f"Stochastic: D-eff {deff_fwd:.3e} Data-Fit {dfit_fwd:.3e} Trace {trace_fwd:.3e}")
+        return deff_fwd + dfit_fwd + trace_fwd
 
     @staticmethod
     def backward(ctx, out):
-        kernel_args, penalty, M = ctx.saved_tensors
-        data = ctx.data
-        deff_bwd, data = nystrom_deff_bwd(kernel_args=kernel_args, penalty=penalty, M=M, X=ctx.X, data=data)
-        dfit_bwd, data = penalized_datafit_bwd(kernel_args=kernel_args, penalty=penalty, M=M, X=ctx.X, data=data)
-        tr_grads = nystrom_trace_bwd(ctx.tr_ctx, use_ste=ctx.use_stoch_trace)
-
-        with torch.autograd.enable_grad():
-            bg = out * (deff_bwd + dfit_bwd)
-        grads = list(calc_grads(ctx, bg, RegLossAndDeffv2.NUM_DIFF_ARGS))
-        grads[0] += tr_grads[0] * out
-        grads[2] += tr_grads[1] * out
-        return tuple(grads)
+        grads_out = []
+        for g in ctx.grads:
+            if g is not None:
+                g = g * out
+            grads_out.append(g)
+        return tuple(grads_out)
 
     @staticmethod
     def grad_check():

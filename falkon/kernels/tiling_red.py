@@ -272,13 +272,16 @@ class TilingGenredAutograd(torch.autograd.Function):
         # there is also a new variable for the formula's output
         resvar = f'Var({nargs+1},{myconv.dimout},{myconv.tagIJ})'
 
+        # convert to contiguous:
+        G = G.contiguous()
         grads = []  # list of gradients wrt. args;
 
         for (var_ind, (sig, arg_ind)) in enumerate(zip(aliases, args)):  # Run through the arguments
             # If the current gradient is to be discarded immediatly...
             if not ctx.needs_input_grad[var_ind + TilingGenredAutograd.NUM_NON_GRAD_ARGS]:  # because of (formula, aliases, backend, dtype, device_id, ranges, accuracy_flags, out)
                 grads.append(None)  # Don't waste time computing it.
-            else:  # Otherwise, the current gradient is really needed by the user:
+            else:
+                # Otherwise, the current gradient is really needed by the user:
                 # adding new aliases is way too dangerous if we want to compute
                 # second derivatives, etc. So we make explicit references to Var<ind,dim,cat> instead.
                 # New here (Joan) : we still add the new variables to the list of "aliases" (without
