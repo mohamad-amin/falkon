@@ -6,6 +6,8 @@ from typing import Sequence, Optional, Tuple, Union, Dict
 import torch
 import torch.distributions.constraints as constraints
 
+from falkon.la_helpers.square_norm_fn import square_norm_diff
+
 
 class TransformedParameter():
     def __init__(self, value, transform):
@@ -169,10 +171,25 @@ def squared_euclidean_distance(x1, x2):
     return res
 
 
-@torch.jit.script
+#@torch.jit.script
+#def full_rbf_kernel(X1, X2, sigma):
+#    pairwise_dists = squared_euclidean_distance(X1 / sigma, X2 / sigma)
+#    return torch.exp(-0.5 * pairwise_dists)
+
+
+#@torch.jit.script
 def full_rbf_kernel(X1, X2, sigma):
-    pairwise_dists = squared_euclidean_distance(X1 / sigma, X2 / sigma)
-    return torch.exp(-0.5 * pairwise_dists)
+    mat1_div_sig = X1 / sigma  # n*d
+    mat2_div_sig = X2 / sigma  # m*d
+    norm_sq_mat1 = square_norm_diff(mat1_div_sig, dim=-1, keepdim=True)  # n*1
+    norm_sq_mat2 = square_norm_diff(mat2_div_sig, dim=-1, keepdim=True)  # m*1
+
+    out = torch.addmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.T, alpha=-2, beta=1)  # n*m
+    out.add_(norm_sq_mat2.T)
+    out.clamp_min_(1e-30)
+    out.mul_(-0.5)
+    out.exp_()
+    return out
 
 
 def test_train_predict(model,

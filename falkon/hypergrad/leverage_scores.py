@@ -837,7 +837,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
             use_stoch_trace: bool,
             warm_start: bool
             ):
-        print_tictocs = True
+        print_tictocs = False
         if RegLossAndDeffv2._last_t is not None and RegLossAndDeffv2._last_t != t:
             RegLossAndDeffv2._last_solve_zy = None
             RegLossAndDeffv2.last_alpha = None
@@ -862,7 +862,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
             device = torch.device("cpu")
 
         # Decide block size (this is super random for now: if OOM increase `coef_nm`).
-        coef_nm = 15
+        coef_nm = 10
         blk_n = select_dim_over_n(max_n=X.shape[0], m=M.shape[0], d=X.shape[1], max_mem=avail_mem,
                                   coef_nm=coef_nm, coef_nd=1, coef_md=1, coef_n=0,
                                   coef_m=0, coef_d=0, rest=0)
@@ -894,7 +894,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
                 pen_n = penalty_dev * X.shape[0]
             with torch.autograd.no_grad():
                 mm_eye = torch.eye(M_dev.shape[0], device=device, dtype=M_dev.dtype) * EPS
-                kmm_chol, info = torch.linalg.cholesky_ex(kmm + mm_eye, check_errors=True)
+                kmm_chol, info = torch.linalg.cholesky_ex(kmm + mm_eye, check_errors=False)
 
         # Initialize forward pass elements.
         dfit_fwd = Y.square().sum().to(device)
@@ -905,33 +905,27 @@ class RegLossAndDeffv2(torch.autograd.Function):
         it = 0
         with ExitStack() as stack:
             if device.type == 'cuda':
-                s1, s2 = torch.cuda.current_stream(device), torch.cuda.Stream(device)
+                s1 = torch.cuda.current_stream(device)
                 stack.enter_context(torch.cuda.device(device))
                 stack.enter_context(torch.cuda.stream(s1))
             for i in range(0, X.shape[0], blk_n):
                 it += 1
                 leni = min(blk_n, X.shape[0] - i)
                 with TicToc(f"Iteration {it}/{num_iter} (block size {leni})", debug=print_tictocs):
-                    c_X = X[i: i + leni, :].to(device=device, non_blocking=True)  # s1
-                    k_mn = full_rbf_kernel(M_dev, c_X, kernel_args_dev)           # s1
-                    with ExitStack() as stack2:
-                        if device.type == 'cuda':
-                            stack2.enter_context(torch.cuda.stream(s2))
-                        c_zy = ZY[i: i + leni, :].to(device=device, non_blocking=True)  # s2
-                        if device.type == 'cuda':
-                            s2.wait_stream(s1)
-                        with torch.autograd.enable_grad():
-                            k_mn_zy = k_mn @ c_zy  # MxN * Nx(T+1) = Mx(T+1)  s2(wait s1)
-                            zy_knm_solve_zy = (k_mn_zy * solve_zy_dev).sum(0)  # (T+1)
-                            zy_solve_knm_knm_solve_zy = (k_mn.T @ solve_zy_dev).square().sum(0)  # (T+1)
+                    c_X = X[i: i + leni, :].to(device=device, non_blocking=True)
+                    c_zy = ZY[i: i + leni, :].to(device=device, non_blocking=True)
+                    with torch.autograd.enable_grad():
+                        k_mn = full_rbf_kernel(M_dev, c_X, kernel_args_dev)
+                        k_mn_zy = k_mn @ c_zy  # MxN * Nx(T+1) = Mx(T+1)
+                        zy_knm_solve_zy = (k_mn_zy * solve_zy_dev).sum(0)  # (T+1)
+                        zy_solve_knm_knm_solve_zy = (k_mn.T @ solve_zy_dev).square().sum(0)  # (T+1)
 
                     with TicToc("Forward stuff", debug=print_tictocs):
                         with torch.autograd.no_grad():
                             # Nystrom kernel trace forward
-                            solve1 = trsm(k_mn, kmm_chol, 1.0, lower=True, transpose=False)  # s1
-                            solve2 = trsm(solve1, kmm_chol, 1.0, lower=True, transpose=True)  # s1
-                            trace_fwd -= solve1.square_().sum()  # s1
-                            s2.synchronize()  # now s2 should be finished
+                            solve1 = trsm(k_mn, kmm_chol, 1.0, lower=True, transpose=False)  # (M*N)
+                            solve2 = trsm(solve1, kmm_chol, 1.0, lower=True, transpose=True)  # (M*N)
+                            trace_fwd -= solve1.square_().sum()
                             # Nystrom effective dimension forward
                             deff_fwd += zy_knm_solve_zy[:t].mean()
                             # Data-fit forward
