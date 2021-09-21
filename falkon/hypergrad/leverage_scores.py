@@ -275,7 +275,7 @@ def calc_grads_tensors(inputs: Sequence[torch.Tensor],
 
 
 def calc_grads(ctx, backward, num_diff_args):
-    return calc_grads_tensors(ctx.saved_tensors, ctx.needs_input_grad, backward, 
+    return calc_grads_tensors(ctx.saved_tensors, ctx.needs_input_grad, backward,
                               retain_graph=True, allow_unused=True)
 
 
@@ -897,13 +897,16 @@ class RegLossAndDeffv2(torch.autograd.Function):
                 kmm_chol, info = torch.linalg.cholesky_ex(kmm + mm_eye, check_errors=True)
 
         # Initialize forward pass elements.
-        dfit_fwd = Y.square().sum()
-        deff_fwd = torch.tensor(0, dtype=X.dtype, device=X.device)
-        trace_fwd = torch.tensor(X.shape[0], dtype=X.dtype, device=X.device)
+        dfit_fwd = Y.square().sum().to(device)
+        deff_fwd = torch.tensor(0, dtype=X.dtype, device=device)
+        trace_fwd = torch.tensor(X.shape[0], dtype=X.dtype, device=device)
         grads = None
+        num_iter = X.shape[0] // blk_n + 1
+        it = 0
         for i in range(0, X.shape[0], blk_n):
+            it += 1
             leni = min(blk_n, X.shape[0] - i)
-            with TicToc(f"Iteration {i}-{i+leni}", debug=print_tictocs):
+            with TicToc(f"Iteration {it}/{num_iter} (block size {leni})", debug=print_tictocs):
                 c_X = X[i: i + leni, :].to(device)
                 c_zy = ZY[i: i + leni, :].to(device)
                 with TicToc("K_mn and connected stuff", debug=print_tictocs):
@@ -918,11 +921,11 @@ class RegLossAndDeffv2(torch.autograd.Function):
                         # Nystrom kernel trace forward
                         solve1 = trsm(k_mn, kmm_chol, 1.0, lower=True, transpose=False)
                         solve2 = trsm(solve1, kmm_chol, 1.0, lower=True, transpose=True)
-                        trace_fwd -= solve1.square().sum().to(X.device)  # TODO: make inplace?
+                        trace_fwd -= solve1.square_().sum()
                         # Nystrom effective dimension forward
-                        deff_fwd += zy_knm_solve_zy[:t].mean().to(X.device)
+                        deff_fwd += zy_knm_solve_zy[:t].mean()
                         # Data-fit forward
-                        dfit_fwd -= zy_knm_solve_zy[t:].mean().to(X.device)
+                        dfit_fwd -= zy_knm_solve_zy[t:].mean()
 
                 with TicToc("Backward stuff", debug=print_tictocs):
                     with torch.autograd.enable_grad():
@@ -968,7 +971,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
 
         ctx.grads = grads
         print(f"Stochastic: D-eff {deff_fwd:.3e} Data-Fit {dfit_fwd:.3e} Trace {trace_fwd:.3e}")
-        return deff_fwd + dfit_fwd + trace_fwd
+        return (deff_fwd + dfit_fwd + trace_fwd).to(X.device)
 
     @staticmethod
     def backward(ctx, out):
