@@ -903,71 +903,81 @@ class RegLossAndDeffv2(torch.autograd.Function):
         grads = None
         num_iter = X.shape[0] // blk_n + 1
         it = 0
-        for i in range(0, X.shape[0], blk_n):
-            it += 1
-            leni = min(blk_n, X.shape[0] - i)
-            with TicToc(f"Iteration {it}/{num_iter} (block size {leni})", debug=print_tictocs):
-                c_X = X[i: i + leni, :].to(device)
-                c_zy = ZY[i: i + leni, :].to(device)
-                with TicToc("K_mn and connected stuff", debug=print_tictocs):
-                    with torch.autograd.enable_grad():
-                        k_mn = full_rbf_kernel(M_dev, c_X, kernel_args_dev)
-                        k_mn_zy = k_mn @ c_zy  # MxN * Nx(T+1) = Mx(T+1)
-                        zy_knm_solve_zy = (k_mn_zy * solve_zy_dev).sum(0)  # (T+1)
-                        zy_solve_knm_knm_solve_zy = (k_mn.T @ solve_zy_dev).square().sum(0)  # (T+1)
+        with ExitStack() as stack:
+            if device.type == 'cuda':
+                s1, s2 = torch.cuda.current_stream(device), torch.cuda.Stream(device)
+                stack.enter_context(torch.cuda.device(device))
+                stack.enter_context(torch.cuda.stream(s1))
+            for i in range(0, X.shape[0], blk_n):
+                it += 1
+                leni = min(blk_n, X.shape[0] - i)
+                with TicToc(f"Iteration {it}/{num_iter} (block size {leni})", debug=print_tictocs):
+                    c_X = X[i: i + leni, :].to(device=device, non_blocking=True)  # s1
+                    k_mn = full_rbf_kernel(M_dev, c_X, kernel_args_dev)           # s1
+                    with ExitStack() as stack2:
+                        if device.type == 'cuda':
+                            stack2.enter_context(torch.cuda.stream(s2))
+                        c_zy = ZY[i: i + leni, :].to(device=device, non_blocking=True)  # s2
+                        if device.type == 'cuda':
+                            s2.wait_stream(s1)
+                        with torch.autograd.enable_grad():
+                            k_mn_zy = k_mn @ c_zy  # MxN * Nx(T+1) = Mx(T+1)  s2(wait s1)
+                            zy_knm_solve_zy = (k_mn_zy * solve_zy_dev).sum(0)  # (T+1)
+                            zy_solve_knm_knm_solve_zy = (k_mn.T @ solve_zy_dev).square().sum(0)  # (T+1)
 
-                with TicToc("Forward stuff", debug=print_tictocs):
-                    with torch.autograd.no_grad():
-                        # Nystrom kernel trace forward
-                        solve1 = trsm(k_mn, kmm_chol, 1.0, lower=True, transpose=False)
-                        solve2 = trsm(solve1, kmm_chol, 1.0, lower=True, transpose=True)
-                        trace_fwd -= solve1.square_().sum()
-                        # Nystrom effective dimension forward
-                        deff_fwd += zy_knm_solve_zy[:t].mean()
-                        # Data-fit forward
-                        dfit_fwd -= zy_knm_solve_zy[t:].mean()
+                    with TicToc("Forward stuff", debug=print_tictocs):
+                        with torch.autograd.no_grad():
+                            # Nystrom kernel trace forward
+                            solve1 = trsm(k_mn, kmm_chol, 1.0, lower=True, transpose=False)  # s1
+                            solve2 = trsm(solve1, kmm_chol, 1.0, lower=True, transpose=True)  # s1
+                            trace_fwd -= solve1.square_().sum()  # s1
+                            s2.synchronize()  # now s2 should be finished
+                            # Nystrom effective dimension forward
+                            deff_fwd += zy_knm_solve_zy[:t].mean()
+                            # Data-fit forward
+                            dfit_fwd -= zy_knm_solve_zy[t:].mean()
 
-                with TicToc("Backward stuff", debug=print_tictocs):
-                    with torch.autograd.enable_grad():
-                        # Nystrom kernel trace backward
-                        trace_bwd = -(
-                            2 * (k_mn.mul(solve2)).sum() -
-                            (solve2 * (kmm @ solve2)).sum()
-                        )
-                        # Nystrom effective dimension backward
-                        deff_bwd = (
-                            2 * zy_knm_solve_zy[:t].mean() -
-                            zy_solve_knm_knm_solve_zy[:t].mean()
-                        )
-                        if i == 0:
-                            deff_bwd -= pen_n * zy_solve_kmm_solve_zy[:t].mean()
-                        # Data-fit backward
-                        dfit_bwd = -(
-                            2 * zy_knm_solve_zy[t:].mean() -
-                            zy_solve_knm_knm_solve_zy[t:].mean()
-                        )
-                        if i == 0:
-                            dfit_bwd += pen_n * zy_solve_kmm_solve_zy[t:].mean()
-                        bwd = trace_bwd + deff_bwd + dfit_bwd
+                    with TicToc("Backward stuff", debug=print_tictocs):
+                        with torch.autograd.enable_grad():
+                            # Nystrom kernel trace backward
+                            trace_bwd = -(
+                                2 * (k_mn.mul(solve2)).sum() -
+                                (solve2 * (kmm @ solve2)).sum()
+                            )
+                            # Nystrom effective dimension backward
+                            deff_bwd = (
+                                2 * zy_knm_solve_zy[:t].mean() -
+                                zy_solve_knm_knm_solve_zy[:t].mean()
+                            )
+                            if i == 0:
+                                deff_bwd -= pen_n * zy_solve_kmm_solve_zy[:t].mean()
+                            # Data-fit backward
+                            dfit_bwd = -(
+                                2 * zy_knm_solve_zy[t:].mean() -
+                                zy_solve_knm_knm_solve_zy[t:].mean()
+                            )
+                            if i == 0:
+                                dfit_bwd += pen_n * zy_solve_kmm_solve_zy[t:].mean()
+                            bwd = trace_bwd + deff_bwd + dfit_bwd
 
-                with TicToc("Grads", debug=print_tictocs):
-                    # Calc grads
-                    new_grads = calc_grads_tensors(inputs=(kernel_args_dev, penalty_dev, M_dev),
-                                                   inputs_need_grad=ctx.needs_input_grad, backward=bwd,
-                                                   retain_graph=True, allow_unused=True)
-                    if grads is None:
-                        grads = []
-                        for g in new_grads:
-                            if g is not None:
-                                grads.append(g.to(device=X.device))
-                            else:
-                                grads.append(None)
-                    else:
-                        for gi in range(len(grads)):
-                            if (grads[gi] is None) != (new_grads[gi] is None):
-                                continue  # This can happen since bwd at iter-0 is different from following iters.
-                            if grads[gi] is not None:
-                                grads[gi] += new_grads[gi].to(X.device)
+                    with TicToc("Grads", debug=print_tictocs):
+                        # Calc grads
+                        new_grads = calc_grads_tensors(inputs=(kernel_args_dev, penalty_dev, M_dev),
+                                                       inputs_need_grad=ctx.needs_input_grad, backward=bwd,
+                                                       retain_graph=True, allow_unused=True)
+                        if grads is None:
+                            grads = []
+                            for g in new_grads:
+                                if g is not None:
+                                    grads.append(g.to(device=X.device))
+                                else:
+                                    grads.append(None)
+                        else:
+                            for gi in range(len(grads)):
+                                if (grads[gi] is None) != (new_grads[gi] is None):
+                                    continue  # This can happen since bwd at iter-0 is different from following iters.
+                                if grads[gi] is not None:
+                                    grads[gi] += new_grads[gi].to(X.device)
 
         ctx.grads = grads
         print(f"Stochastic: D-eff {deff_fwd:.3e} Data-Fit {dfit_fwd:.3e} Trace {trace_fwd:.3e}")
