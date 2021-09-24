@@ -42,6 +42,7 @@ class ConjugateGradient(Optimizer):
     def __init__(self, opt: Optional[ConjugateGradientOptions] = None):
         super().__init__()
         self.params = opt or ConjugateGradientOptions()
+        self.num_iter = None
 
     def solve(self,
               X0: Optional[torch.Tensor],
@@ -100,14 +101,14 @@ class ConjugateGradient(Optimizer):
 
         e_train = time.time() - t_start
 
-        for i in range(max_iter):
+        for self.num_iter in range(max_iter):
             with TicToc("Chol Iter", debug=False):
                 t_start = time.time()
                 AP = mmv(P)
                 alpha = Rsold / (torch.sum(P * AP, dim=0) + m_eps)
                 X.addmm_(P, torch.diag(alpha))
 
-                if (i + 1) % self.params.cg_full_gradient_every == 0:
+                if (self.num_iter + 1) % self.params.cg_full_gradient_every == 0:
                     if X.is_cuda:
                         # addmm_ may not be finished yet causing mmv to get stale inputs.
                         torch.cuda.synchronize()
@@ -119,7 +120,7 @@ class ConjugateGradient(Optimizer):
                 Rsnew = torch.sum(R.pow(2), dim=0)
                 if Rsnew.abs().max().sqrt() < self.params.cg_tolerance:
                     #print("Stopping conjugate gradient descent at "
-                    #      "iteration %d. Solution has converged." % (i + 1))
+                    #      "iteration %d. Solution has converged." % (self.num_iter + 1))
                     break
 
                 P = R + torch.mm(P, torch.diag(Rsnew / (Rsold + m_eps)))
@@ -129,7 +130,7 @@ class ConjugateGradient(Optimizer):
                 e_train += e_iter
             with TicToc("Chol callback", debug=False):
                 if callback is not None:
-                    callback(i + 1, X, e_train)
+                    callback(self.num_iter + 1, X, e_train)
 
         return X
 

@@ -28,7 +28,6 @@ __all__ = (
     "ValidationLoss",
 )
 
-
 EPS = 5e-5
 
 
@@ -252,8 +251,9 @@ def solve_falkon(X, centers, penalty, rhs, kernel_args, solve_options, solve_max
         initial_solution=init_sol,
         max_iter=solve_maxiter,
     )
+    num_iters = optim.optimizer.num_iter
     sol_full = precond.apply(beta)  # eta, alpha
-    return sol_full, beta
+    return sol_full, beta, num_iters
 
 
 def calc_grads_tensors(inputs: Sequence[torch.Tensor],
@@ -529,7 +529,7 @@ def datafit_bwd(kernel_args, penalty, M, X, data):
                           - 2 * ((data.knm_solve_y * diff_kernel.mmv(X, M, data.solve_ytilde)).sum(
                       0) +
                                  pen_n * (data.kmm_solve_y * data.solve_ytilde).sum(0)).mean()
-                  # -2 alpha @ g(H) @ alpha
+                      # -2 alpha @ g(H) @ alpha
                   ) / X.shape[0]
     return loss_bg, data
 
@@ -818,7 +818,7 @@ class GCV(torch.autograd.Function):
                                      data=data)
         with torch.autograd.enable_grad():
             bg = out * (dfit_bwd * denominator - ctx.datafit * (
-                        - 2 / n + 2 * ctx.d_eff / n ** 2) * deff_bwd) / torch.square(denominator)
+                    - 2 / n + 2 * ctx.d_eff / n ** 2) * deff_bwd) / torch.square(denominator)
         return calc_grads(ctx, bg, GCV.NUM_DIFF_ARGS)
 
     @staticmethod
@@ -852,19 +852,24 @@ class RegLossAndDeffv2(torch.autograd.Function):
     last_alpha = None
     _last_t = None
     iter_prep_times, fwd_times, bwd_times, solve_times, kmm_times, grad_times = [], [], [], [], [], []
-    iter_times = []
+    iter_times, num_flk_iters = [], []
 
     @staticmethod
     def print_times():
+        num_times = len(RegLossAndDeffv2.iter_times)
         print(
-            f"Timings: Preparation {np.mean(RegLossAndDeffv2.iter_prep_times):.2f} "
-            f"Falkon solve {np.mean(RegLossAndDeffv2.solve_times):.2f} "
-            f"KMM (toCUDA) {np.mean(RegLossAndDeffv2.kmm_times):.2f} "
-            f"Forward {np.mean(RegLossAndDeffv2.fwd_times):.2f} "
-            f"Backward {np.mean(RegLossAndDeffv2.bwd_times):.2f} "
-            f"Grad {np.mean(RegLossAndDeffv2.grad_times):.2f} "
-            f"\n\tTotal {np.mean(RegLossAndDeffv2.iter_times):.2f}"
+            f"Timings: Preparation {np.sum(RegLossAndDeffv2.iter_prep_times) / num_times:.2f} "
+            f"Falkon solve {np.sum(RegLossAndDeffv2.solve_times) / num_times:.2f} "
+            f"(in {np.sum(RegLossAndDeffv2.num_flk_iters) / num_times:.1f} iters) "
+            f"KMM (toCUDA) {np.sum(RegLossAndDeffv2.kmm_times) / num_times:.2f} "
+            f"Forward {np.sum(RegLossAndDeffv2.fwd_times) / num_times:.2f} "
+            f"Backward {np.sum(RegLossAndDeffv2.bwd_times) / num_times:.2f} "
+            f"Grad {np.sum(RegLossAndDeffv2.grad_times) / num_times:.2f} "
+            f"\n\tTotal {np.sum(RegLossAndDeffv2.iter_times) / num_times:.2f}"
         )
+        (RegLossAndDeffv2.iter_prep_times, RegLossAndDeffv2.fwd_times, RegLossAndDeffv2.bwd_times,
+         RegLossAndDeffv2.solve_times, RegLossAndDeffv2.kmm_times, RegLossAndDeffv2.grad_times,
+         RegLossAndDeffv2.iter_times, RegLossAndDeffv2.num_flk_iters) = [], [], [], [], [], [], [], []
 
     @staticmethod
     def trace_bwd(k_mn, k_mn_zy, solve2, kmm, use_stoch_trace, t):
@@ -935,7 +940,8 @@ class RegLossAndDeffv2(torch.autograd.Function):
         _trace_fwd = torch.tensor(X.shape[0], dtype=X.dtype)
         with Timer(RegLossAndDeffv2.fwd_times), torch.autograd.no_grad():
             _trace_fwd, solve2 = RegLossAndDeffv2.trace_fwd(
-                _trace_fwd, k_mn=None, k_mn_zy=k_mn_zy, kmm_chol=kmm_chol, use_stoch_trace=True, t=t)
+                _trace_fwd, k_mn=None, k_mn_zy=k_mn_zy, kmm_chol=kmm_chol, use_stoch_trace=True,
+                t=t)
             # Nystrom effective dimension forward
             deff_fwd += zy_knm_solve_zy[:t].mean()
             # Data-fit forward
@@ -981,22 +987,25 @@ class RegLossAndDeffv2(torch.autograd.Function):
 
     @staticmethod
     def solve_flk(X, M, Y, Z, ZY, penalty, kernel_args, solve_options, solve_maxiter, warm_start):
+        t = Z.shape[1]
         solve_opt_precise = solve_options
         solve_maxiter_precise = solve_maxiter
-        solve_y, solve_y_prec = solve_falkon(X, M, penalty, Y, kernel_args,
-                                             solve_opt_precise, solve_maxiter_precise,
-                                             init_sol=RegLossAndDeffv2._last_solve_y)
-        solve_opt_coarse = dataclasses.replace(solve_options, cg_tolerance=1e-2)
-        solve_maxiter_coarse = 20
-        solve_z, solve_z_prec = solve_falkon(X, M, penalty, Z, kernel_args,
-                                             solve_opt_precise, solve_maxiter_precise,
-                                             init_sol=RegLossAndDeffv2._last_solve_z)
-        solve_zy = torch.cat((solve_z, solve_y), dim=1)
+        solve_zy, solve_zy_prec, num_iters = solve_falkon(
+            X, M, penalty, ZY, kernel_args, solve_opt_precise, solve_maxiter_precise,
+            init_sol=RegLossAndDeffv2._last_solve_y)
+        # solve_opt_coarse = dataclasses.replace(solve_options, cg_tolerance=1e-2)
+        # solve_maxiter_coarse = 20
+        # solve_z, solve_z_prec, num_iters = solve_falkon(X, M, penalty, Z, kernel_args,
+        #                                      solve_opt_precise, solve_maxiter_precise,
+        #                                      init_sol=RegLossAndDeffv2._last_solve_z)
+        # solve_zy = torch.cat((solve_z, solve_y), dim=1)
         if warm_start:
-            RegLossAndDeffv2._last_solve_y = solve_y_prec.detach().clone()
-            RegLossAndDeffv2._last_solve_z = solve_z_prec.detach().clone()
-        RegLossAndDeffv2.last_alpha = solve_y.detach().clone()
-        return solve_zy
+            # RegLossAndDeffv2._last_solve_y = solve_y_prec.detach().clone()
+            # RegLossAndDeffv2._last_solve_z = solve_z_prec.detach().clone()
+            RegLossAndDeffv2._last_solve_zy = solve_zy_prec.detach().clone()
+        # RegLossAndDeffv2.last_alpha = solve_y.detach().clone()
+        RegLossAndDeffv2.last_alpha = solve_zy[:, t:].detach().clone()
+        return solve_zy, num_iters
 
     @staticmethod
     def direct_wsplit(X, M, Y, penalty, kernel_args, kmm, kmm_chol, zy, solve_zy,
@@ -1115,8 +1124,8 @@ class RegLossAndDeffv2(torch.autograd.Function):
                                  gaussian_random=gaussian_random)
             ZY = torch.cat((Z, Y), dim=1)
             with Timer(RegLossAndDeffv2.solve_times):
-                solve_zy = RegLossAndDeffv2.solve_flk(X, M, Y, Z, ZY, penalty, kernel_args,
-                                                      solve_options, solve_maxiter, warm_start)
+                solve_zy, num_flk_iters = RegLossAndDeffv2.solve_flk(
+                    X, M, Y, Z, ZY, penalty, kernel_args, solve_options, solve_maxiter, warm_start)
 
             with Timer(RegLossAndDeffv2.kmm_times):
                 # Move small matrices to the computation device.
@@ -1272,11 +1281,11 @@ class ValidationLoss(torch.autograd.Function):
                     + 2 * (kmn_y * a2).sum()
                     + 2 * (kvm_alpha.detach() * kvm_alpha).sum()
                     - 2 * ((knm_a1 * knm_a2.detach()).sum() + (
-                        knm_a1.detach() * knm_a2).sum() + pen_n * (kmm_a1 * a2).sum())
+                    knm_a1.detach() * knm_a2).sum() + pen_n * (kmm_a1 * a2).sum())
                     - 2 * (kmn_y * a3).sum()
                     - 2 * (alpha1 * kmv_yv).sum()
                     + 2 * ((knm_a1 * knm_a3.detach()).sum() + (
-                        knm_a1.detach() * knm_a3).sum() + pen_n * (kmm_a1 * a3).sum())
+                    knm_a1.detach() * knm_a3).sum() + pen_n * (kmm_a1 * a3).sum())
             )
         return calc_grads(ctx, bg, 3)
 
