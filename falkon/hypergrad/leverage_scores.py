@@ -823,6 +823,14 @@ class RegLossAndDeffv2(torch.autograd.Function):
     last_alpha = None
     _last_t = None
 
+    def nystrom_trace_hutch_bwd(kmn_z, kmm_chol, l_solve_1, l_solve_2, n):
+        with torch.autograd.enable_grad():
+            bg = - (
+                2 * (kmn_z * l_solve_2).sum(0).mean()
+                - 2 * (l_solve_2 * (kmm_chol @ l_solve_1)).sum(0).mean()
+            ) / n
+        return bg
+
     @staticmethod
     def forward(
             ctx,
@@ -926,7 +934,6 @@ class RegLossAndDeffv2(torch.autograd.Function):
                     c_X = X[i: i + leni, :].to(device=device, non_blocking=True)
                     c_zy = ZY[i: i + leni, :].to(device=device, non_blocking=True)
                     with torch.autograd.enable_grad():
-                        #k_mn = full_rbf_kernel(M_dev, c_X, kernel_args_dev)
                         k_mn = full_rbf_kernel(c_X, M_dev, kernel_args_dev).T  # Done to get F-contig k_mn (faster trsm)
                         k_mn_zy = k_mn @ c_zy  # MxN * Nx(T+1) = Mx(T+1)
                         zy_knm_solve_zy = (k_mn_zy * solve_zy_dev).sum(0)  # (T+1)
@@ -935,9 +942,14 @@ class RegLossAndDeffv2(torch.autograd.Function):
                     with TicToc("Forward stuff", debug=print_tictocs):
                         with torch.autograd.no_grad():
                             # Nystrom kernel trace forward
-                            solve1 = trsm(k_mn, kmm_chol, 1.0, lower=True, transpose=False)  # (M*N)
-                            solve2 = trsm(solve1, kmm_chol, 1.0, lower=True, transpose=True)  # (M*N)
-                            trace_fwd -= solve1.square_().sum()
+                            if use_stoch_trace:
+                                solve1 = torch.triangular_solve(k_mn_zy[:, :t], kmm_chol, upper=False, transpose=False).solution  # m * t
+                                solve2 = torch.triangular_solve(solve1, kmm_chol, upper=False, transpose=True).solution.contiguous()  # m * t
+                                trace_fwd -= solve1.square_().sum(0).mean()
+                            else:
+                                solve1 = trsm(k_mn, kmm_chol, 1.0, lower=True, transpose=False)  # (M*N)
+                                solve2 = trsm(solve1, kmm_chol, 1.0, lower=True, transpose=True)  # (M*N)
+                                trace_fwd -= solve1.square_().sum()
                             # Nystrom effective dimension forward
                             deff_fwd += zy_knm_solve_zy[:t].mean()
                             # Data-fit forward
@@ -946,10 +958,16 @@ class RegLossAndDeffv2(torch.autograd.Function):
                     with TicToc("Backward stuff", debug=print_tictocs):
                         with torch.autograd.enable_grad():
                             # Nystrom kernel trace backward
-                            trace_bwd = -(
-                                2 * (k_mn.mul(solve2)).sum() -
-                                (solve2 * (kmm @ solve2)).sum()
-                            )
+                            if use_stoch_trace:
+                                trace_bwd = -(
+                                    2 * (k_mn_zy[:, :t].mul(solve2)).sum(0).mean() -
+                                    (solve2 * (kmm @ solve2)).sum(0).mean()
+                                )
+                            else:
+                                trace_bwd = -(
+                                    2 * (k_mn.mul(solve2)).sum() -
+                                    (solve2 * (kmm @ solve2)).sum()
+                                )
                             # Nystrom effective dimension backward
                             deff_bwd = (
                                 2 * zy_knm_solve_zy[:t].mean() -
