@@ -142,7 +142,7 @@ class StochasticDeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         loss = creg_penfit(kernel_args=self.sigma, penalty=self.penalty, centers=self.centers,
                            X=X, Y=Y, num_estimators=self.num_trace_est, deterministic=False,
                            solve_options=self.flk_opt, solve_maxiter=self.flk_maxiter,
-                           gaussian_random=False, use_stoch_trace=self.nystrace_ste)
+                           gaussian_random=True, use_stoch_trace=self.nystrace_ste, warm_start=True)
         return [loss]
 
     def predict(self, X):
@@ -191,6 +191,7 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
             self.register_parameter("centers", self.centers_.requires_grad_(True))
 
         self.L, self.LB, self.c = None, None, None
+        self.noise_estimate = None
 
     def hp_loss(self, X, Y):
         variance = self.penalty * X.shape[0]
@@ -214,19 +215,9 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         C = torch.triangular_solve(A / sqrt_var, self.LB, upper=False).solution  # m*n
 
         # Complexity (nystrom-deff)
-        ndeff = (C.square().sum())
         datafit = (torch.square(Y).sum() - torch.square(self.c * sqrt_var).sum())# / (1 - C.square().sum() / X.shape[0])
-        trace = Kdiag - torch.trace(AAT)
-        #ndeff = ndeff / X.shape[0]
-        #datafit = datafit / X.shape[0]
-        #trace = trace / X.shape[0]
-
-        #trace = trace / variance
-        #datafit *= variance
-        #ndeff /= variance
-
-        #ndeff *= 50#(X.shape[0] / m)
-        #trace *= 0
+        ndeff = (C.square().sum())
+        trace = (Kdiag - torch.trace(AAT))
 
         return ndeff, datafit, trace
 

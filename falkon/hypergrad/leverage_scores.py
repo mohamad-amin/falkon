@@ -1,4 +1,5 @@
 import time
+import dataclasses
 from contextlib import ExitStack
 from typing import Dict, Optional, Tuple, Sequence
 
@@ -817,7 +818,8 @@ def creg_penfit(kernel_args, penalty, centers, X, Y, num_estimators, determinist
 
 # noinspection PyMethodOverriding
 class RegLossAndDeffv2(torch.autograd.Function):
-    _last_solve_zy = None
+    _last_solve_z = None
+    _last_solve_y = None
     last_alpha = None
     _last_t = None
 
@@ -839,7 +841,8 @@ class RegLossAndDeffv2(torch.autograd.Function):
             ):
         print_tictocs = False
         if RegLossAndDeffv2._last_t is not None and RegLossAndDeffv2._last_t != t:
-            RegLossAndDeffv2._last_solve_zy = None
+            RegLossAndDeffv2._last_solve_y = None
+            RegLossAndDeffv2._last_solve_z = None
             RegLossAndDeffv2.last_alpha = None
         RegLossAndDeffv2._last_t = t
         if deterministic:
@@ -862,7 +865,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
             device = torch.device("cpu")
 
         # Decide block size (this is super random for now: if OOM increase `coef_nm`).
-        coef_nm = 10
+        coef_nm = 20
         blk_n = select_dim_over_n(max_n=X.shape[0], m=M.shape[0], d=X.shape[1], max_mem=avail_mem,
                                   coef_nm=coef_nm, coef_nd=1, coef_md=1, coef_n=0,
                                   coef_m=0, coef_d=0, rest=0)
@@ -871,13 +874,21 @@ class RegLossAndDeffv2(torch.autograd.Function):
         Z = init_random_vecs(X.shape[0], t, dtype=X.dtype, device=X.device, gaussian_random=gaussian_random)
         ZY = torch.cat((Z, Y), dim=1)
         with TicToc("Solve falkon", debug=print_tictocs):
-            # Solve falkon with right-hand side `ZY`
-            solve_zy, solve_zy_prec = solve_falkon(
-                X, M, penalty, ZY, kernel_args, solve_options, solve_maxiter,
-                init_sol=RegLossAndDeffv2._last_solve_zy)
+            solve_opt_precise = solve_options
+            solve_maxiter_precise = solve_maxiter
+            solve_y, solve_y_prec = solve_falkon(X, M, penalty, Y, kernel_args,
+                                                 solve_opt_precise, solve_maxiter_precise,
+                                                 init_sol=RegLossAndDeffv2._last_solve_y)
+            solve_opt_coarse = dataclasses.replace(solve_options, cg_tolerance=1e-2)
+            solve_maxiter_coarse = 20
+            solve_z, solve_z_prec = solve_falkon(X, M, penalty, Z, kernel_args,
+                                                 solve_opt_precise, solve_maxiter_precise,
+                                                 init_sol=RegLossAndDeffv2._last_solve_z)
+            solve_zy = torch.cat((solve_z, solve_y), dim=1)
             if warm_start:
-                RegLossAndDeffv2._last_solve_zy = solve_zy_prec.detach().clone()
-            RegLossAndDeffv2.last_alpha = solve_zy[t:].detach().clone()
+                RegLossAndDeffv2._last_solve_y = solve_y_prec.detach().clone()
+                RegLossAndDeffv2._last_solve_z = solve_z_prec.detach().clone()
+            RegLossAndDeffv2.last_alpha = solve_y.detach().clone()
 
         with TicToc("Preliminary computations", debug=print_tictocs):
             # Move small matrices to the computation device.
@@ -915,7 +926,8 @@ class RegLossAndDeffv2(torch.autograd.Function):
                     c_X = X[i: i + leni, :].to(device=device, non_blocking=True)
                     c_zy = ZY[i: i + leni, :].to(device=device, non_blocking=True)
                     with torch.autograd.enable_grad():
-                        k_mn = full_rbf_kernel(M_dev, c_X, kernel_args_dev)
+                        #k_mn = full_rbf_kernel(M_dev, c_X, kernel_args_dev)
+                        k_mn = full_rbf_kernel(c_X, M_dev, kernel_args_dev).T  # Done to get F-contig k_mn (faster trsm)
                         k_mn_zy = k_mn @ c_zy  # MxN * Nx(T+1) = Mx(T+1)
                         zy_knm_solve_zy = (k_mn_zy * solve_zy_dev).sum(0)  # (T+1)
                         zy_solve_knm_knm_solve_zy = (k_mn.T @ solve_zy_dev).square().sum(0)  # (T+1)
@@ -952,7 +964,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
                             )
                             if i == 0:
                                 dfit_bwd += pen_n * zy_solve_kmm_solve_zy[t:].mean()
-                            bwd = trace_bwd + deff_bwd + dfit_bwd
+                            bwd = deff_bwd + dfit_bwd + trace_bwd
 
                     with TicToc("Grads", debug=print_tictocs):
                         # Calc grads

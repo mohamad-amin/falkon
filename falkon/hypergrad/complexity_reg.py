@@ -183,7 +183,7 @@ class NystromKRRModelMixinN(FakeTorchModelMixin, abc.ABC):
         else:
             self.device = torch.device('cpu')
 
-        self.penalty_transform = PositiveTransform(1e-8)
+        self.penalty_transform = PositiveTransform(1e-9)
         #self.penalty_transform = ExpTransform()
         self.penalty = penalty
         self.register_buffer("penalty", self.penalty_)

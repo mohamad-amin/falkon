@@ -119,7 +119,7 @@ def pred_reporting(model: HyperOptimModel,
                                      seed=1312, error_fn=err_fn, error_every=None, options=flk_opt)
         else:
             flk_model = Falkon(kernel, penalty.item(), M=centers.shape[0],
-                               center_selection=center_selector, maxiter=30,
+                               center_selection=center_selector, maxiter=100,
                                seed=1312, error_fn=err_fn, error_every=None, options=flk_opt)
         if Xval is not None and Yval is not None:
             Xtr_full, Ytr_full = torch.cat((Xtr, Xval), dim=0), torch.cat((Ytr, Yval), dim=0)
@@ -183,7 +183,7 @@ def create_optimizer(opt_type: str, model: HyperOptimModel, learning_rate: float
                     "params": named_params['centers'], 'lr': learning_rate / center_lr_div})
         opt_hp = torch.optim.Adam(opt_modules)
         # schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_hp, factor=0.5, patience=1)
-        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=200, gamma=0.5)
+        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=200, gamma=0.3)
     elif opt_type == "sgd":
         opt_hp = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)
     elif opt_type == "lbfgs":
@@ -273,7 +273,7 @@ def train_complexity_reg(
 
     logs = []
     cum_time = 0
-    with torch.autograd.profiler.profile() as prof:
+    with torch.autograd.profiler.profile(enabled=False) as prof:
         for epoch in range(num_epochs):
             t_start = time.time()
             grads: Any = None
