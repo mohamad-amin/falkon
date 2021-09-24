@@ -153,6 +153,9 @@ class StochasticDeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         with torch.autograd.no_grad():
             return kernel.mmv(X, self.centers, RegLossAndDeffv2.last_alpha)
 
+    def print_times(self):
+        RegLossAndDeffv2.print_times()
+
     @property
     def loss_names(self):
         return ["stoch-creg-penfit"]

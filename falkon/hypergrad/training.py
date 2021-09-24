@@ -227,6 +227,8 @@ def epoch_bookkeeping(
             model=model, Xtr=Xtr, Ytr=Ytr, Xts=Xts, Yts=Yts,
             err_fn=err_fn, epoch=epoch, cum_time=cum_time,
             resolve_model=True, mb_size=minibatch)
+        if hasattr(model, "print_times"):
+            model.print_times()
         loss_dict.update(pred_dict)
     logs.append(loss_dict)
     # Learning rate schedule

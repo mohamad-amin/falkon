@@ -6,7 +6,6 @@ from typing import Dict, Optional, Tuple, Sequence
 import numpy as np
 import scipy.linalg
 import torch
-from falkon.utils import TicToc
 
 from falkon import FalkonOptions
 from falkon.hypergrad.common import full_rbf_kernel
@@ -16,6 +15,7 @@ from falkon.optim import FalkonConjugateGradient
 from falkon.preconditioner import FalkonPreconditioner
 from falkon.utils.helpers import sizeof_dtype, select_dim_over_n
 from falkon.la_helpers import trsm
+from falkon.utils.tictoc import Timer, TicToc
 
 __all__ = (
     "NoRegLossAndDeff",
@@ -28,7 +28,6 @@ __all__ = (
     "ValidationLoss",
 )
 
-from utils.tictoc import Timer
 
 EPS = 5e-5
 
@@ -858,13 +857,13 @@ class RegLossAndDeffv2(torch.autograd.Function):
     @staticmethod
     def print_times():
         print(
-            f"Timings: Preparation {np.mean(RegLossAndDeffv2.iter_prep_times)} "
-            f"Falkon solve {np.mean(RegLossAndDeffv2.solve_times)} "
-            f"KMM (toCUDA) {np.mean(RegLossAndDeffv2.kmm_times)} "
-            f"Forward {np.mean(RegLossAndDeffv2.fwd_times)} "
-            f"Backward {np.mean(RegLossAndDeffv2.bwd_times)} "
-            f"Grad {np.mean(RegLossAndDeffv2.grad_times)} "
-            f"\n\tTotal {np.mean(RegLossAndDeffv2.iter_times)}"
+            f"Timings: Preparation {np.mean(RegLossAndDeffv2.iter_prep_times):.2f} "
+            f"Falkon solve {np.mean(RegLossAndDeffv2.solve_times):.2f} "
+            f"KMM (toCUDA) {np.mean(RegLossAndDeffv2.kmm_times):.2f} "
+            f"Forward {np.mean(RegLossAndDeffv2.fwd_times):.2f} "
+            f"Backward {np.mean(RegLossAndDeffv2.bwd_times):.2f} "
+            f"Grad {np.mean(RegLossAndDeffv2.grad_times):.2f} "
+            f"\n\tTotal {np.mean(RegLossAndDeffv2.iter_times):.2f}"
         )
 
     @staticmethod
@@ -910,7 +909,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
 
     @staticmethod
     def trace_fwd(trace_fwd, k_mn, k_mn_zy, kmm_chol, use_stoch_trace, t):
-        # Nystrom kernel trace forward
+        """ Nystrom kernel trace forward """
         if use_stoch_trace:
             solve1 = torch.triangular_solve(k_mn_zy[:, :t], kmm_chol, upper=False,
                                             transpose=False).solution  # m * t
@@ -1003,6 +1002,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
     def direct_wsplit(X, M, Y, penalty, kernel_args, kmm, kmm_chol, zy, solve_zy,
                       zy_solve_kmm_solve_zy, t, coef_nm, device, avail_mem, use_stoch_trace,
                       needs_input_grad):
+        """ Splitting along the first dimension of X """
         # Decide block size (this is super random for now: if OOM increase `coef_nm`).
         blk_n = select_dim_over_n(max_n=X.shape[0], m=M.shape[0], d=X.shape[1], max_mem=avail_mem,
                                   coef_nm=coef_nm, coef_nd=1, coef_md=1, coef_n=0,
@@ -1135,8 +1135,8 @@ class RegLossAndDeffv2(torch.autograd.Function):
                     mm_eye = torch.eye(M_dev.shape[0], device=device, dtype=M_dev.dtype) * EPS
                     kmm_chol, info = torch.linalg.cholesky_ex(kmm + mm_eye, check_errors=False)
 
-            if use_stoch_trace:
-                kernel = GaussianKernel(kernel_args_dev, solve_options)
+            if use_stoch_trace and use_direct_for_stoch:
+                kernel = DiffGaussianKernel(kernel_args_dev, solve_options)
                 fwd, bwd = RegLossAndDeffv2.direct_nosplit(X, M_dev, Y, penalty, kmm, kmm_chol, ZY,
                                                            solve_zy, zy_solve_kmm_solve_zy, kernel,
                                                            t)
