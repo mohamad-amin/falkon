@@ -849,10 +849,16 @@ def creg_penfit(kernel_args, penalty, centers, X, Y, num_estimators, determinist
 class RegLossAndDeffv2(torch.autograd.Function):
     _last_solve_z = None
     _last_solve_y = None
+    _last_solve_zy = None
     last_alpha = None
     _last_t = None
     iter_prep_times, fwd_times, bwd_times, solve_times, kmm_times, grad_times = [], [], [], [], [], []
     iter_times, num_flk_iters = [], []
+    solve_together = False
+    use_direct_for_stoch = False
+    print(f"Initialized class RegLossAndDeffv2. solve_together={solve_together}, "
+          f"use_direct_for_stoch={use_direct_for_stoch}")
+
 
     @staticmethod
     def print_times():
@@ -988,23 +994,31 @@ class RegLossAndDeffv2(torch.autograd.Function):
     @staticmethod
     def solve_flk(X, M, Y, Z, ZY, penalty, kernel_args, solve_options, solve_maxiter, warm_start):
         t = Z.shape[1]
+        solve_together = RegLossAndDeffv2.solve_together
         solve_opt_precise = solve_options
         solve_maxiter_precise = solve_maxiter
-        solve_zy, solve_zy_prec, num_iters = solve_falkon(
-            X, M, penalty, ZY, kernel_args, solve_opt_precise, solve_maxiter_precise,
-            init_sol=RegLossAndDeffv2._last_solve_y)
-        # solve_opt_coarse = dataclasses.replace(solve_options, cg_tolerance=1e-2)
-        # solve_maxiter_coarse = 20
-        # solve_z, solve_z_prec, num_iters = solve_falkon(X, M, penalty, Z, kernel_args,
-        #                                      solve_opt_precise, solve_maxiter_precise,
-        #                                      init_sol=RegLossAndDeffv2._last_solve_z)
-        # solve_zy = torch.cat((solve_z, solve_y), dim=1)
-        if warm_start:
-            # RegLossAndDeffv2._last_solve_y = solve_y_prec.detach().clone()
-            # RegLossAndDeffv2._last_solve_z = solve_z_prec.detach().clone()
-            RegLossAndDeffv2._last_solve_zy = solve_zy_prec.detach().clone()
-        # RegLossAndDeffv2.last_alpha = solve_y.detach().clone()
-        RegLossAndDeffv2.last_alpha = solve_zy[:, t:].detach().clone()
+
+        if solve_together:
+            solve_zy, solve_zy_prec, num_iters = solve_falkon(
+                X, M, penalty, ZY, kernel_args, solve_opt_precise, solve_maxiter_precise,
+                init_sol=RegLossAndDeffv2._last_solve_zy)
+            if warm_start:
+                RegLossAndDeffv2._last_solve_zy = solve_zy_prec.detach().clone()
+            RegLossAndDeffv2.last_alpha = solve_zy[:, t:].detach().clone()
+        else:
+            solve_y, solve_y_prec, num_iters = solve_falkon(
+                X, M, penalty, Y, kernel_args, solve_opt_precise, solve_maxiter_precise,
+                init_sol=RegLossAndDeffv2._last_solve_y)
+            #solve_opt_coarse = dataclasses.replace(solve_options, cg_tolerance=1e-2)
+            #solve_maxiter_coarse = 20
+            solve_z, solve_z_prec, num_iters = solve_falkon(X, M, penalty, Z, kernel_args,
+                                                  solve_opt_precise, solve_maxiter_precise,
+                                                  init_sol=RegLossAndDeffv2._last_solve_z)
+            solve_zy = torch.cat((solve_z, solve_y), dim=1)
+            if warm_start:
+                RegLossAndDeffv2._last_solve_y = solve_y_prec.detach().clone()
+                RegLossAndDeffv2._last_solve_z = solve_z_prec.detach().clone()
+            RegLossAndDeffv2.last_alpha = solve_y.detach().clone()
         return solve_zy, num_iters
 
     @staticmethod
@@ -1102,8 +1116,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
             use_stoch_trace: bool,
             warm_start: bool
     ):
-        print_tictocs = False
-        use_direct_for_stoch = True
+        use_direct_for_stoch = RegLossAndDeffv2.use_direct_for_stoch
         if RegLossAndDeffv2._last_t is not None and RegLossAndDeffv2._last_t != t:
             RegLossAndDeffv2._last_solve_y = None
             RegLossAndDeffv2._last_solve_z = None
@@ -1126,6 +1139,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
             with Timer(RegLossAndDeffv2.solve_times):
                 solve_zy, num_flk_iters = RegLossAndDeffv2.solve_flk(
                     X, M, Y, Z, ZY, penalty, kernel_args, solve_options, solve_maxiter, warm_start)
+                RegLossAndDeffv2.num_flk_iters.append(num_flk_iters)
 
             with Timer(RegLossAndDeffv2.kmm_times):  # Move small matrices to the computation device
                 solve_zy_dev = solve_zy.to(device)
@@ -1153,8 +1167,8 @@ class RegLossAndDeffv2(torch.autograd.Function):
                                                inputs_need_grad=ctx.needs_input_grad, backward=bwd,
                                                retain_graph=False, allow_unused=True)
             else:
-                fwd, grads = RegLossAndDeffv2.direct_wsplit(X, M, Y, penalty, kernel_args, kmm,
-                                                            kmm_chol, ZY, solve_zy,
+                fwd, grads = RegLossAndDeffv2.direct_wsplit(X, M_dev, Y, penalty_dev, kernel_args_dev, kmm,
+                                                            kmm_chol, ZY, solve_zy_dev,
                                                             zy_solve_kmm_solve_zy, t, coef_nm,
                                                             device, avail_mem, use_stoch_trace,
                                                             ctx.needs_input_grad)
