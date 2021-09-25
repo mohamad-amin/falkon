@@ -441,7 +441,7 @@ def nystrom_deff_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxiter,
             data.kmn_zy = diff_kernel.mmv(M, X, ZY)
     if data.solve_zy is None:
         with torch.autograd.no_grad():
-            data.solve_zy, data.solve_zy_prec = solve_falkon(
+            data.solve_zy, data.solve_zy_prec, _ = solve_falkon(
                 X, M, penalty, ZY, kernel_args, solve_opt, solve_maxiter, init_sol=last_solve_zy)
 
     with torch.autograd.no_grad():
@@ -485,7 +485,7 @@ def datafit_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxiter,
     if data.solve_zy is None:
         with torch.autograd.no_grad():
             # Solve Falkon part 1
-            data.solve_zy, data.solve_zy_prec = solve_falkon(
+            data.solve_zy, data.solve_zy_prec, _ = solve_falkon(
                 X, M, penalty, ZY, kernel_args, solve_opt, solve_maxiter, init_sol=last_solve_zy)
     if data.knm_solve_zy is None:
         with torch.autograd.enable_grad():
@@ -494,7 +494,7 @@ def datafit_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxiter,
     if data.solve_ytilde is None:
         with torch.autograd.no_grad():
             # Solve Falkon part 2 (alpha_tilde = H^{-1} @ k_nm.T @ y_tilde
-            data.solve_ytilde, data.solve_ytilde_prec = solve_falkon(
+            data.solve_ytilde, data.solve_ytilde_prec, _ = solve_falkon(
                 X, M, penalty, data.y_tilde, kernel_args, solve_opt, solve_maxiter,
                 init_sol=last_solve_ytilde)
 
@@ -542,7 +542,7 @@ def penalized_datafit_fwd(kernel_args, penalty, M, X, Y, solve_opt, solve_maxite
     diff_kernel = GaussianKernel(kernel_args, opt=solve_opt)
     if data.solve_y is None:
         with torch.autograd.no_grad():
-            data.solve_y, _ = solve_falkon(X, M, penalty, Y, kernel_args, solve_opt, solve_maxiter)
+            data.solve_y, _, _ = solve_falkon(X, M, penalty, Y, kernel_args, solve_opt, solve_maxiter)
     if data.kmn_y is None:
         with torch.autograd.enable_grad():
             data.kmn_y = diff_kernel.mmv(M, X, Y)
@@ -1127,8 +1127,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
                 solve_zy, num_flk_iters = RegLossAndDeffv2.solve_flk(
                     X, M, Y, Z, ZY, penalty, kernel_args, solve_options, solve_maxiter, warm_start)
 
-            with Timer(RegLossAndDeffv2.kmm_times):
-                # Move small matrices to the computation device.
+            with Timer(RegLossAndDeffv2.kmm_times):  # Move small matrices to the computation device
                 solve_zy_dev = solve_zy.to(device)
                 M_dev = M.to(device, copy=False).requires_grad_(M.requires_grad)
                 kernel_args_dev = kernel_args.to(device, copy=False).requires_grad_(
