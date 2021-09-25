@@ -38,10 +38,11 @@ def multicls_data():
 @pytest.fixture
 def reg_data():
     X, Y = datasets.make_regression(1000, 30, random_state=11)
+    num_train = 800
     X = X.astype(np.float64)
     Y = Y.astype(np.float64).reshape(-1, 1)
-    return (torch.from_numpy(X[:800]), torch.from_numpy(Y[:800]),
-            torch.from_numpy(X[800:]), torch.from_numpy(Y[800:]))
+    return (torch.from_numpy(X[:num_train]), torch.from_numpy(Y[:num_train]),
+            torch.from_numpy(X[num_train:]), torch.from_numpy(Y[num_train:]))
 
 
 class TestFalkon:
@@ -97,7 +98,7 @@ class TestFalkon:
 
         opt = FalkonOptions(use_cpu=True, keops_active="no", debug=True)
         flk = Falkon(
-            kernel=kernel, penalty=1e-6, M=500, seed=10,
+            kernel=kernel, penalty=1e-6, M=Xtr.shape[0] // 2, seed=10,
             options=opt, maxiter=10)
         flk.fit(Xtr, Ytr, Xts=Xts, Yts=Yts)
 
@@ -257,7 +258,7 @@ def _runner_str(fname_X, fname_Y, fname_out, num_centers, num_rep, max_iter, gpu
     import torch
     from falkon import kernels, FalkonOptions, InCoreFalkon
     from falkon.center_selection import FixedSelector
-    
+
     num_rep = 5
     kernel = kernels.GaussianKernel(20.0)
     with open({fname_X}, 'rb') as fh:
@@ -265,7 +266,7 @@ def _runner_str(fname_X, fname_Y, fname_out, num_centers, num_rep, max_iter, gpu
     with open({fname_Y}, 'rb') as fh:
         Y = pickle.load(fh)
     X, Y = X.cuda(), Y.cuda()
-    
+
     opt = FalkonOptions(use_cpu=False, keops_active="no", debug=False, #never_store_kernel=True,
                         max_gpu_mem=1*2**30, cg_full_gradient_every=10,
                         min_cuda_iter_size_32=0, min_cuda_iter_size_64=0, min_cuda_pc_size_32=0, min_cuda_pc_size_64=0)

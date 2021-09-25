@@ -96,8 +96,8 @@ class ConjugateGradient(Optimizer):
 
         m_eps = self.params.cg_epsilon(X.dtype)
 
-        P = R
-        Rsold = torch.sum(R.pow(2), dim=0)
+        P = R.clone()
+        Rsold = R.square().sum(dim=0)
 
         e_train = time.time() - t_start
 
@@ -105,8 +105,9 @@ class ConjugateGradient(Optimizer):
             with TicToc("Chol Iter", debug=False):
                 t_start = time.time()
                 AP = mmv(P)
-                alpha = Rsold / (torch.sum(P * AP, dim=0) + m_eps)
-                X.addmm_(P, torch.diag(alpha))
+                alpha = Rsold / (torch.sum(P * AP, dim=0).add_(m_eps))
+                # X += P @ diag(alpha)
+                X.addcmul_(P, alpha.reshape(1, -1))
 
                 if (self.num_iter + 1) % self.params.cg_full_gradient_every == 0:
                     if X.is_cuda:
@@ -114,16 +115,18 @@ class ConjugateGradient(Optimizer):
                         torch.cuda.synchronize()
                     R = B - mmv(X)
                 else:
-                    R = R - torch.mm(AP, torch.diag(alpha))
-                    # R.addmm_(mat1=AP, mat2=torch.diag(alpha), alpha=-1.0)
+                    # R -= AP @ diag(alpha)
+                    R.addcmul_(AP, alpha.reshape(1, -1), value=-1.0)
 
-                Rsnew = torch.sum(R.pow(2), dim=0)
-                if Rsnew.abs().max().sqrt() < self.params.cg_tolerance:
+                Rsnew = R.square().sum(dim=0)
+                if Rsnew.max().sqrt() < self.params.cg_tolerance:
                     #print("Stopping conjugate gradient descent at "
                     #      "iteration %d. Solution has converged." % (self.num_iter + 1))
                     break
 
-                P = R + torch.mm(P, torch.diag(Rsnew / (Rsold + m_eps)))
+                # P = R + P @ diag(mul)
+                multiplier = (Rsnew / Rsold.add_(m_eps)).reshape(1, -1)
+                P = P.mul_(multiplier).add_(R)
                 Rsold = Rsnew
 
                 e_iter = time.time() - t_start
