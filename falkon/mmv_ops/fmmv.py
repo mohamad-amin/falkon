@@ -1,6 +1,6 @@
 from contextlib import ExitStack
 from dataclasses import dataclass
-from typing import Optional, Union, Tuple, Dict
+from typing import Optional, Union, Tuple, Dict, Sequence
 
 import numpy as np
 import torch
@@ -537,6 +537,32 @@ def dmmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor,
             copy(dev_out, out, s=s1)
 
 
+def _create_output_mat(out: Optional[torch.Tensor],
+                       data_devs: Sequence[torch.device],
+                       is_sparse: bool,
+                       shape: Tuple[int, int],
+                       dtype: torch.dtype,
+                       comp_dev_type: str,
+                       other_mat: torch.Tensor,
+                       ) -> torch.Tensor:
+    if out is not None:
+        return out
+    # Decide output device
+    out_dev = torch.device("cpu")
+    for ddev in data_devs:
+        if ddev.type == 'cuda':
+            out_dev = ddev
+            break
+    if is_sparse:
+        out = create_fortran(
+            shape, dtype, device=out_dev,
+            pin_memory=out_dev.type != 'cuda' and comp_dev_type == 'cuda')
+    else:
+        out = create_same_stride(shape, other_mat, dtype, device=out_dev,
+                                 pin_memory=out_dev.type != 'cuda' and comp_dev_type == 'cuda')
+    return out
+
+
 def fmmv(X1: Union[torch.Tensor, SparseTensor],
          X2: Union[torch.Tensor, SparseTensor],
          v: torch.Tensor,
@@ -547,29 +573,13 @@ def fmmv(X1: Union[torch.Tensor, SparseTensor],
     is_sparse = isinstance(X1, SparseTensor)
     if not is_sparse:
         _check_contiguity((X1, 'X1'), (X2, 'X2'), (v, 'v'), (out, 'out'))
-    # data_dev = X1.device
     data_devs = (X1.device, X2.device, v.device)
-    is_any_data_dev_cuda = any([ddev.type == 'cuda' for ddev in data_devs])
 
     comp_dev_type = 'cpu' if opt.use_cpu or not torch.cuda.is_available() else 'cuda'
     N, D = X1.shape
     T = v.shape[-1]
-    # Create output matrix
-    if out is None:
-        if is_any_data_dev_cuda:
-            for ddev in data_devs:
-                if ddev.type == 'cuda':
-                    out_dev = ddev
-        else:
-            out_dev = torch.device("cpu")
-        if is_sparse:
-            # noinspection PyUnboundLocalVariable
-            out = create_fortran((N, T), v.dtype, device=out_dev,
-                                 pin_memory=out_dev.type != 'cuda' and comp_dev_type == 'cuda')
-        else:
-            # noinspection PyUnboundLocalVariable
-            out = create_same_stride((N, T), X1, v.dtype, device=out_dev,
-                                     pin_memory=out_dev.type != 'cuda' and comp_dev_type == 'cuda')
+    out = _create_output_mat(out, data_devs, is_sparse, shape=(N, T), dtype=v.dtype,
+                             comp_dev_type=comp_dev_type, other_mat=X1)
 
     if comp_dev_type == 'cpu' and all([ddev.type == 'cpu' for ddev in data_devs]):
         args = ArgsFmmv(X1=X1, X2=X2, v=v, out=out, kernel=kernel, max_mem=opt.max_cpu_mem, differentiable=differentiable)
@@ -624,33 +634,33 @@ def fdmmv(X1: Union[torch.Tensor, SparseTensor], X2: Union[torch.Tensor, SparseT
     is_sparse = isinstance(X1, SparseTensor)
     if not is_sparse:
         _check_contiguity((X1, 'X1'), (X2, 'X2'), (v, 'v'), (out, 'out'))
-    data_dev = X1.device
+    # data_dev = X1.device
+    data_devs = [X1.device, X2.device, v.device]
+    if w is not None:
+        data_devs.append(w.device)
     comp_dev_type = 'cpu' if opt.use_cpu or not torch.cuda.is_available() else 'cuda'
 
     N, D = X1.shape[-2:]
     M, T = v.shape[-2:]
-    # Create output matrix
-    if out is None:
-        if is_sparse:
-            out = create_fortran((M, T), v.dtype, device=data_dev,
-                                 pin_memory=data_dev.type != 'cuda' and comp_dev_type == 'cuda')
-        else:
-            out = create_same_stride((M, T), X1, v.dtype, device=data_dev,
-                                     pin_memory=data_dev.type != 'cuda' and comp_dev_type == 'cuda')
+    out = _create_output_mat(out, data_devs, is_sparse, shape=(M, T), dtype=v.dtype,
+                             comp_dev_type=comp_dev_type, other_mat=X1)
 
-    if comp_dev_type == 'cpu' and data_dev.type == 'cpu':
+    if comp_dev_type == 'cpu' and all([ddev.type == 'cpu' for ddev in data_devs]):
         args = ArgsFdmmv(X1=X1, X2=X2, v=v, w=w, out=out, kernel=kernel, max_mem=opt.max_cpu_mem)
         _call_direct(dmmv_run_starter, (args, -1))
-    elif comp_dev_type == 'cuda' and data_dev.type == 'cuda':
+    elif comp_dev_type == 'cuda' and all([ddev.type == 'cuda' for ddev in data_devs]):
         if is_sparse:
             raise NotImplementedError("In-core, sparse fdmmv not implemented. "
                                       "Use the out-of-core version instead.")
+        # TODO: Make sure all matrices are on same CUDA device
+        data_dev = data_devs[0]
         gpu_info = _get_gpu_info(opt, slack=0.9)
         single_gpu_info = [g for g in gpu_info if g.Id == data_dev.index][0]
         args = ArgsFdmmv(X1=X1, X2=X2, v=v, w=w, out=out, kernel=kernel,
                          max_mem=single_gpu_info.usable_memory)
         _call_direct(dmmv_run_starter, (args, data_dev.index))
-    elif comp_dev_type == 'cuda' and data_dev.type == 'cpu':
+    elif comp_dev_type == 'cuda':
+        # TODO: Make sure all matrices are on same CUDA device
         gpu_info = _get_gpu_info(opt, slack=0.9)
         args = []  # Arguments passed to each subprocess
         wrlk = []  # Outputs for each subprocess
