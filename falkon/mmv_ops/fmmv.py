@@ -1,6 +1,6 @@
 from contextlib import ExitStack
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Optional, Union, Tuple, Dict
 
 import numpy as np
 import torch
@@ -71,20 +71,24 @@ def _sparse_mmv_blk_sizes(n, d, m, t, avail_mem, extra_mem, incore: bool, m1_den
     return blk_n, blk_m, mem_needed
 
 
-def _dense_mmv_blk_sizes(n, d, m, t, avail_mem, extra_mem, incore: bool):
-    coef_n, coef_m = 0, 0
-    if not incore:
-        coef_n += d + t
-        coef_m += d + t
+def _dense_mmv_blk_sizes(n: int, d: int, m: int, t: int, avail_mem: float,
+                         extra_mem: Dict[str, float], m1_ic: bool, m2_ic: bool, v_ic: bool,
+                         out_ic: bool) -> Tuple[int, int, int]:
+    coef_nm = 1  # for the kernel block
+    coef_n = d if not m1_ic else 0  # For m1
+    coef_m = d if not m2_ic else 0  # For m2
+    coef_n = coef_n + t if not out_ic else coef_n  # For output vector
+    coef_m = coef_m + t if not v_ic else coef_m  # For v
+
     blk_n, blk_m = select_dim_over_nm_v2(
         max_n=n, max_m=m, max_mem=avail_mem,
-        coef_nm=1 + extra_mem.get('nm', 0),
+        coef_nm=coef_nm + extra_mem.get('nm', 0),
         coef_n=coef_n + extra_mem.get('n', 0) + extra_mem.get('nd', 0) * d,
         coef_m=coef_m + extra_mem.get('m', 0) + extra_mem.get('md', 0) * d,
         rest=extra_mem.get('d', 0))
-    mem_needed = blk_m * blk_n
-    if not incore:
-        mem_needed += blk_n * (d + t) + blk_m * (d + t)
+    mem_needed = blk_m * blk_n  # for the kernel block
+    mem_needed += blk_n * coef_n  # for m1 and output vector
+    mem_needed += blk_m * coef_m  # for m2 and v
     return blk_n, blk_m, mem_needed
 
 
@@ -120,8 +124,11 @@ def mmv_run_starter(proc_idx, queue, device_id):
             m1_density=X1.density, m2_density=X2.density)
         return sparse_mmv_run_thread(X1, X2, v, out, kernel, blk_n, blk_m, mem_needed, dev)
     else:
+        m1_ic, m2_ic, v_ic, out_ic = (_is_incore(dev, X1.device), _is_incore(dev, X2.device),
+                                      _is_incore(dev, v.device), _is_incore(dev, out.device))
         blk_n, blk_m, mem_needed = _dense_mmv_blk_sizes(
-            n=n, m=m, d=d, t=t, avail_mem=avail_mem, extra_mem=extra_mem, incore=incore)
+            n=n, m=m, d=d, t=t, avail_mem=avail_mem, extra_mem=extra_mem, m1_ic=m1_ic, m2_ic=m2_ic,
+            v_ic=v_ic, out_ic=out_ic)
         return mmv_run_thread(X1, X2, v, out, kernel, blk_n, blk_m, mem_needed, dev)
 
 
@@ -195,7 +202,9 @@ def mmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Tensor]
                    out: torch.Tensor, kernel: 'falkon.kernels.Kernel', blk_n: int, blk_m: int,
                    mem_needed: int, dev: torch.device):
     # data(CUDA), dev(CUDA) or data(CPU), dev(CPU)
-    incore = _is_incore(dev, m1.device)
+    m1_ic, m2_ic, v_ic, out_ic = (_is_incore(dev, m1.device), _is_incore(dev, m2.device),
+                                  _is_incore(dev, v.device), _is_incore(dev, out.device))
+    incore = all((m1_ic, m2_ic, v_ic, out_ic))
     N, D = m1.shape
     M, T = v.shape
 
@@ -203,35 +212,50 @@ def mmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Tensor]
     flat_gpu = torch.empty(size=(mem_needed,), dtype=m1.dtype, device=dev)
     flat_offset = 0
     dev_ker, flat_offset = _extract_flat(flat_gpu, size=(blk_n, blk_m), other=out, offset=flat_offset)
-    dev_m1, dev_m2, dev_out, dev_v = None, None, None, None
-    if not incore:
+    if m1_ic:
+        dev_m1 = None
+    else:
         dev_m1, flat_offset = _extract_flat(flat_gpu, size=(blk_n, D), other=m1, offset=flat_offset)
+    if m2_ic:
+        dev_m2 = None
+    else:
         dev_m2, flat_offset = _extract_flat(flat_gpu, size=(blk_m, D), other=m2, offset=flat_offset)
-        dev_out, flat_offset = _extract_flat(flat_gpu, size=(blk_n, T), other=out, offset=flat_offset)
+    if v_ic:
+        dev_v = None
+    else:
         dev_v, flat_offset = _extract_flat(flat_gpu, size=(blk_m, T), other=v, offset=flat_offset)
+    if out_ic:
+        dev_out = None
+    else:
+        dev_out, flat_offset = _extract_flat(flat_gpu, size=(blk_n, T), other=out, offset=flat_offset)
 
     with ExitStack() as stack:
+        s1, s2 = None, None
         if dev.type == 'cuda':
             s1, s2 = tcd.current_stream(dev), tcd.Stream(dev)
             stack.enter_context(tcd.device(dev))
             stack.enter_context(tcd.stream(s1))
         for i in range(0, N, blk_n):
             leni = min(blk_n, N - i)
-            if incore:
+            if m1_ic:
                 c_dev_m1 = m1[i: i + leni, :]
-                c_dev_out = out[i: i + leni]
             else:
                 c_dev_m1 = copy(m1[i: i + leni, :], dev_m1[:leni, :], s=s1)
+            if out_ic:
+                c_dev_out = out[i: i + leni]
+            else:
                 c_dev_out = dev_out[:leni]
             c_dev_out.fill_(0.0)
 
             for j in range(0, M, blk_m):
                 lenj = min(blk_m, M - j)
-                if incore:
+                if m2_ic:
                     c_dev_m2 = m2[j: j + lenj, :]
-                    c_dev_v = v[j: j + lenj, :]
                 else:
                     c_dev_m2 = copy(m2[j: j + lenj, :], dev_m2[:lenj, :], s=s1)
+                if v_ic:
+                    c_dev_v = v[j: j + lenj, :]
+                else:
                     c_dev_v = copy(v[j: j + lenj, :], dev_v[:lenj, :], s=s2)
                 c_dev_ker = dev_ker[:leni, :lenj].fill_(0.0)
 
@@ -242,7 +266,7 @@ def mmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Tensor]
                 if not incore:
                     s1.synchronize()  # sync necessary to avoid s2 overwriting dev_v/dev_w
             # end iter over M
-            if not incore:
+            if out_ic:
                 copy(c_dev_out, out[i: i + leni], s=s1)
         # end iter over N
     # exit context manager (device, stream)
@@ -322,30 +346,32 @@ def _sparse_dmmv_blk_sizes(n, d, m, t, avail_mem, extra_mem: dict, incore: bool,
     return blk_n, mem_needed
 
 
-def _dense_dmmv_blk_sizes(n, d, m, t, avail_mem: float, extra_mem: dict, incore: bool,
-                          dev_out_exists: bool):
-    coef_nm, coef_nd, coef_md, coef_nt, coef_mt = 1, 0, 0, 0, 0
-    coef_nt += 1  # for dev_w allocation
-    if not incore:
+def _dense_dmmv_blk_sizes(n, d, m, t, avail_mem: float, extra_mem: dict,
+                          m1_ic: bool, m2_ic: bool, v_ic: bool, out_ic: bool) -> Tuple[int, int]:
+    coef_nd, coef_md, coef_mt = 0, 0, 0
+    coef_nm = 1  # for kernel block
+    coef_nt = 1  # for dev_w allocation
+    if not m1_ic:
         coef_nd += 1  # x1
+    if not m2_ic:
         coef_md += 1  # x2
+    if not v_ic:
         coef_mt += 1  # v
-        if not dev_out_exists:
-            coef_mt += 1  # output
+    if not out_ic:
+        coef_mt += 1  # output
     blk_n = select_dim_over_n(
         max_n=n, m=m, d=d, max_mem=avail_mem,
-        coef_nm=1 + extra_mem.get('nm', 0),
+        coef_nm=coef_nm + extra_mem.get('nm', 0),
         coef_nd=coef_nd + extra_mem.get('nd', 0),
         coef_md=coef_md + extra_mem.get('md', 0),
         coef_n=coef_nt * t + extra_mem.get('n', 0) + t * extra_mem.get('nt', 0),
         coef_m=coef_mt * t + extra_mem.get('m', 0) + t * extra_mem.get('mt', 0),
         coef_d=extra_mem.get('d', 0), rest=0)
     mem_needed = blk_n * m
-    if not incore:
-        mem_needed += m * t + m * d + blk_n * d
-        if not dev_out_exists:
-            mem_needed += m * t
-    mem_needed += blk_n * t  # dev_w
+    mem_needed += blk_n * t * coef_nt
+    mem_needed += blk_n * d * coef_nd
+    mem_needed += m * d * coef_md
+    mem_needed += m * t * coef_mt
     return blk_n, mem_needed
 
 
@@ -371,9 +397,11 @@ def dmmv_run_starter(proc_idx, queue, device_id):
             dev_out_exists=dev_out_exists, m1_density=X1.density, m2_density=X2.density)
         sparse_dmmv_run_thread(X1, X2, v, w, out, kernel, blk_n, mem_needed, dev)
     else:
+        m1_ic, m2_ic, v_ic, out_ic = (_is_incore(dev, X1.device), _is_incore(dev, X2.device),
+                                      _is_incore(dev, v.device), _is_incore(dev, out.device))
         blk_n, mem_needed = _dense_dmmv_blk_sizes(
-            n=n, d=d, m=m, t=t, avail_mem=avail_mem, extra_mem=extra_mem, incore=incore,
-            dev_out_exists=dev_out_exists)
+            n=n, d=d, m=m, t=t, avail_mem=avail_mem, extra_mem=extra_mem,
+            m1_ic=m1_ic, m2_ic=m2_ic, v_ic=v_ic, out_ic=out_ic)
         dmmv_run_thread(X1, X2, v, w, out, kernel, blk_n, mem_needed, dev)
 
 
@@ -447,8 +475,10 @@ def dmmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor,
                     dev: torch.device):
     # k(x2, x1) @ (k(x1, x2) @ v + w)
     # data(CUDA), dev(CUDA) or data(CPU), dev(CPU)
-    incore = _is_incore(dev, m1.device)
-    dev_out_exists = out.device == dev  # out has already been allocated on the computation device
+    m1_ic, m2_ic, v_ic, out_ic = (_is_incore(dev, m1.device), _is_incore(dev, m2.device),
+                                  _is_incore(dev, v.device), _is_incore(dev, out.device))
+    w_ic = _is_incore(dev, w.device) if w is not None else True
+    incore = all((m1_ic, m2_ic, v_ic, out_ic, w_ic))
     N, D = m1.shape
     M, T = v.shape
 
@@ -458,14 +488,22 @@ def dmmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor,
     dev_ker, flat_offset = _extract_flat(flat_gpu, size=(blk_n, M), other=out, offset=flat_offset)
     dev_w, flat_offset = _extract_flat(flat_gpu, size=(blk_n, T), other=v if w is None else w,
                                        offset=flat_offset)
-    dev_m1, dev_m2, dev_out, dev_v = None, m2, out, v
-    if not incore:
+    if m1_ic:
+        dev_m1 = None
+    else:
         dev_m1, flat_offset = _extract_flat(flat_gpu, size=(blk_n, D), other=m1, offset=flat_offset)
+    if m2_ic:
+        dev_m2 = m2
+    else:
         dev_m2, flat_offset = _extract_flat(flat_gpu, size=(M, D), other=m2, offset=flat_offset)
-        if not dev_out_exists:
-            dev_out, flat_offset = _extract_flat(flat_gpu, size=(M, T), other=out,
-                                                 offset=flat_offset)
+    if v_ic:
+        dev_v = v
+    else:
         dev_v, flat_offset = _extract_flat(flat_gpu, size=(M, T), other=v, offset=flat_offset)
+    if out_ic:
+        dev_out = out
+    else:
+        dev_out, flat_offset = _extract_flat(flat_gpu, size=(M, T), other=out, offset=flat_offset)
     dev_out.fill_(0.0)
 
     with ExitStack() as stack:
@@ -474,12 +512,13 @@ def dmmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor,
             s1, s2 = tcd.current_stream(dev), tcd.Stream(dev)
             stack.enter_context(tcd.device(dev))
             stack.enter_context(tcd.stream(s1))
-        if not incore:
+        if not m2_ic:
             copy(m2, dev_m2, s=s1)
+        if not v_ic:
             copy(v, dev_v, s=s2)
         for i in range(0, N, blk_n):
             leni = min(blk_n, N - i)
-            if incore:
+            if m1_ic:
                 c_dev_m1 = m1[i: i + leni, :]
             else:
                 c_dev_m1 = copy(m1[i: i + leni, :], dev_m1[:leni, :], s=s1)
@@ -495,8 +534,7 @@ def dmmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor,
             dev_out.addmm_(c_dev_ker.T, c_dev_w)
             if dev.type == 'cuda':
                 s1.synchronize()  # sync necessary to avoid s2 overwriting dev_v/dev_w
-
-        if not incore and not dev_out_exists:
+        if not out_ic:
             copy(dev_out, out, s=s1)
 
 

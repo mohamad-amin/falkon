@@ -1,3 +1,4 @@
+import warnings
 from functools import partial
 from typing import List, Optional, Tuple
 
@@ -24,6 +25,18 @@ class KeopsTags:
     tagCPUGPU: int
     tag1D2D: int
     tagHostDevice: int
+
+
+def ensure_contig(*args):
+    for arg in args:
+        if arg is None:
+            yield arg
+        elif not arg.is_contiguous():
+            warnings.warn("[pyKeOps] Warning : at least one of the input tensors is not contiguous. "
+                          "Consider using contiguous data arrays to avoid unnecessary copies.")
+            yield arg.contiguous()
+        else:
+            yield arg
 
 
 def _single_gpu_method(proc_idx, queue, device_id):
@@ -107,12 +120,8 @@ def run_mmv_formula(formula: str,
     variables = [X1, X2, v] + other_vars
     myconv, tags = load_keops_fn(formula, aliases, backend, dtype, optional_flags, rec_multVar_highdim, out, *variables)
 
-    # Compile on a small data subset
     device_idx = data_device.index or -1
     fn = partial(myconv.genred_pytorch_out, tags.tagCPUGPU, tags.tag1D2D, tags.tagHostDevice, device_idx, ranges, nx, ny)
-    #small_data_variables = [X1[:100], X2[:10], v[:10]] + other_vars
-    #small_data_out = torch.empty((100, v.shape[1]), dtype=X1.dtype, device=data_device)
-    #fn(small_data_out, *small_data_variables)
 
     if backend.startswith("GPU") and data_device.type == 'cpu':
         # Info about GPUs
@@ -151,7 +160,7 @@ def run_mmv_formula(formula: str,
                 gpu_ram=gpu_ram[i]
             ), gpu_info[i].Id))
         _start_wait_processes(_single_gpu_method, subproc_args)
-    else:  # Run on CPU or GPU with CUDA inputs
+    else:  # Run in-core
         out = fn(out, *variables)
 
     return out, myconv
@@ -194,6 +203,10 @@ class TilingGenredAutograd(torch.autograd.Function):
                               pin_memory=(device.type == "cpu" and tagCPUGPU == 1))
         if ranges is None:
             ranges = ()  # To keep the same type
+
+        # N.B.: KeOps C++ expects contiguous data arrays
+        X1, X2, v, out = ensure_contig(X1, X2, v, out)
+        args = list(ensure_contig(*args))
 
         out, conv_module = run_mmv_formula(formula=formula,
                                            aliases=aliases,

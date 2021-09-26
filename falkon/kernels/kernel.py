@@ -238,7 +238,7 @@ class Kernel(ABC):
         torch.Size([100, 1])
         """
         X1, X2, v, out = self._check_mmv_dimensions(X1, X2, v, out)
-        self._check_device_properties(X1, X2, v, out, fn_name="mmv", opt=opt)
+        #self._check_device_properties(X1, X2, v, out, fn_name="mmv", opt=opt)
 
         params = self.params
         if opt is not None:
