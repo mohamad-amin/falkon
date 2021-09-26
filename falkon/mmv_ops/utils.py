@@ -1,5 +1,5 @@
 import dataclasses
-from typing import Tuple, Optional, List, Any
+from typing import Tuple, Optional, List, Any, Sequence
 
 import numpy as np
 import torch
@@ -8,11 +8,15 @@ from falkon.options import BaseOptions
 from falkon.utils import devices, PropagatingThread
 from falkon.utils.devices import DeviceInfo
 from falkon.utils.fake_queue import FakeQueue
-from falkon.utils.tensor_helpers import is_contig, extract_same_stride
+from falkon.utils.tensor_helpers import (
+    is_contig, extract_same_stride, create_fortran,
+    create_same_stride, create_C
+)
 
 __all__ = ("_setup_opt", "_check_contiguity", "_get_gpu_info", "_get_cpu_ram",
            "_start_wait_processes", "_gpu_tns_same_memory", "_call_direct",
            "ensure_batch_dim", "_extract_flat", "_is_incore", "_dev_from_id",
+           "create_output_mat",
            )
 
 
@@ -83,7 +87,8 @@ def ensure_batch_dim(*args: Optional[torch.Tensor]):
         elif tensor.dim() == 2:
             yield tensor.unsqueeze(0)
         else:
-            raise ValueError("Cannot ensure batch dimension on tensor with %d dimensions" % (tensor.dim()))
+            raise ValueError(
+                "Cannot ensure batch dimension on tensor with %d dimensions" % (tensor.dim()))
 
 
 def _extract_flat(flat_tn, size, other, offset):
@@ -100,3 +105,37 @@ def _dev_from_id(device_id: int) -> torch.device:
     if device_id < 0:
         return torch.device('cpu')
     return torch.device('cuda:%d' % device_id)
+
+
+def create_output_mat(out: Optional[torch.Tensor],
+                      data_devs: Sequence[torch.device],
+                      is_sparse: bool,
+                      shape: Tuple[int, int],
+                      dtype: torch.dtype,
+                      comp_dev_type: str,
+                      other_mat: torch.Tensor,
+                      output_stride: Optional[str] = None,
+                      ) -> torch.Tensor:
+    if out is not None:
+        return out
+    # Decide output device
+    out_dev = torch.device("cpu")
+    for ddev in data_devs:
+        if ddev.type == 'cuda':
+            out_dev = ddev
+            break
+    if is_sparse:
+        output_stride = "F"
+    if output_stride is None:
+        out = create_same_stride(shape, other_mat, dtype, device=out_dev,
+                                 pin_memory=out_dev.type != 'cuda' and comp_dev_type == 'cuda')
+    else:
+        if output_stride == "F":
+            out = create_fortran(
+                shape, dtype, device=out_dev,
+                pin_memory=out_dev.type != 'cuda' and comp_dev_type == 'cuda')
+        else:
+            out = create_C(
+                shape, dtype, device=out_dev,
+                pin_memory=out_dev.type != 'cuda' and comp_dev_type == 'cuda')
+    return out

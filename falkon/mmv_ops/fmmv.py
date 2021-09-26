@@ -537,32 +537,6 @@ def dmmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor,
             copy(dev_out, out, s=s1)
 
 
-def _create_output_mat(out: Optional[torch.Tensor],
-                       data_devs: Sequence[torch.device],
-                       is_sparse: bool,
-                       shape: Tuple[int, int],
-                       dtype: torch.dtype,
-                       comp_dev_type: str,
-                       other_mat: torch.Tensor,
-                       ) -> torch.Tensor:
-    if out is not None:
-        return out
-    # Decide output device
-    out_dev = torch.device("cpu")
-    for ddev in data_devs:
-        if ddev.type == 'cuda':
-            out_dev = ddev
-            break
-    if is_sparse:
-        out = create_fortran(
-            shape, dtype, device=out_dev,
-            pin_memory=out_dev.type != 'cuda' and comp_dev_type == 'cuda')
-    else:
-        out = create_same_stride(shape, other_mat, dtype, device=out_dev,
-                                 pin_memory=out_dev.type != 'cuda' and comp_dev_type == 'cuda')
-    return out
-
-
 def fmmv(X1: Union[torch.Tensor, SparseTensor],
          X2: Union[torch.Tensor, SparseTensor],
          v: torch.Tensor,
@@ -578,8 +552,8 @@ def fmmv(X1: Union[torch.Tensor, SparseTensor],
     comp_dev_type = 'cpu' if opt.use_cpu or not torch.cuda.is_available() else 'cuda'
     N, D = X1.shape
     T = v.shape[-1]
-    out = _create_output_mat(out, data_devs, is_sparse, shape=(N, T), dtype=v.dtype,
-                             comp_dev_type=comp_dev_type, other_mat=X1)
+    out = create_output_mat(out, data_devs, is_sparse, shape=(N, T), dtype=v.dtype,
+                            comp_dev_type=comp_dev_type, other_mat=X1)
 
     if comp_dev_type == 'cpu' and all([ddev.type == 'cpu' for ddev in data_devs]):
         args = ArgsFmmv(X1=X1, X2=X2, v=v, out=out, kernel=kernel, max_mem=opt.max_cpu_mem, differentiable=differentiable)
@@ -642,8 +616,8 @@ def fdmmv(X1: Union[torch.Tensor, SparseTensor], X2: Union[torch.Tensor, SparseT
 
     N, D = X1.shape[-2:]
     M, T = v.shape[-2:]
-    out = _create_output_mat(out, data_devs, is_sparse, shape=(M, T), dtype=v.dtype,
-                             comp_dev_type=comp_dev_type, other_mat=X1)
+    out = create_output_mat(out, data_devs, is_sparse, shape=(M, T), dtype=v.dtype,
+                            comp_dev_type=comp_dev_type, other_mat=X1)
 
     if comp_dev_type == 'cpu' and all([ddev.type == 'cpu' for ddev in data_devs]):
         args = ArgsFdmmv(X1=X1, X2=X2, v=v, w=w, out=out, kernel=kernel, max_mem=opt.max_cpu_mem)
