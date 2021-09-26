@@ -301,7 +301,6 @@ def mmv_diff_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Te
                 if not incore:
                     s2.synchronize()
                 c_dev_out.addmm_(c_dev_ker, c_dev_v)
-                #c_dev_out = c_dev_out.addmm(c_dev_ker, c_dev_v)
                 if not incore:
                     s1.synchronize()  # sync necessary to avoid s2 overwriting dev_v/dev_w
             # end iter over M
@@ -548,32 +547,46 @@ def fmmv(X1: Union[torch.Tensor, SparseTensor],
     is_sparse = isinstance(X1, SparseTensor)
     if not is_sparse:
         _check_contiguity((X1, 'X1'), (X2, 'X2'), (v, 'v'), (out, 'out'))
-    data_dev = X1.device
+    # data_dev = X1.device
+    data_devs = (X1.device, X2.device, v.device)
+    is_any_data_dev_cuda = any([ddev.type == 'cuda' for ddev in data_devs])
+
     comp_dev_type = 'cpu' if opt.use_cpu or not torch.cuda.is_available() else 'cuda'
     N, D = X1.shape
     T = v.shape[-1]
     # Create output matrix
     if out is None:
-        if is_sparse:
-            out = create_fortran((N, T), v.dtype, device=data_dev,
-                                 pin_memory=data_dev.type != 'cuda' and comp_dev_type == 'cuda')
+        if is_any_data_dev_cuda:
+            for ddev in data_devs:
+                if ddev.type == 'cuda':
+                    out_dev = ddev
         else:
-            out = create_same_stride((N, T), X1, v.dtype, device=data_dev,
-                                     pin_memory=data_dev.type != 'cuda' and comp_dev_type == 'cuda')
+            out_dev = torch.device("cpu")
+        if is_sparse:
+            # noinspection PyUnboundLocalVariable
+            out = create_fortran((N, T), v.dtype, device=out_dev,
+                                 pin_memory=out_dev.type != 'cuda' and comp_dev_type == 'cuda')
+        else:
+            # noinspection PyUnboundLocalVariable
+            out = create_same_stride((N, T), X1, v.dtype, device=out_dev,
+                                     pin_memory=out_dev.type != 'cuda' and comp_dev_type == 'cuda')
 
-    if comp_dev_type == 'cpu' and data_dev.type == 'cpu':
+    if comp_dev_type == 'cpu' and all([ddev.type == 'cpu' for ddev in data_devs]):
         args = ArgsFmmv(X1=X1, X2=X2, v=v, out=out, kernel=kernel, max_mem=opt.max_cpu_mem, differentiable=differentiable)
         _call_direct(mmv_run_starter, (args, -1))
-    elif comp_dev_type == 'cuda' and data_dev.type == 'cuda':
+    elif comp_dev_type == 'cuda' and all([ddev.type == 'cuda' for ddev in data_devs]):
         if is_sparse:
             raise NotImplementedError("In-core, sparse fmmv not implemented. "
                                       "Use the out-of-core version instead.")
+        # TODO: Make sure all matrices are on same CUDA device
+        data_dev = data_devs[0]
         gpu_info = _get_gpu_info(opt, slack=0.9)
         single_gpu_info = [g for g in gpu_info if g.Id == data_dev.index][0]
         args = ArgsFmmv(X1=X1, X2=X2, v=v, out=out, kernel=kernel,
                         max_mem=single_gpu_info.usable_memory, differentiable=differentiable)
         _call_direct(mmv_run_starter, (args, data_dev.index))
-    elif comp_dev_type == 'cuda' and data_dev.type == 'cpu':
+    elif comp_dev_type == 'cuda':
+        # TODO: Make sure all matrices are on same CUDA device
         gpu_info = _get_gpu_info(opt, slack=0.9)
         args = []  # Arguments passed to each subprocess
         block_sizes = calc_gpu_block_sizes(gpu_info, N)

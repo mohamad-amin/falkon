@@ -242,8 +242,8 @@ def solve_falkon(X, centers, penalty, rhs, kernel_args, solve_options, solve_max
     penalty = penalty.item()
     M_ = centers.detach()
     kernel_args_ = kernel_args.detach()
-    K = GaussianKernel(kernel_args_, opt=solve_options)  # here which opt doesnt matter
-    precond = FalkonPreconditioner(penalty, K, solve_options)  # here which opt doesnt matter
+    K = GaussianKernel(kernel_args_, opt=solve_options)
+    precond = FalkonPreconditioner(penalty, K, solve_options)
     precond.init(M_)
     optim = FalkonConjugateGradient(K, precond, solve_options)
     beta = optim.solve(
@@ -859,7 +859,6 @@ class RegLossAndDeffv2(torch.autograd.Function):
     print(f"Initialized class RegLossAndDeffv2. solve_together={solve_together}, "
           f"use_direct_for_stoch={use_direct_for_stoch}")
 
-
     @staticmethod
     def print_times():
         num_times = len(RegLossAndDeffv2.iter_times)
@@ -998,27 +997,47 @@ class RegLossAndDeffv2(torch.autograd.Function):
         solve_opt_precise = solve_options
         solve_maxiter_precise = solve_maxiter
 
+        solve_opt_precise = dataclasses.replace(solve_opt_precise, use_keops="no")  # Temporary
+
+        kernel_args_ = kernel_args.detach()
+        penalty_ = penalty.item()
+        M_ = M.detach()
+
+        K = GaussianKernel(kernel_args_, opt=solve_opt_precise)
+        precond = FalkonPreconditioner(penalty_, K, solve_opt_precise)
+        precond.init(M_)
+
         if solve_together:
-            solve_zy, solve_zy_prec, num_iters = solve_falkon(
-                X, M, penalty, ZY, kernel_args, solve_opt_precise, solve_maxiter_precise,
-                init_sol=RegLossAndDeffv2._last_solve_zy)
+            optim = FalkonConjugateGradient(K, precond, solve_opt_precise)
+            solve_zy_prec = optim.solve(
+                X, M_, ZY, penalty_,
+                initial_solution=RegLossAndDeffv2._last_solve_zy,
+                max_iter=solve_maxiter,
+            )
+            solve_zy = precond.apply(solve_zy_prec)
             if warm_start:
-                RegLossAndDeffv2._last_solve_zy = solve_zy_prec.detach().clone()
-            RegLossAndDeffv2.last_alpha = solve_zy[:, t:].detach().clone()
+                RegLossAndDeffv2._last_solve_zy = solve_zy_prec.clone()
+            RegLossAndDeffv2.last_alpha = solve_zy_prec[:, t:].clone()
+            num_iters = optim.optimizer.num_iter
         else:
-            solve_y, solve_y_prec, num_iters = solve_falkon(
-                X, M, penalty, Y, kernel_args, solve_opt_precise, solve_maxiter_precise,
-                init_sol=RegLossAndDeffv2._last_solve_y)
+            optim_y = FalkonConjugateGradient(K, precond, solve_opt_precise)
+            solve_y_prec = optim_y.solve(X, M_, Y, penalty_,
+                                         initial_solution=RegLossAndDeffv2._last_solve_y,
+                                         max_iter=solve_maxiter_precise)
             #solve_opt_coarse = dataclasses.replace(solve_options, cg_tolerance=1e-2)
             #solve_maxiter_coarse = 20
-            solve_z, solve_z_prec, num_iters = solve_falkon(X, M, penalty, Z, kernel_args,
-                                                  solve_opt_precise, solve_maxiter_precise,
-                                                  init_sol=RegLossAndDeffv2._last_solve_z)
+            optim_z = FalkonConjugateGradient(K, precond, solve_opt_precise)
+            solve_z_prec = optim_z.solve(X, M_, Z, penalty_,
+                                         initial_solution=RegLossAndDeffv2._last_solve_z,
+                                         max_iter=solve_maxiter_precise)
+            solve_z = precond.apply(solve_z_prec)
+            solve_y = precond.apply(solve_y_prec)
             solve_zy = torch.cat((solve_z, solve_y), dim=1)
             if warm_start:
-                RegLossAndDeffv2._last_solve_y = solve_y_prec.detach().clone()
-                RegLossAndDeffv2._last_solve_z = solve_z_prec.detach().clone()
-            RegLossAndDeffv2.last_alpha = solve_y.detach().clone()
+                RegLossAndDeffv2._last_solve_y = solve_y_prec.clone()
+                RegLossAndDeffv2._last_solve_z = solve_z_prec.clone()
+            RegLossAndDeffv2.last_alpha = solve_y.clone()
+            num_iters = optim_y.optimizer.num_iter
         return solve_zy, num_iters
 
     @staticmethod
@@ -1136,13 +1155,9 @@ class RegLossAndDeffv2(torch.autograd.Function):
             Z = init_random_vecs(X.shape[0], t, dtype=X.dtype, device=X.device,
                                  gaussian_random=gaussian_random)
             ZY = torch.cat((Z, Y), dim=1)
-            with Timer(RegLossAndDeffv2.solve_times):
-                solve_zy, num_flk_iters = RegLossAndDeffv2.solve_flk(
-                    X, M, Y, Z, ZY, penalty, kernel_args, solve_options, solve_maxiter, warm_start)
-                RegLossAndDeffv2.num_flk_iters.append(num_flk_iters)
 
             with Timer(RegLossAndDeffv2.kmm_times):  # Move small matrices to the computation device
-                solve_zy_dev = solve_zy.to(device)
+                # solve_zy_dev = solve_zy.to(device)
                 M_dev = M.to(device, copy=False).requires_grad_(M.requires_grad)
                 kernel_args_dev = kernel_args.to(device, copy=False).requires_grad_(
                     kernel_args.requires_grad)
@@ -1150,12 +1165,18 @@ class RegLossAndDeffv2(torch.autograd.Function):
 
                 with torch.autograd.enable_grad():
                     kmm = full_rbf_kernel(M_dev, M_dev, kernel_args_dev)
-                    zy_solve_kmm_solve_zy = (kmm @ solve_zy_dev * solve_zy_dev).sum(0)  # (T+1)
+                    # zy_solve_kmm_solve_zy = (kmm @ solve_zy_dev * solve_zy_dev).sum(0)  # (T+1)
                     # The following should be identical but seems to introduce errors in the bwd pass.
                     # zy_solve_kmm_solve_zy = (kmm_chol.T @ solve_zy_dev).square().sum(0)  # (T+1)
                 with torch.autograd.no_grad():
                     mm_eye = torch.eye(M_dev.shape[0], device=device, dtype=M_dev.dtype) * EPS
                     kmm_chol, info = torch.linalg.cholesky_ex(kmm + mm_eye, check_errors=False)
+
+            with Timer(RegLossAndDeffv2.solve_times):
+                solve_zy, num_flk_iters = RegLossAndDeffv2.solve_flk(
+                    X, M_dev, Y, Z, ZY, penalty_dev, kernel_args_dev, solve_options, solve_maxiter,
+                    warm_start)
+                RegLossAndDeffv2.num_flk_iters.append(num_flk_iters)
 
             if use_stoch_trace and use_direct_for_stoch:
                 kernel = DiffGaussianKernel(kernel_args_dev, solve_options)
