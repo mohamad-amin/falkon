@@ -3,9 +3,9 @@ import torch
 from falkon import FalkonOptions
 from falkon.hypergrad.common import full_rbf_kernel, get_scalar, cholesky
 from falkon.hypergrad.complexity_reg import NystromKRRModelMixinN, HyperOptimModel
-from falkon.hypergrad.leverage_scores import (
-    creg_penfit, RegLossAndDeffv2, creg_plainfit,
-    NoRegLossAndDeff
+from falkon.hypergrad.stochastic_creg_penfit import (
+    creg_penfit, creg_plainfit,
+    RegLossAndDeffv2, StochasticDeffNoPenFitTrFn
 )
 from falkon.kernels import GaussianKernel
 
@@ -379,11 +379,11 @@ class StochasticDeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         return [loss]
 
     def predict(self, X):
-        if NoRegLossAndDeff.last_alpha is None:
+        if StochasticDeffNoPenFitTrFn.last_alpha is None:
             raise RuntimeError("Call hp_loss before calling predict.")
         kernel = GaussianKernel(self.sigma.detach(), opt=self.flk_opt)
         with torch.autograd.no_grad():
-            return kernel.mmv(X, self.centers, NoRegLossAndDeff.last_alpha)
+            return kernel.mmv(X, self.centers, StochasticDeffNoPenFitTrFn.last_alpha)
 
     @property
     def loss_names(self):
