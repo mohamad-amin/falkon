@@ -998,27 +998,44 @@ class RegLossAndDeffv2(torch.autograd.Function):
         solve_opt_precise = solve_options
         solve_maxiter_precise = solve_maxiter
 
+        kernel_args_ = kernel_args.detach()
+        penalty_ = penalty.item()
+        M_ = M.detach()
+
+        #solve_opt_precise = dataclasses.replace(solve_opt_precise, keops_active="no")
+        K = GaussianKernel(kernel_args_, opt=solve_opt_precise)
+        precond = FalkonPreconditioner(penalty_, K, solve_opt_precise)
+        precond.init(M_)
+
         if solve_together:
-            solve_zy, solve_zy_prec, num_iters = solve_falkon(
-                X, M, penalty, ZY, kernel_args, solve_opt_precise, solve_maxiter_precise,
-                init_sol=RegLossAndDeffv2._last_solve_zy)
+            optim = FalkonConjugateGradient(K, precond, solve_opt_precise)
+            solve_zy_prec = optim.solve(
+                X, M_, ZY, penalty_,
+                initial_solution=RegLossAndDeffv2._last_solve_zy,
+                max_iter=solve_maxiter,
+            )
+            solve_zy = precond.apply(solve_zy_prec)
             if warm_start:
                 RegLossAndDeffv2._last_solve_zy = solve_zy_prec.detach().clone()
             RegLossAndDeffv2.last_alpha = solve_zy[:, t:].detach().clone()
+            num_iters = optim.optimizer.num_iter
         else:
-            solve_y, solve_y_prec, num_iters = solve_falkon(
-                X, M, penalty, Y, kernel_args, solve_opt_precise, solve_maxiter_precise,
-                init_sol=RegLossAndDeffv2._last_solve_y)
-            #solve_opt_coarse = dataclasses.replace(solve_options, cg_tolerance=1e-2)
-            #solve_maxiter_coarse = 20
-            solve_z, solve_z_prec, num_iters = solve_falkon(X, M, penalty, Z, kernel_args,
-                                                  solve_opt_precise, solve_maxiter_precise,
-                                                  init_sol=RegLossAndDeffv2._last_solve_z)
+            optim_y = FalkonConjugateGradient(K, precond, solve_opt_precise)
+            solve_y_prec = optim_y.solve(X, M_, Y, penalty_,
+                                         initial_solution=RegLossAndDeffv2._last_solve_y,
+                                         max_iter=solve_maxiter_precise)
+            optim_z = FalkonConjugateGradient(K, precond, solve_opt_precise)
+            solve_z_prec = optim_z.solve(X, M_, Z, penalty_,
+                                         initial_solution=RegLossAndDeffv2._last_solve_z,
+                                         max_iter=solve_maxiter_precise)
+            solve_z = precond.apply(solve_z_prec)
+            solve_y = precond.apply(solve_y_prec)
             solve_zy = torch.cat((solve_z, solve_y), dim=1)
             if warm_start:
                 RegLossAndDeffv2._last_solve_y = solve_y_prec.detach().clone()
                 RegLossAndDeffv2._last_solve_z = solve_z_prec.detach().clone()
             RegLossAndDeffv2.last_alpha = solve_y.detach().clone()
+            num_iters = optim_z.optimizer.num_iter
         return solve_zy, num_iters
 
     @staticmethod
@@ -1136,17 +1153,17 @@ class RegLossAndDeffv2(torch.autograd.Function):
             Z = init_random_vecs(X.shape[0], t, dtype=X.dtype, device=X.device,
                                  gaussian_random=gaussian_random)
             ZY = torch.cat((Z, Y), dim=1)
+            M_dev = M.to(device, copy=False).requires_grad_(M.requires_grad)
+            kernel_args_dev = kernel_args.to(device, copy=False).requires_grad_(kernel_args.requires_grad)
+            penalty_dev = penalty.to(device, copy=False).requires_grad_(penalty.requires_grad)
+
             with Timer(RegLossAndDeffv2.solve_times):
                 solve_zy, num_flk_iters = RegLossAndDeffv2.solve_flk(
-                    X, M, Y, Z, ZY, penalty, kernel_args, solve_options, solve_maxiter, warm_start)
+                    X, M_dev, Y, Z, ZY, penalty_dev, kernel_args_dev, solve_options, solve_maxiter, warm_start)
                 RegLossAndDeffv2.num_flk_iters.append(num_flk_iters)
 
             with Timer(RegLossAndDeffv2.kmm_times):  # Move small matrices to the computation device
-                solve_zy_dev = solve_zy.to(device)
-                M_dev = M.to(device, copy=False).requires_grad_(M.requires_grad)
-                kernel_args_dev = kernel_args.to(device, copy=False).requires_grad_(
-                    kernel_args.requires_grad)
-                penalty_dev = penalty.to(device, copy=False).requires_grad_(penalty.requires_grad)
+                solve_zy_dev = solve_zy.to(device, copy=False)
 
                 with torch.autograd.enable_grad():
                     kmm = full_rbf_kernel(M_dev, M_dev, kernel_args_dev)

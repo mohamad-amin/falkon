@@ -318,6 +318,7 @@ class MillionSongsDataset(KnownSplitDataset):
     file_name = '/data/DATASETS/MillionSongs/YearPredictionMSD.mat'
     dset_name = 'MillionSongs'
     num_train_samples = 463715
+    num_test_samples = 51630
 
     def read_data(self, dtype) -> Tuple[np.ndarray, np.ndarray]:
         f = scio.loadmat(MillionSongsDataset.file_name)

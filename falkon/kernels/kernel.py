@@ -238,7 +238,7 @@ class Kernel(ABC):
         torch.Size([100, 1])
         """
         X1, X2, v, out = self._check_mmv_dimensions(X1, X2, v, out)
-        self._check_device_properties(X1, X2, v, out, fn_name="mmv", opt=opt)
+        #self._check_device_properties(X1, X2, v, out, fn_name="mmv", opt=opt)
 
         params = self.params
         if opt is not None:
@@ -330,7 +330,7 @@ class Kernel(ABC):
         torch.Size([150, 1])
         """
         X1, X2, v, w, out = self._check_dmmv_dimensions(X1, X2, v, w, out)
-        self._check_device_properties(X1, X2, v, w, out, fn_name="dmmv", opt=opt)
+        #self._check_device_properties(X1, X2, v, w, out, fn_name="dmmv", opt=opt)
         params = self.params
         if opt is not None:
             params = dataclasses.replace(self.params, **dataclasses.asdict(opt))

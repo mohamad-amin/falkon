@@ -60,7 +60,7 @@ def run_simple_hopt(sigma_init: float,
         f"--model {model}",
         f"--num-t {num_trace_vecs}",
         f"--flk-maxiter {flk_maxiter}",
-        f"--cuda",
+        #f"--cuda",
         f"--name {gen_exp_name(optim, M, lr, pen_init, sigma_init, val_pct, opt_centers, sigma, model, dataset, num_trace_vecs, approx_trace, flk_maxiter, cg_tol, exp_name)}",
     ]
     if model == "svgp":
@@ -159,32 +159,61 @@ MODELS = [
 ]
 
 
+
+def run_multistart_2params():
+    datasets = ["cpusmall", "energy", "protein", "svmguide1",
+                "cadata", "ho-higgs", "road3d", "houseleectric"]
+    datasets = ["houseelectric"]
+    models = ["svgp", "sgpr", "hgrad-closed", "gcv", "creg-penfit", "creg-nopenfit",
+              "creg-nopenfit-divtr", "creg-nopenfit-divtrdeff",]
+    num_epochs = 200
+    opt_m = False
+    M = 100
+    val_pct = 0.6
+    optim = "adam"
+    learning_rate = 0.1
+    sigma = "single"
+    extra_exp_name = "test_v5"
+
+    sigma_pen_pairs = [(1.0, 1e-2), (15.0, 1e-2), (1.0, 1e-7), (15.0, 1e-7)]
+
+    for dataset in datasets:
+        for si, pi in sigma_pen_pairs:
+            run_for_models(
+                sigma_init=si, pen_init=pi,
+                lr=learning_rate, num_epochs=num_epochs, M=M, dataset=dataset,
+                val_pct=val_pct, models=models, num_rep=1, optim=optim, sigma=sigma,
+                opt_centers=opt_m, exp_name=extra_exp_name, flk_maxiter=30,
+                num_trace_vecs=30, cg_tol=1e-3, approx_trace=True)
+
+
 def run():
-    # protein, chiet, ictus, kin40k
     datasets = ["protein", "chiet", "ictus", "codrna", "svmguide1", "phishing",
                 "spacega", "cadata", "mg", "cpusmall", "abalone", "blogfeedback",
                 "energy", "covtype", "ho-higgs", "ijcnn1",
                 "road3d", "buzz", "houseelectric",]
-    #datasets = ["mnist-small", "fashionmnist", "svhn", "cifar10"]
+    datasets = ["svhn", "mnist-small", "fashionmnist", "svhn", "cifar10"]
+    datasets = ["millionsongs"]
     dataset = "cadata"
-    num_epochs = 150
+    num_epochs = 200
     learning_rate = 0.05
-    M = 100
+    M = 2000
     opt_m = True
     val_pct = 0.6
     optim = "adam"
     sigma = "diag"
-    extra_exp_name = "all_startauto500"
-    sigma_init = 5.0
+    extra_exp_name = "test"#"all_startauto0.5"
+    sigma_init = 7.0
     penalty_init = "auto"
     # Stochastic stuff
-    flk_maxiter = 30
-    num_trace_vecs = 20
-    cg_tol = 1e-2
+    flk_maxiter = 100
+    num_trace_vecs = 40
+    cg_tol = 1e-3
     approx_trace = True
     # Models to use for training
     #models = ["gcv", "sgpr", "hgrad-closed", "creg-penfit", "creg-nopenfit", "creg-nopenfit-divtr", "creg-nopenfit-divtrdeff", "creg-nopenfit-divdeff"]
-    models = ["sgpr", "svgp", "creg-penfit", "creg-nopenfit", "hgrad-closed", "creg-nopenfit-divtr", "creg-nopenfit-divtrdeff", "gcv"]
+    models = ["sgpr", "creg-penfit", "creg-nopenfit", "hgrad-closed", "creg-nopenfit-divtr", "creg-nopenfit-divtrdeff", "gcv"]
+    models = ["stoch-creg-penfit"]
 
 
     if False:
@@ -237,6 +266,6 @@ def run():
                 num_trace_vecs=num_trace_vecs, cg_tol=cg_tol, approx_trace=approx_trace)
 
 
-
 if __name__ == "__main__":
     run()
+    #run_multistart_2params()
