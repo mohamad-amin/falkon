@@ -193,7 +193,7 @@ def run():
                 "energy", "covtype", "ho-higgs", "ijcnn1",
                 "road3d", "buzz", "houseelectric",]
     datasets = ["svhn", "mnist-small", "fashionmnist", "svhn", "cifar10"]
-    datasets = ["millionsongs"]
+    datasets = ["flights-cls"]
     dataset = "cadata"
     num_epochs = 200
     learning_rate = 0.05
@@ -203,7 +203,7 @@ def run():
     optim = "adam"
     sigma = "diag"
     extra_exp_name = "test"#"all_startauto0.5"
-    sigma_init = 7.0
+    sigma_init = 1.0
     penalty_init = "auto"
     # Stochastic stuff
     flk_maxiter = 100

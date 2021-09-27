@@ -38,6 +38,7 @@ def run_gs(
         f"--dataset {dataset}",
         f"--model {model}",
         f"--grid-spec {gs_file}",
+        #f"--cuda",
         f"--name {dataset}_gs_{model}_{exp_name}"
     ]
     if model == "svgp":
@@ -53,35 +54,51 @@ def run_gs(
 
 def run():
     gs_file = "tmp_gs_file"
-    exp_name = "test_exp_m100"
+    exp_name = "test_exp_m100_finn"
     datasets = {
-        "boston": {
-           "num_centers": 100,
-           "sigmas": np.logspace(0, 2, 10),
-           "penalties": np.logspace(-8, 2, 15),
-        },
-        "energy": {
-           "num_centers": 100,
-           "sigmas": np.logspace(0, 2, 10),
-           "penalties": np.logspace(-8, 2, 15),
-        },
-        "ho-higgs": {
-           "num_centers": 100,
-           "sigmas": np.logspace(0, 1.5, 10),
-           "penalties": np.logspace(-6, 2, 15),
-        },
+        #"ho-higgs": {
+        #   "num_centers": 100,
+        #   "sigmas": np.logspace(-1, 2, 15),
+        #   "penalties": np.logspace(-9, 0, 15),
+        #   "train_size": 10000,
+        #},
+        #"svmguide1": {
+        #    "num_centers": 100,
+        #    "sigmas": np.logspace(-1, 1.5, 15),
+        #    "penalties": np.logspace(-8, 0, 15),
+        #    "train_size": 3089,
+        #},
+        #"boston": {
+        #   "num_centers": 100,
+        #   "sigmas": np.logspace(0, 1.5, 15),
+        #   "penalties": np.logspace(-6, 2, 15),
+        #   "train_size":
+        #},
+        #"energy": {
+        #   "num_centers": 100,
+        #   "sigmas": np.logspace(-1, 1.5, 15),
+        #   "penalties": np.logspace(-8, 2, 15),
+        #   "train_size": 614,
+        #},
         "protein": {
             "num_centers": 100,
-            "sigmas": np.logspace(0, 1.5, 10),
-            "penalties": np.logspace(-6, 2, 15),
+            "sigmas": np.logspace(-1, 1.5, 15),
+            "penalties": np.logspace(-8, 0, 15),
+            "train_size": 36584,
+        },
+        "cpusmall": {
+            "num_centers": 100,
+            "sigmas": np.logspace(-1, 1.5, 15),
+            "penalties": np.logspace(-9, 0, 15),
+            "train_size": 5734,
         },
     }
     models = {
+        "loocv": {},
         "svgp": {},
         "gcv": {},
-        "loocv": {},
         "sgpr": {},
-        "hgrad-closed": {'val_pct': 0.5},
+        "hgrad-closed": {'val_pct': 0.6},
         "creg-penfit": {},
         "creg-nopenfit": {},
         "creg-nopenfit-divtr": {},
@@ -89,7 +106,11 @@ def run():
     }
     for dset, dset_params in datasets.items():
         for model, model_params in models.items():
-            write_gridspec_file(gs_file, dset_params['sigmas'], dset_params['penalties'])
+            penalties = dset_params['penalties']
+            if model == 'svgp':
+                min_penalty = 1e-4 / dset_params['train_size']
+                penalties = np.logspace(np.log10(min_penalty), np.log10(dset_params['penalties'].max()), len(dset_params['penalties']))
+            write_gridspec_file(gs_file, dset_params['sigmas'], penalties)
             run_gs(val_pct=model_params.get('val_pct', 0.2),
                    num_centers=dset_params['num_centers'],
                    dataset=dset,
@@ -97,3 +118,8 @@ def run():
                    gs_file=gs_file,
                    exp_name=exp_name,
                    seed=DEFAULT_SEED)
+
+
+if __name__ == "__main__":
+    run()
+
