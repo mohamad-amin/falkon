@@ -389,6 +389,9 @@ class StochasticDeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
     def loss_names(self):
         return ["stoch-creg-plainfit"]
 
+    def print_times(self):
+        StochasticDeffNoPenFitTrFn.print_times()
+
     def __repr__(self):
         return f"StochasticDeffNoPenFitTr(sigma={get_scalar(self.sigma)}, penalty={get_scalar(self.penalty)}, " \
                f"num_centers={self.centers.shape[0]}, opt_centers={self.opt_centers}, " \
