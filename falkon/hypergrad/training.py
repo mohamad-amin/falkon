@@ -13,6 +13,7 @@ from falkon.hypergrad.complexity_reg import HyperOptimModel, hp_grad
 from falkon.hypergrad.creg import (
     DeffNoPenFitTr, DeffPenFitTr, StochasticDeffPenFitTr,
     StochasticDeffNoPenFitTr, CompDeffPenFitTr, CompDeffNoPenFitTr,
+    CregNoTrace,
 )
 from falkon.hypergrad.gcv import NystromGCV, StochasticNystromGCV
 from falkon.hypergrad.hgrad import NystromClosedFormHgrad, NystromIFTHgrad, FalkonClosedFormHgrad
@@ -153,6 +154,8 @@ def pred_reporting(model: HyperOptimModel,
         out_str += f" - Val {err_name} = {val_err:6.4f}"
         writer.add_scalar(f'error/{err_name}/val', val_err, epoch)
     print(out_str, flush=True)
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return {
         f"train_{err_name}": train_err,
         f"test_{err_name}": test_err,
@@ -174,11 +177,12 @@ def create_optimizer(opt_type: str, model: HyperOptimModel, learning_rate: float
                 {"params": named_params.values(), 'lr': learning_rate}
             ]
         else:
-            opt_modules = [
-                {"params": named_params['penalty'], 'lr': learning_rate},
-                {"params": named_params['sigma'], 'lr': learning_rate},
-            ]
-            if 'centers' in model.named_parameters():
+            opt_modules = []
+            if 'sigma' in named_params:
+                opt_modules.append({"params": named_params['sigma'], 'lr': learning_rate})
+            if 'penalty' in named_params:
+                opt_modules.append({"params": named_params['penalty'], 'lr': learning_rate})
+            if 'centers' in named_params:
                 opt_modules.append({
                     "params": named_params['centers'], 'lr': learning_rate / center_lr_div})
         opt_hp = torch.optim.Adam(opt_modules)
@@ -425,6 +429,10 @@ def init_model(model_type, data, penalty_init, sigma_init, centers_init, opt_pen
                                 centers_init=centers_init, opt_centers=opt_centers,
                                 opt_sigma=opt_sigma, opt_penalty=opt_penalty, cuda=cuda,
                                 tr_indices=tr_idx, ts_indices=val_idx, cg_tol=cg_tol)
+    elif model_type == "creg-notrace":
+        model = CregNoTrace(sigma_init=start_sigma, penalty_init=penalty_init,
+                            centers_init=centers_init, opt_sigma=opt_sigma,
+                            opt_penalty=opt_penalty, opt_centers=opt_centers, cuda=cuda)
     elif model_type == "creg-penfit":
         model = DeffPenFitTr(sigma_init=start_sigma, penalty_init=penalty_init,
                              centers_init=centers_init, opt_sigma=opt_sigma,

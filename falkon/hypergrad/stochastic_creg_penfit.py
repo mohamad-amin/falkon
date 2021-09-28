@@ -127,39 +127,32 @@ class RegLossAndDeffv2(torch.autograd.Function):
     @staticmethod
     def direct_nosplit(X, M, Y, penalty, kmm, kmm_chol, zy, solve_zy, zy_solve_kmm_solve_zy, kernel,
                        t):
-        print("Start direct_nosplit")
-        print("Alloced mem: %.5fMB" % (torch.cuda.memory_allocated() / 2**20))
         with Timer(RegLossAndDeffv2.iter_prep_times), torch.autograd.enable_grad():
-            print("mmv to get k_mn_zy")
             k_mn_zy = kernel.mmv(M, X, zy) # M x (T+1)
             zy_knm_solve_zy = k_mn_zy.mul(solve_zy).sum(0)  # T+1
-        print("end iter_prep")
-        torch.cuda.empty_cache()
-        print("Alloced mem: %.5fMB" % (torch.cuda.memory_allocated() / 2**20))
 
         # Forward
-        dfit_fwd = Y.square().sum()
-        deff_fwd = torch.tensor(0, dtype=X.dtype)
-        trace_fwd = torch.tensor(X.shape[0], dtype=X.dtype)
+        dfit_fwd = Y.square().sum().to(M.device)
+        deff_fwd = torch.tensor(0, dtype=X.dtype, device=M.device)
+        trace_fwd = torch.tensor(X.shape[0], dtype=X.dtype, device=M.device)
         with Timer(RegLossAndDeffv2.fwd_times), torch.autograd.no_grad():
+            pen_n = penalty * X.shape[0]
             trace_fwd, solve2 = calc_trace_fwd(
                 trace_fwd, k_mn=None, k_mn_zy=k_mn_zy, kmm_chol=kmm_chol,
                 use_stoch_trace=True, t=t)
+            #trace_fwd = _trace_fwd / pen_n
             # Nystrom effective dimension forward
             deff_fwd += zy_knm_solve_zy[:t].mean()
             # Data-fit forward
             dfit_fwd -= zy_knm_solve_zy[t:].mean()
-        print("end forward")
-        print("Alloced mem: %.5fMB" % (torch.cuda.memory_allocated() / 2**20))
-
         # Backward
         with Timer(RegLossAndDeffv2.bwd_times), torch.autograd.enable_grad():
-            # This OOM
             zy_solve_knm_knm_solve_zy = kernel.mmv(X, M, solve_zy).square().sum(0)  # T+1
             pen_n = penalty * X.shape[0]
             # Nystrom kernel trace backward
             trace_bwd = calc_trace_bwd(
                 k_mn=None, k_mn_zy=k_mn_zy, solve2=solve2, kmm=kmm, use_stoch_trace=True, t=t)
+            #trace_bwd = (-pen_n * _trace_fwd.detach() + pen_n.detach() * trace_bwd) / (pen_n**2)
             # Nystrom effective dimension backward
             deff_bwd = calc_deff_bwd(
                 zy_knm_solve_zy, zy_solve_knm_knm_solve_zy, zy_solve_kmm_solve_zy, pen_n, t,
@@ -350,7 +343,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
             torch.manual_seed(12)
 
         if use_stoch_trace and use_direct_for_stoch:
-            device, avail_mem = X.device, None
+            device, avail_mem = RegLossAndDeffv2.choose_device_mem(X.device, X.dtype, solve_options)
         else:
             device, avail_mem = RegLossAndDeffv2.choose_device_mem(X.device, X.dtype, solve_options)
 
@@ -367,10 +360,6 @@ class RegLossAndDeffv2(torch.autograd.Function):
                 solve_zy, num_flk_iters = RegLossAndDeffv2.solve_flk(
                     X, M_dev, Y, Z, ZY, penalty_dev, kernel_args_dev, solve_options, solve_maxiter, warm_start)
                 RegLossAndDeffv2.num_flk_iters.append(num_flk_iters)
-            print("Falkon solve finished.")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            print("Alloced mem: %.5fMB" % (torch.cuda.memory_allocated() / 2**20))
 
             with Timer(RegLossAndDeffv2.kmm_times):  # Move small matrices to the computation device
                 solve_zy_dev = solve_zy.to(device, copy=False)
@@ -383,19 +372,23 @@ class RegLossAndDeffv2(torch.autograd.Function):
                 with torch.autograd.no_grad():
                     mm_eye = torch.eye(M_dev.shape[0], device=device, dtype=M_dev.dtype) * EPS
                     kmm_chol, info = torch.linalg.cholesky_ex(kmm + mm_eye, check_errors=False)
-            print("Put KMM on GPU")
-            print("Alloced mem: %.5fMB" % (torch.cuda.memory_allocated() / 2**20))
-            print("kmm", kmm.device)
 
             if use_stoch_trace and use_direct_for_stoch:
-                kernel = GaussianKernel(kernel_args_dev, solve_options)
-                fwd, bwd = RegLossAndDeffv2.direct_nosplit(X, M_dev, Y, penalty, kmm, kmm_chol, ZY,
-                                                           solve_zy, zy_solve_kmm_solve_zy, kernel,
+                with torch.autograd.enable_grad():
+                    kernel = GaussianKernel(kernel_args_dev, solve_options)
+                fwd, bwd = RegLossAndDeffv2.direct_nosplit(X, M_dev, Y, penalty_dev, kmm, kmm_chol, ZY,
+                                                           solve_zy_dev, zy_solve_kmm_solve_zy, kernel,
                                                            t)
                 with Timer(RegLossAndDeffv2.grad_times):
-                    grads = calc_grads_tensors(inputs=(kernel_args_dev, penalty_dev, M_dev),
+                    grads_ = calc_grads_tensors(inputs=(kernel_args_dev, penalty_dev, M_dev),
                                                inputs_need_grad=ctx.needs_input_grad, backward=bwd,
-                                               retain_graph=False, allow_unused=True)
+                                               retain_graph=False, allow_unused=False)
+                    grads = []
+                    for g in grads_:
+                        if g is not None:
+                            grads.append(g.to(X.device))
+                        else:
+                            grads.append(g)
             else:
                 fwd, grads = RegLossAndDeffv2.direct_wsplit(X, M_dev, Y, penalty_dev, kernel_args_dev, kmm,
                                                             kmm_chol, ZY, solve_zy_dev,

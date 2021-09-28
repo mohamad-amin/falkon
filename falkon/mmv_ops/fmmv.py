@@ -107,12 +107,13 @@ def mmv_run_starter(proc_idx, queue, device_id):
     n, d = X1.shape
     m, t = v.shape
     if differentiable:
+        diff_coef_nm = 5
         assert not is_sparse, "Sparse + differentiable mmvs are not supported"
         blk_n, blk_m = select_dim_over_nm_v2(
             max_n=n, max_m=m, max_mem=avail_mem,
-            coef_nm=50 + extra_mem.get('nm', 0),
-            coef_n=d + t + extra_mem.get('n', 0) + extra_mem.get('nd', 0) * d,
-            coef_m=d + t + extra_mem.get('m', 0) + extra_mem.get('md', 0) * d,
+            coef_nm=diff_coef_nm + extra_mem.get('nm', 0),
+            coef_n=2*(d + t + extra_mem.get('n', 0) + extra_mem.get('nd', 0) * d),
+            coef_m=2*(d + t + extra_mem.get('m', 0) + extra_mem.get('md', 0) * d),
             rest=extra_mem.get('d', 0))
         return mmv_diff_run_thread(X1, X2, v, out, kernel, blk_n, blk_m, dev)
     if is_sparse:
@@ -294,15 +295,15 @@ def mmv_diff_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Te
                     if not incore:
                         stack_s2.enter_context(tcd.stream(s2))
                     c_dev_v = v[j: j + lenj, :].to(dev, non_blocking=True, copy=False)
-                c_dev_ker = kernel.compute_diff(c_dev_m1, c_dev_m2)
+                #c_dev_ker = kernel.compute_diff(c_dev_m1, c_dev_m2)
                 if not incore:
                     s2.synchronize()
-                c_dev_out.addmm_(c_dev_ker, c_dev_v)
-                #c_dev_out = c_dev_out.addmm(c_dev_ker, c_dev_v)
+                c_dev_out = c_dev_out + kernel.mmv_diff(c_dev_m1, c_dev_m2, c_dev_v)
+                #c_dev_out.addmm_(c_dev_ker, c_dev_v)
                 if not incore:
                     s1.synchronize()  # sync necessary to avoid s2 overwriting dev_v/dev_w
             # end iter over M
-            out[i: i + leni] = c_dev_out.to(m1.device, non_blocking=True, copy=False)
+            out[i: i + leni] = c_dev_out.to(out.device, non_blocking=True, copy=False)
         # end iter over N
     # exit context manager (device, stream)
     return out

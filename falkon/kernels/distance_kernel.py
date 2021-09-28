@@ -100,7 +100,10 @@ def rbf_core(sigmas, mat1, mat2, out):
     norm_sq_mat1 = square_norm(mat1_div_sig, -1, True)  # b*n*1
     norm_sq_mat2 = square_norm(mat2_div_sig, -1, True)  # b*m*1
 
-    torch.baddbmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1, out=out)  # b*n*m
+    if mat1.dim() == 3:
+        torch.baddbmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1, out=out)  # b*n*m
+    else:
+        torch.addmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1, out=out)  # b*n*m
     out.add_(norm_sq_mat2.transpose(-2, -1))
     out.clamp_min_(1e-30)
     out.mul_(-0.5)
@@ -114,7 +117,10 @@ def rbf_core_diff(sigmas, mat1, mat2):
     norm_sq_mat1 = square_norm_diff(mat1_div_sig, dim=-1, keepdim=True)  # b*n*1
     norm_sq_mat2 = square_norm_diff(mat2_div_sig, dim=-1, keepdim=True)  # b*m*1
 
-    out = torch.baddbmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1)  # b*n*m
+    if mat1.dim() == 3:
+        out = torch.baddbmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1)  # b*n*m
+    else:
+        out = torch.addmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1)  # b*n*m
     out.add_(norm_sq_mat2.transpose(-2, -1))
     out.clamp_min_(1e-30)
     out.mul_(-0.5)
@@ -123,30 +129,44 @@ def rbf_core_diff(sigmas, mat1, mat2):
 
 
 # noinspection PyMethodOverriding
-class GaussianKernelFn(Function):
+class GaussianKernelMMVFn(Function):
     @staticmethod
-    def forward(ctx, mat1, mat2, sigmas, out=None):
+    def forward(ctx, mat1, mat2, sigmas, vec, out=None):
+        sigmas_ = sigmas.to(device=mat1.device, copy=False)
+
+        ker = torch.empty((mat1.shape[0], mat2.shape[0]), dtype=mat1.dtype, device=mat1.device)
         if out is None:
-            out = torch.empty((mat1.shape[0], mat2.shape[0]), dtype=mat1.dtype, device=mat1.device)
-        mat1_b, mat2_b, out_b = batchify_tensors(mat1, mat2, out)
-        ker_b = rbf_core(sigmas, mat1_b, mat2_b, out_b)
+            out = torch.zeros((mat1.shape[0], vec.shape[1]), dtype=mat1.dtype, device=mat1.device)
 
-        ctx.save_for_backward(sigmas, mat1, mat2)
-
-        if mat1_b.dim() != mat1.dim():
-            return ker_b[0]
-        return ker_b
+        ker = rbf_core(sigmas_, mat1, mat2, ker)
+        torch.mm(ker, vec, out=out)
+        ctx.save_for_backward(mat1, mat2, sigmas, vec)
+        return out
 
     @staticmethod
     def backward(ctx, outputs):
-        sigmas, mat1, mat2 = ctx.saved_tensors
+        mat1, mat2, sigmas, vec = ctx.saved_tensors
 
         with torch.autograd.enable_grad():
-            mat1_b, mat2_b = batchify_tensors(mat1, mat2)
-            ker = rbf_core_diff(sigmas, mat1_b, mat2_b)
-            bwd = (ker * outputs).sum()
-        grads = torch.autograd.grad(bwd, [mat1, mat2, sigmas])
-        return grads
+            sigmas = sigmas.to(device="cuda")
+            ker = rbf_core_diff(sigmas, mat1, mat2)
+            mmv = torch.mm(ker, vec)
+            bwd = (mmv * outputs).sum()
+
+        inputs = []
+        for i in range(len(ctx.needs_input_grad)):
+            if ctx.needs_input_grad[i]:
+                inputs.append(ctx.saved_tensors[i])
+        grads = torch.autograd.grad(bwd, inputs)
+        j = 0
+        results = []
+        for i in range(len(ctx.needs_input_grad)):
+            if ctx.needs_input_grad[i]:
+                results.append(grads[j])
+                j += 1
+            else:
+                results.append(None)
+        return tuple(results)
 
 
 class GaussianKernel(L2DistanceKernel, KeopsKernelMixin):
@@ -363,14 +383,17 @@ class GaussianKernel(L2DistanceKernel, KeopsKernelMixin):
             return out_b[0]
         return out_b
 
+    def mmv_diff(self, X1, X2, vec):
+        output = GaussianKernelMMVFn.apply(X1, X2, self.sigma, vec)
+        return output
+
     def compute_diff(self, X1, X2):
         sigma = self.sigma.to(X1)
-        return GaussianKernelFn().apply(X1, X2, sigma)
-        # X1_b, X2_b = batchify_tensors(X1, X2)
-        # out_b = rbf_core_diff(sigma, X1_b, X2_b)
-        # if X1_b.dim() != X1.dim():  # Batchification was performed
-        #     return out_b[0]
-        # return out_b
+        X1_b, X2_b = batchify_tensors(X1, X2)
+        out_b = rbf_core_diff(sigma, X1_b, X2_b)
+        if X1_b.dim() != X1.dim():  # Batchification was performed
+            return out_b[0]
+        return out_b
 
     def __repr__(self):
         return f"GaussianKernel(sigma={self.sigma})"

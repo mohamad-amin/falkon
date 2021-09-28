@@ -6,7 +6,7 @@ import scipy.linalg
 import torch
 
 from falkon import FalkonOptions
-from falkon.hypergrad.common import full_rbf_kernel
+from falkon.hypergrad.common import full_rbf_kernel, calc_grads, init_random_vecs
 from falkon.kernels import GaussianKernel
 from falkon.kernels.diff_rbf_kernel import DiffGaussianKernel
 from falkon.la_helpers import trsm
@@ -23,7 +23,6 @@ __all__ = (
     "ValidationLoss",
 )
 
-from hypergrad.common import calc_grads, init_random_vecs
 
 EPS = 5e-5
 
