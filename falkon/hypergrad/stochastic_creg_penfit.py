@@ -131,7 +131,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
         print("Alloced mem: %.5fMB" % (torch.cuda.memory_allocated() / 2**20))
         with Timer(RegLossAndDeffv2.iter_prep_times), torch.autograd.enable_grad():
             print("mmv to get k_mn_zy")
-            k_mn_zy = kernel.mmv(M, X, zy)
+            k_mn_zy = kernel.mmv(M, X, zy) # M x (T+1)
             zy_knm_solve_zy = k_mn_zy.mul(solve_zy).sum(0)  # T+1
         print("end iter_prep")
         torch.cuda.empty_cache()
@@ -140,11 +140,11 @@ class RegLossAndDeffv2(torch.autograd.Function):
         # Forward
         dfit_fwd = Y.square().sum()
         deff_fwd = torch.tensor(0, dtype=X.dtype)
-        _trace_fwd = torch.tensor(X.shape[0], dtype=X.dtype)
+        trace_fwd = torch.tensor(X.shape[0], dtype=X.dtype)
         with Timer(RegLossAndDeffv2.fwd_times), torch.autograd.no_grad():
-            _trace_fwd, solve2 = calc_trace_fwd(
-                _trace_fwd, k_mn=None, k_mn_zy=k_mn_zy, kmm_chol=kmm_chol, use_stoch_trace=True,
-                t=t)
+            trace_fwd, solve2 = calc_trace_fwd(
+                trace_fwd, k_mn=None, k_mn_zy=k_mn_zy, kmm_chol=kmm_chol,
+                use_stoch_trace=True, t=t)
             # Nystrom effective dimension forward
             deff_fwd += zy_knm_solve_zy[:t].mean()
             # Data-fit forward
@@ -169,7 +169,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
                 zy_knm_solve_zy, zy_solve_knm_knm_solve_zy, zy_solve_kmm_solve_zy, pen_n, t,
                 include_kmm_term=True)
             bwd = (deff_bwd + dfit_bwd + trace_bwd)
-        return (deff_fwd, dfit_fwd, _trace_fwd), bwd
+        return (deff_fwd, dfit_fwd, trace_fwd), bwd
 
     @staticmethod
     def choose_device_mem(data_dev: torch.device, dtype: torch.dtype,
@@ -426,16 +426,55 @@ class RegLossAndDeffv2(torch.autograd.Function):
         M = X[:10].clone().detach().requires_grad_()
         s = torch.tensor([10.0], dtype=X.dtype).requires_grad_()
         p = torch.tensor(1e-2, dtype=X.dtype).requires_grad_()
-
+        RegLossAndDeffv2.use_direct_for_stoch = True
         torch.autograd.gradcheck(
             lambda sigma, pen, centers:
-            RegLossAndDeffv2.apply(sigma, pen, centers, X, Y, 20, True, FalkonOptions(), 30, False,
-                                   True, False),
+            RegLossAndDeffv2.apply(
+                sigma,              # kernel_args
+                pen,                # penalty
+                centers,            # M
+                X,                  # X
+                Y,                  # Y
+                20,                 # t
+                True,               # deterministic
+                FalkonOptions(),    # solve_options
+                30,                 # solve_maxiter
+                False,              # gaussian_random
+                True,               # use_stoch_trace
+                False),             # warm_start
+            (s, p, M))
+        RegLossAndDeffv2.use_direct_for_stoch = False
+        torch.autograd.gradcheck(
+            lambda sigma, pen, centers:
+            RegLossAndDeffv2.apply(
+                sigma,              # kernel_args
+                pen,                # penalty
+                centers,            # M
+                X,                  # X
+                Y,                  # Y
+                20,                 # t
+                True,               # deterministic
+                FalkonOptions(),    # solve_options
+                30,                 # solve_maxiter
+                False,              # gaussian_random
+                True,               # use_stoch_trace
+                False),             # warm_start
             (s, p, M))
         torch.autograd.gradcheck(
             lambda sigma, pen, centers:
-            RegLossAndDeffv2.apply(sigma, pen, centers, X, Y, 20, True, FalkonOptions(), 30, False,
-                                   False, False),
+            RegLossAndDeffv2.apply(
+                sigma,
+                pen,
+                centers,
+                X,
+                Y,
+                20,
+                True,
+                FalkonOptions(),
+                30,
+                False,
+                False,
+                False),
             (s, p, M))
 
 
@@ -567,7 +606,7 @@ class StochasticDeffNoPenFitTrFn(torch.autograd.Function):
                                   coef_nm=coef_nm, coef_nd=1, coef_md=1, coef_n=0,
                                   coef_m=0, coef_d=0, rest=0)
         # Initialize forward pass elements.
-        dfit_nopen_fwd = Y.square().sum().to(device)
+        dfit_nopen_fwd = torch.tensor(0, dtype=X.dtype, device=device)#Y.square().sum().to(device)
         deff_fwd = torch.tensor(0, dtype=X.dtype, device=device)
         trace_fwd = torch.tensor(X.shape[0], dtype=X.dtype, device=device)
         grads = None
@@ -589,6 +628,7 @@ class StochasticDeffNoPenFitTrFn(torch.autograd.Function):
                 c_zy = zy[i: i + leni, :].to(device=device, non_blocking=True)
 
                 with Timer(cls.iter_prep_times), torch.autograd.enable_grad():
+                    pen_n = penalty * X.shape[0]
                     k_mn = full_rbf_kernel(c_X, M, kernel_args).T  # Done to get F-contig k_mn (faster trsm)
                     k_mn_zy = k_mn @ c_zy  # MxN * Nx(T+1) = Mx(T+1)
                     zy_knm_solve_zy = (k_mn_zy * solve_zy).sum(0)  # (T+1)
@@ -600,12 +640,10 @@ class StochasticDeffNoPenFitTrFn(torch.autograd.Function):
                     trace_fwd, solve2 = calc_trace_fwd(
                         trace_fwd, k_mn=k_mn, k_mn_zy=k_mn_zy, kmm_chol=kmm_chol,
                         use_stoch_trace=use_stoch_trace, t=t)
-                    trace_fwd = trace_fwd
                     # Nystrom effective dimension forward
                     deff_fwd += zy_knm_solve_zy[:t].mean()
                     # Data-fit forward
-                    dfit_nopen_fwd -= 2 * zy_knm_solve_zy[t:].mean()
-                    dfit_nopen_fwd += knm_solve_zy[:, t:].square().sum(0).mean()
+                    dfit_nopen_fwd += (knm_solve_zy[:, t:] - c_zy[:, t:]).square_().sum(0).mean()
                 # Backward
                 with Timer(cls.bwd_times), torch.autograd.enable_grad():
                     zy_solve_knm_knm_solve_zy = (knm_solve_zy).square().sum(0)  # (T+1)
@@ -613,7 +651,10 @@ class StochasticDeffNoPenFitTrFn(torch.autograd.Function):
                     trace_bwd = calc_trace_bwd(
                         k_mn=k_mn, k_mn_zy=k_mn_zy, solve2=solve2, kmm=kmm,
                         use_stoch_trace=use_stoch_trace, t=t)
-                    trace_bwd = trace_bwd
+                    # When you want to divide the forward pass by pen_n, you must modify the backward
+                    # pass as follows. Note that `trace_fwd_` is the trace_fwd term before division.
+                    # trace_bwd = (-pen_n * trace_fwd_.detach() + pen_n.detach() * trace_bwd) / (pen_n.detach()**2)
+
                     # Nystrom effective dimension backward
                     deff_bwd = calc_deff_bwd(
                         zy_knm_solve_zy, zy_solve_knm_knm_solve_zy, zy_solve_kmm_solve_zy, pen_n, t,
