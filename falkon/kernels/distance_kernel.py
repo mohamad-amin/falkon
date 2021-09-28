@@ -5,6 +5,8 @@ from abc import ABC, abstractmethod
 from typing import Optional, Union, Tuple, Dict
 
 import torch
+from torch.autograd import Function
+
 from falkon.la_helpers.square_norm_fn import square_norm_diff
 
 from falkon.utils.tensor_helpers import batchify_tensors
@@ -118,6 +120,33 @@ def rbf_core_diff(sigmas, mat1, mat2):
     out.mul_(-0.5)
     out.exp_()
     return out
+
+
+# noinspection PyMethodOverriding
+class GaussianKernelFn(Function):
+    @staticmethod
+    def forward(ctx, mat1, mat2, sigmas, out=None):
+        if out is None:
+            out = torch.empty((mat1.shape[0], mat2.shape[0]), dtype=mat1.dtype, device=mat1.device)
+        mat1_b, mat2_b, out_b = batchify_tensors(mat1, mat2, out)
+        ker_b = rbf_core(sigmas, mat1_b, mat2_b, out_b)
+
+        ctx.save_for_backward(sigmas, mat1, mat2)
+
+        if mat1_b.dim() != mat1.dim():
+            return ker_b[0]
+        return ker_b
+
+    @staticmethod
+    def backward(ctx, outputs):
+        sigmas, mat1, mat2 = ctx.saved_tensors
+
+        with torch.autograd.enable_grad():
+            mat1_b, mat2_b = batchify_tensors(mat1, mat2)
+            ker = rbf_core_diff(sigmas, mat1_b, mat2_b)
+            bwd = (ker * outputs).sum()
+        grads = torch.autograd.grad(bwd, [mat1, mat2, sigmas])
+        return grads
 
 
 class GaussianKernel(L2DistanceKernel, KeopsKernelMixin):
@@ -336,11 +365,12 @@ class GaussianKernel(L2DistanceKernel, KeopsKernelMixin):
 
     def compute_diff(self, X1, X2):
         sigma = self.sigma.to(X1)
-        X1_b, X2_b = batchify_tensors(X1, X2)
-        out_b = rbf_core_diff(sigma, X1_b, X2_b)
-        if X1_b.dim() != X1.dim():  # Batchification was performed
-            return out_b[0]
-        return out_b
+        return GaussianKernelFn().apply(X1, X2, sigma)
+        # X1_b, X2_b = batchify_tensors(X1, X2)
+        # out_b = rbf_core_diff(sigma, X1_b, X2_b)
+        # if X1_b.dim() != X1.dim():  # Batchification was performed
+        #     return out_b[0]
+        # return out_b
 
     def __repr__(self):
         return f"GaussianKernel(sigma={self.sigma})"
