@@ -62,24 +62,24 @@ def run():
         #   "penalties": np.logspace(-9, 0, 15),
         #   "train_size": 10000,
         #},
-        #"svmguide1": {
-        #    "num_centers": 100,
-        #    "sigmas": np.logspace(-1, 1.5, 15),
-        #    "penalties": np.logspace(-8, 0, 15),
-        #    "train_size": 3089,
-        #},
-        #"boston": {
-        #   "num_centers": 100,
-        #   "sigmas": np.logspace(0, 1.5, 15),
-        #   "penalties": np.logspace(-6, 2, 15),
-        #   "train_size":
-        #},
-        #"energy": {
-        #   "num_centers": 100,
-        #   "sigmas": np.logspace(-1, 1.5, 15),
-        #   "penalties": np.logspace(-8, 2, 15),
-        #   "train_size": 614,
-        #},
+        "svmguide1": {
+            "num_centers": 100,
+            "sigmas": np.logspace(-1, 1.5, 15),
+            "penalties": np.logspace(-8, 0, 15),
+            "train_size": 3089,
+        },
+        "boston": {
+           "num_centers": 100,
+           "sigmas": np.logspace(0, 1.5, 15),
+           "penalties": np.logspace(-6, 2, 15),
+           "train_size": 10,
+        },
+        "energy": {
+           "num_centers": 100,
+           "sigmas": np.logspace(-1, 1.5, 15),
+           "penalties": np.logspace(-8, 2, 15),
+           "train_size": 614,
+        },
         "protein": {
             "num_centers": 100,
             "sigmas": np.logspace(-1, 1.5, 15),
@@ -95,14 +95,11 @@ def run():
     }
     models = {
         "loocv": {},
-        "svgp": {},
         "gcv": {},
         "sgpr": {},
         "hgrad-closed": {'val_pct': 0.6},
         "creg-penfit": {},
-        "creg-nopenfit": {},
-        "creg-nopenfit-divtr": {},
-        "creg-nopenfit-divtrdeff": {},
+        "creg-notrace": {},
     }
     for dset, dset_params in datasets.items():
         for model, model_params in models.items():
