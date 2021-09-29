@@ -152,15 +152,17 @@ class RegLossAndDeffv2(torch.autograd.Function):
             # Nystrom kernel trace backward
             trace_bwd = calc_trace_bwd(
                 k_mn=None, k_mn_zy=k_mn_zy, solve2=solve2, kmm=kmm, use_stoch_trace=True, t=t)
-            #trace_bwd = (-pen_n * _trace_fwd.detach() + pen_n.detach() * trace_bwd) / (pen_n**2)
+            #trace_bwd = (-pen_n * _trace_fwd.detach() + pen_n.detach() * trace_bwd) / (pen_n.detach()**2)
             # Nystrom effective dimension backward
             deff_bwd = calc_deff_bwd(
                 zy_knm_solve_zy, zy_solve_knm_knm_solve_zy, zy_solve_kmm_solve_zy, pen_n, t,
                 include_kmm_term=True)
+            #deff_bwd = (-pen_n * deff_fwd.detach() + pen_n.detach() * deff_bwd) / (pen_n.detach()**2)
             # Data-fit backward
             dfit_bwd = calc_dfit_bwd(
                 zy_knm_solve_zy, zy_solve_knm_knm_solve_zy, zy_solve_kmm_solve_zy, pen_n, t,
                 include_kmm_term=True)
+            #dfit_bwd = (-pen_n * dfit_fwd.detach() + pen_n.detach() * dfit_bwd) / (pen_n.detach()**2)
             bwd = (deff_bwd + dfit_bwd + trace_bwd)
         return (deff_fwd, dfit_fwd, trace_fwd), bwd
 
@@ -343,7 +345,11 @@ class RegLossAndDeffv2(torch.autograd.Function):
             torch.manual_seed(12)
 
         if use_stoch_trace and use_direct_for_stoch:
-            device, avail_mem = RegLossAndDeffv2.choose_device_mem(X.device, X.dtype, solve_options)
+            if X.shape[1] < 50:  # If keops need to stay on CPU
+                device, avail_mem = "cpu", None
+            else:
+                # Only device is used
+                device, avail_mem = RegLossAndDeffv2.choose_device_mem(X.device, X.dtype, solve_options)
         else:
             device, avail_mem = RegLossAndDeffv2.choose_device_mem(X.device, X.dtype, solve_options)
 
