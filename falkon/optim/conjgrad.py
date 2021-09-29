@@ -33,6 +33,12 @@ from falkon.utils import TicToc
 # end
 
 
+class StopOptimizationException(Exception):
+    def __init__(self, message):
+        super().__init__()
+        self.message = message
+
+
 class Optimizer(object):
     def __init__(self):
         pass
@@ -133,8 +139,11 @@ class ConjugateGradient(Optimizer):
                 e_train += e_iter
             with TicToc("Chol callback", debug=False):
                 if callback is not None:
-                    callback(self.num_iter + 1, X, e_train)
-
+                    try:
+                        callback(self.num_iter + 1, X, e_train)
+                    except StopOptimizationException as e:
+                        print(f"Optimization stopped from callback: {e.message}")
+                        break
         return X
 
 

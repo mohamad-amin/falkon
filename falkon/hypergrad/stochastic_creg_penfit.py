@@ -214,10 +214,19 @@ class RegLossAndDeffv2(torch.autograd.Function):
             RegLossAndDeffv2.last_alpha = solve_zy[:, t:].detach().clone()
             num_iters = optim.optimizer.num_iter
         else:
+            error_list = []
+
+            def cback_y(num_iter, beta, elapsed):
+                alpha = precond.apply(beta)
+                preds = K.mmv(X, M_, alpha)
+                error = torch.mean(torch.square_(preds.sub_(Y)))  # MSE
+                print(f"MSE for solve-y at iteration {num_iter}: {error:.4e}")
+
             optim_y = FalkonConjugateGradient(K, precond, solve_opt_precise)
             solve_y_prec = optim_y.solve(X, M_, Y, penalty_,
                                          initial_solution=RegLossAndDeffv2._last_solve_y,
-                                         max_iter=solve_maxiter_precise)
+                                         max_iter=solve_maxiter_precise,
+                                         callback=cback_y)
             optim_z = FalkonConjugateGradient(K, precond, solve_opt_precise)
             solve_z_prec = optim_z.solve(X, M_, Z, penalty_,
                                          initial_solution=RegLossAndDeffv2._last_solve_z,
