@@ -1,3 +1,4 @@
+import dataclasses
 from contextlib import ExitStack
 from typing import Tuple
 
@@ -140,6 +141,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
             trace_fwd, solve2 = calc_trace_fwd(
                 trace_fwd, k_mn=None, k_mn_zy=k_mn_zy, kmm_chol=kmm_chol,
                 use_stoch_trace=True, t=t)
+            trace_fwd = torch.tensor(0.0, device=trace_fwd.device)
             #trace_fwd = _trace_fwd / pen_n
             # Nystrom effective dimension forward
             deff_fwd += zy_knm_solve_zy[:t].mean()
@@ -163,7 +165,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
                 zy_knm_solve_zy, zy_solve_knm_knm_solve_zy, zy_solve_kmm_solve_zy, pen_n, t,
                 include_kmm_term=True)
             #dfit_bwd = (-pen_n * dfit_fwd.detach() + pen_n.detach() * dfit_bwd) / (pen_n.detach()**2)
-            bwd = (deff_bwd + dfit_bwd + trace_bwd)
+            bwd = (deff_bwd + dfit_bwd)# + trace_bwd)
         return (deff_fwd, dfit_fwd, trace_fwd), bwd
 
     @staticmethod
@@ -226,11 +228,14 @@ class RegLossAndDeffv2(torch.autograd.Function):
             solve_y_prec = optim_y.solve(X, M_, Y, penalty_,
                                          initial_solution=RegLossAndDeffv2._last_solve_y,
                                          max_iter=solve_maxiter_precise,
-                                         callback=cback_y)
-            optim_z = FalkonConjugateGradient(K, precond, solve_opt_precise)
+                                         callback=None)#cback_y)
+
+            solve_opt_z = solve_options#dataclasses.replace(solve_options, cg_tolerance=1e-4)
+            solve_maxiter_z = solve_maxiter
+            optim_z = FalkonConjugateGradient(K, precond, solve_opt_z)
             solve_z_prec = optim_z.solve(X, M_, Z, penalty_,
                                          initial_solution=RegLossAndDeffv2._last_solve_z,
-                                         max_iter=solve_maxiter_precise)
+                                         max_iter=solve_maxiter_z)
             solve_z = precond.apply(solve_z_prec)
             solve_y = precond.apply(solve_y_prec)
             solve_zy = torch.cat((solve_z, solve_y), dim=1)
