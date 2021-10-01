@@ -93,11 +93,11 @@ class ConjugateGradient(Optimizer):
         t_start = time.time()
 
         if X0 is None:
-            R = copy_same_stride(B)
+            R = copy_same_stride(B)  # n*t
             X = create_same_stride(B.size(), B, B.dtype, B.device)
             X.fill_(0.0)
         else:
-            R = B - mmv(X0)
+            R = B - mmv(X0)  # n*t
             X = X0
 
         m_eps = self.params.cg_epsilon(X.dtype)
@@ -252,7 +252,7 @@ class FalkonConjugateGradient(Optimizer):
 
         stream = None
         if cuda_inputs:
-            stream = get_non_default_stream(device)
+            stream = torch.cuda.current_stream(device)
 
         # Note that if we don't have CUDA this still works with stream=None.
         with ExitStack() as stack, TicToc("ConjGrad preparation", False):
