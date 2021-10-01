@@ -539,16 +539,16 @@ class CregNoTrace(NystromKRRModelMixinN, HyperOptimModel):
         sqrt_var = torch.sqrt(variance)
 
         m = self.centers.shape[0]
+        jitter = torch.eye(m, device=X.device, dtype=X.dtype) * 5e-5
         kmn = full_rbf_kernel(self.centers, X, self.sigma)
-        kmm = (full_rbf_kernel(self.centers, self.centers, self.sigma) +
-               torch.eye(m, device=X.device, dtype=X.dtype) * 5e-5)
-        self.L = cholesky(kmm)  # L @ L.T = kmm
+        kmm = full_rbf_kernel(self.centers, self.centers, self.sigma)
+        self.L = cholesky(kmm + jitter)  # L @ L.T = kmm
         # A = L^{-1} K_mn / (sqrt(n*pen))
         A = torch.triangular_solve(kmn, self.L, upper=False).solution# / sqrt_var
         AAT = A @ A.T  # m*n @ n*m = m*m in O(n * m^2), equivalent to kmn @ knm.
         # B = A @ A.T + I
         B = AAT / variance + torch.eye(AAT.shape[0], device=X.device, dtype=X.dtype)
-        self.LB = cholesky(B)  # LB @ LB.T = B
+        self.LB = cholesky(B + jitter)  # LB @ LB.T = B
         AY = A @ Y / sqrt_var # m*1
         self.c = torch.triangular_solve(AY, self.LB, upper=False).solution / sqrt_var  # m*1
 
