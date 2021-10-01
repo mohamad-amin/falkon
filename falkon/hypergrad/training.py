@@ -306,7 +306,8 @@ def train_complexity_reg(
                 break
             finally:
                 del grads, losses
-    print(prof.key_averages().table())
+    if prof is not None:
+        print(prof.key_averages().table())
     if retrain_nkrr:
         print(f"Final retrain after {num_epochs} epochs:")
         pred_dict = pred_reporting(
