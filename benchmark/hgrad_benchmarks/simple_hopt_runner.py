@@ -42,6 +42,9 @@ def run_simple_hopt(sigma_init: float,
                     cg_tol: float,
                     approx_trace: bool,
                     seed: int = DEFAULT_SEED, ):
+    exp_name_final = gen_exp_name(
+        optim, M, lr, pen_init, sigma_init, val_pct, opt_centers, sigma,
+        model, dataset, num_trace_vecs, approx_trace, flk_maxiter, cg_tol, exp_name)
     proc_args = [
         f"python {SIMPLE_HOPT_PATH}",
         f"--seed {seed}",
@@ -61,7 +64,7 @@ def run_simple_hopt(sigma_init: float,
         f"--num-t {num_trace_vecs}",
         f"--flk-maxiter {flk_maxiter}",
         #f"--cuda",
-        f"--name {gen_exp_name(optim, M, lr, pen_init, sigma_init, val_pct, opt_centers, sigma, model, dataset, num_trace_vecs, approx_trace, flk_maxiter, cg_tol, exp_name)}",
+        f"--name {exp_name_final}",
     ]
     if model == "svgp":
         proc_args.append("--mb 16000")
@@ -71,8 +74,10 @@ def run_simple_hopt(sigma_init: float,
         proc_args.append("--approx-trace")
     proc = subprocess.Popen([" ".join(proc_args)], shell=True, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT)
-    for line in io.TextIOWrapper(proc.stdout, encoding='utf-8'):
-        print(line, end='')
+    with open(f"logs/tee_{exp_name_final}.txt", "a+") as out_f:
+        for line in io.TextIOWrapper(proc.stdout, encoding='utf-8'):
+            print(line, end='')
+            out_f.write(line)
     ret_code = proc.wait()
     if ret_code != 0:
         raise RuntimeError("Process returned error", ret_code)
@@ -206,14 +211,16 @@ def run():
     sigma_init = 1.0
     penalty_init = "auto"
     # Stochastic stuff
-    flk_maxiter = 100
-    num_trace_vecs = 40
-    cg_tol = 1e-3
+    flk_maxiter = 150
+    num_trace_vecs = 20
+    cg_tol = 5e-4
     approx_trace = True
     # Models to use for training
     #models = ["gcv", "sgpr", "hgrad-closed", "creg-penfit", "creg-nopenfit", "creg-nopenfit-divtr", "creg-nopenfit-divtrdeff", "creg-nopenfit-divdeff"]
+    models = ["creg-notrace", "hgrad-closed", "creg-penfit", "sgpr", "gcv", "loocv"]
     models = ["sgpr", "creg-penfit", "creg-nopenfit", "hgrad-closed", "creg-nopenfit-divtr", "creg-nopenfit-divtrdeff", "gcv"]
     models = ["stoch-creg-penfit"]
+
 
 
     if False:
