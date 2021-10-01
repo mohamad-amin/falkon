@@ -1,3 +1,4 @@
+import dataclasses
 from contextlib import ExitStack
 from typing import Tuple
 
@@ -140,6 +141,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
             trace_fwd, solve2 = calc_trace_fwd(
                 trace_fwd, k_mn=None, k_mn_zy=k_mn_zy, kmm_chol=kmm_chol,
                 use_stoch_trace=True, t=t)
+            trace_fwd = torch.tensor(0.0, device=trace_fwd.device)
             #trace_fwd = _trace_fwd / pen_n
             # Nystrom effective dimension forward
             deff_fwd += zy_knm_solve_zy[:t].mean()
@@ -152,16 +154,18 @@ class RegLossAndDeffv2(torch.autograd.Function):
             # Nystrom kernel trace backward
             trace_bwd = calc_trace_bwd(
                 k_mn=None, k_mn_zy=k_mn_zy, solve2=solve2, kmm=kmm, use_stoch_trace=True, t=t)
-            #trace_bwd = (-pen_n * _trace_fwd.detach() + pen_n.detach() * trace_bwd) / (pen_n**2)
+            #trace_bwd = (-pen_n * _trace_fwd.detach() + pen_n.detach() * trace_bwd) / (pen_n.detach()**2)
             # Nystrom effective dimension backward
             deff_bwd = calc_deff_bwd(
                 zy_knm_solve_zy, zy_solve_knm_knm_solve_zy, zy_solve_kmm_solve_zy, pen_n, t,
                 include_kmm_term=True)
+            #deff_bwd = (-pen_n * deff_fwd.detach() + pen_n.detach() * deff_bwd) / (pen_n.detach()**2)
             # Data-fit backward
             dfit_bwd = calc_dfit_bwd(
                 zy_knm_solve_zy, zy_solve_knm_knm_solve_zy, zy_solve_kmm_solve_zy, pen_n, t,
                 include_kmm_term=True)
-            bwd = (deff_bwd + dfit_bwd + trace_bwd)
+            #dfit_bwd = (-pen_n * dfit_fwd.detach() + pen_n.detach() * dfit_bwd) / (pen_n.detach()**2)
+            bwd = (deff_bwd + dfit_bwd)# + trace_bwd)
         return (deff_fwd, dfit_fwd, trace_fwd), bwd
 
     @staticmethod
@@ -212,14 +216,26 @@ class RegLossAndDeffv2(torch.autograd.Function):
             RegLossAndDeffv2.last_alpha = solve_zy[:, t:].detach().clone()
             num_iters = optim.optimizer.num_iter
         else:
+            error_list = []
+
+            def cback_y(num_iter, beta, elapsed):
+                alpha = precond.apply(beta)
+                preds = K.mmv(X, M_, alpha)
+                error = torch.mean(torch.square_(preds.sub_(Y)))  # MSE
+                print(f"MSE for solve-y at iteration {num_iter}: {error:.4e}")
+
             optim_y = FalkonConjugateGradient(K, precond, solve_opt_precise)
             solve_y_prec = optim_y.solve(X, M_, Y, penalty_,
                                          initial_solution=RegLossAndDeffv2._last_solve_y,
-                                         max_iter=solve_maxiter_precise)
-            optim_z = FalkonConjugateGradient(K, precond, solve_opt_precise)
+                                         max_iter=solve_maxiter_precise,
+                                         callback=None)#cback_y)
+
+            solve_opt_z = solve_options#dataclasses.replace(solve_options, cg_tolerance=1e-4)
+            solve_maxiter_z = solve_maxiter
+            optim_z = FalkonConjugateGradient(K, precond, solve_opt_z)
             solve_z_prec = optim_z.solve(X, M_, Z, penalty_,
                                          initial_solution=RegLossAndDeffv2._last_solve_z,
-                                         max_iter=solve_maxiter_precise)
+                                         max_iter=solve_maxiter_z)
             solve_z = precond.apply(solve_z_prec)
             solve_y = precond.apply(solve_y_prec)
             solve_zy = torch.cat((solve_z, solve_y), dim=1)
@@ -343,7 +359,11 @@ class RegLossAndDeffv2(torch.autograd.Function):
             torch.manual_seed(12)
 
         if use_stoch_trace and use_direct_for_stoch:
-            device, avail_mem = RegLossAndDeffv2.choose_device_mem(X.device, X.dtype, solve_options)
+            if X.shape[1] < 50:  # If keops need to stay on CPU
+                device, avail_mem = "cpu", None
+            else:
+                # Only device is used
+                device, avail_mem = RegLossAndDeffv2.choose_device_mem(X.device, X.dtype, solve_options)
         else:
             device, avail_mem = RegLossAndDeffv2.choose_device_mem(X.device, X.dtype, solve_options)
 

@@ -33,6 +33,12 @@ from falkon.utils import TicToc
 # end
 
 
+class StopOptimizationException(Exception):
+    def __init__(self, message):
+        super().__init__()
+        self.message = message
+
+
 class Optimizer(object):
     def __init__(self):
         pass
@@ -97,7 +103,10 @@ class ConjugateGradient(Optimizer):
         m_eps = self.params.cg_epsilon(X.dtype)
 
         P = R.clone()
-        Rsold = R.square().sum(dim=0)
+        R0 = R.square().sum(dim=0)
+        Rsold = R0.clone()
+
+        tol = self.params.cg_tolerance ** 2
 
         e_train = time.time() - t_start
 
@@ -109,16 +118,18 @@ class ConjugateGradient(Optimizer):
                 # X += P @ diag(alpha)
                 X.addcmul_(P, alpha.reshape(1, -1))
 
-                if (self.num_iter + 1) % self.params.cg_full_gradient_every == 0:
-                    if X.is_cuda:
-                        # addmm_ may not be finished yet causing mmv to get stale inputs.
-                        torch.cuda.synchronize()
-                    R = B - mmv(X)
-                else:
-                    # R -= AP @ diag(alpha)
-                    R.addcmul_(AP, alpha.reshape(1, -1), value=-1.0)
+                #if (self.num_iter + 1) % self.params.cg_full_gradient_every == 0:
+                #    if X.is_cuda:
+                #        # addmm_ may not be finished yet causing mmv to get stale inputs.
+                #        torch.cuda.synchronize()
+                #    R = B - mmv(X)
+                #else:
+                # R -= AP @ diag(alpha)
+                R.addcmul_(AP, alpha.reshape(1, -1), value=-1.0)
 
                 Rsnew = R.square().sum(dim=0)
+                err = Rsnew.max().sqrt()
+                #print(f"residual iter {self.num_iter}: {err:.2e}")
                 if Rsnew.max().sqrt() < self.params.cg_tolerance:
                     #print("Stopping conjugate gradient descent at "
                     #      "iteration %d. Solution has converged." % (self.num_iter + 1))
@@ -133,8 +144,11 @@ class ConjugateGradient(Optimizer):
                 e_train += e_iter
             with TicToc("Chol callback", debug=False):
                 if callback is not None:
-                    callback(self.num_iter + 1, X, e_train)
-
+                    try:
+                        callback(self.num_iter + 1, X, e_train)
+                    except StopOptimizationException as e:
+                        print(f"Optimization stopped from callback: {e.message}")
+                        break
         return X
 
 

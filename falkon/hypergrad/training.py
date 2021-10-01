@@ -109,7 +109,7 @@ def pred_reporting(model: HyperOptimModel,
     sigma, penalty, centers = model.sigma, model.penalty, model.centers
 
     if resolve_model:
-        flk_opt = FalkonOptions(use_cpu=not torch.cuda.is_available(), cg_tolerance=1e-4)
+        flk_opt = FalkonOptions(use_cpu=not torch.cuda.is_available(), cg_tolerance=1e-4, cg_epsilon_32=1e-6)
         from falkon.kernels import GaussianKernel
         from falkon.center_selection import FixedSelector
         kernel = GaussianKernel(sigma.detach().flatten(), flk_opt)
@@ -126,7 +126,7 @@ def pred_reporting(model: HyperOptimModel,
             Xtr_full, Ytr_full = torch.cat((Xtr, Xval), dim=0), torch.cat((Ytr, Yval), dim=0)
         else:
             Xtr_full, Ytr_full = Xtr, Ytr
-        flk_model.fit(Xtr_full, Ytr_full, Xts, Yts)
+        flk_model.fit(Xtr_full, Ytr_full, warm_start=model.last_beta.to(Xtr_full.device))#, Xts, Yts)
         model = flk_model
 
     # Predict in mini-batches

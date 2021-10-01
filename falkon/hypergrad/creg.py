@@ -157,6 +157,10 @@ class StochasticDeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         RegLossAndDeffv2.print_times()
 
     @property
+    def last_beta(self):
+        return RegLossAndDeffv2._last_solve_y
+
+    @property
     def loss_names(self):
         return ["stoch-creg-penfit"]
 
