@@ -462,14 +462,9 @@ class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         self.alpha = torch.triangular_solve(dfit_t1, L, upper=False, transpose=True).solution
         C = torch.triangular_solve(A, LB, upper=False).solution
 
-        # Complexity (nystrom-deff)
         ndeff = C.square().sum() #/ X.shape[0]  # = torch.trace(C.T @ C)
         datafit = torch.square(dfit_vec).sum()#.mean()
         trace = (Kdiag - torch.trace(AAT) ) #/ X.shape[0]
-
-        #ndeff /= m
-        #datafit /= m
-        #trace /= m
 
         if self.div_trace_by_lambda:
             trace = trace / variance
@@ -482,12 +477,6 @@ class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
             ndeff /= variance
             datafit *= variance
             trace /= variance
-
-        #ndeff = ndeff * (X.shape[0] / m)
-        #ndeff = C.square().sum()
-        #datafit = 0.5 * torch.square(dfit_vec).sum()/ variance
-        #trace = 0.5 * (Kdiag - torch.trace(AAT)) / variance
-        #trace *= 0
 
         return ndeff, datafit, trace
 

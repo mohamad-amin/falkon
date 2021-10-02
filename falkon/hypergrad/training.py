@@ -114,19 +114,17 @@ def pred_reporting(model: HyperOptimModel,
         from falkon.center_selection import FixedSelector
         kernel = GaussianKernel(sigma.detach().flatten(), flk_opt)
         center_selector = FixedSelector(centers.detach())
-        if Xtr.is_cuda:
-            flk_model = InCoreFalkon(kernel, penalty.item(), M=centers.shape[0],
-                                     center_selection=center_selector, maxiter=30,
-                                     seed=1312, error_fn=err_fn, error_every=None, options=flk_opt)
-        else:
-            flk_model = Falkon(kernel, penalty.item(), M=centers.shape[0],
-                               center_selection=center_selector, maxiter=100,
-                               seed=1312, error_fn=err_fn, error_every=None, options=flk_opt)
+        flk_cls = InCoreFalkon if Xtr.is_cuda else Falkon
+        flk_model = flk_cls(kernel, penalty.item(), M=centers.shape[0],
+                            center_selection=center_selector, maxiter=100,
+                            seed=1312, error_fn=err_fn, error_every=None, options=flk_opt)
+        Xtr_full, Ytr_full = Xtr, Ytr
         if Xval is not None and Yval is not None:
             Xtr_full, Ytr_full = torch.cat((Xtr, Xval), dim=0), torch.cat((Ytr, Yval), dim=0)
-        else:
-            Xtr_full, Ytr_full = Xtr, Ytr
-        flk_model.fit(Xtr_full, Ytr_full, warm_start=model.last_beta.to(Xtr_full.device))#, Xts, Yts)
+        warm_start = None
+        if hasattr(model, "last_beta"):
+            warm_start = model.last_beta.to(Xtr_full.device)
+        flk_model.fit(Xtr_full, Ytr_full, warm_start=warm_start)#, Xts, Yts)
         model = flk_model
 
     # Predict in mini-batches
@@ -306,7 +304,8 @@ def train_complexity_reg(
                 break
             finally:
                 del grads, losses
-    print(prof.key_averages().table())
+    if prof is not None:
+        print(prof.key_averages().table())
     if retrain_nkrr:
         print(f"Final retrain after {num_epochs} epochs:")
         pred_dict = pred_reporting(
