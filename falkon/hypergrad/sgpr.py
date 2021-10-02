@@ -66,6 +66,7 @@ class SGPR(NystromKRRModelMixinN, HyperOptimModel):
             opt_sigma,
             opt_penalty,
             cuda: bool,
+            no_log_det: bool = False,
     ):
         super().__init__(
             penalty=penalty_init,
@@ -83,6 +84,7 @@ class SGPR(NystromKRRModelMixinN, HyperOptimModel):
             self.register_parameter("centers", self.centers_.requires_grad_(True))
 
         self.L, self.LB, self.c = None, None, None
+        self.no_log_det = no_log_det
 
     def hp_loss(self, X, Y):
         variance = self.penalty * X.shape[0]
@@ -114,8 +116,9 @@ class SGPR(NystromKRRModelMixinN, HyperOptimModel):
         self.c = torch.triangular_solve(AY, self.LB, upper=False).solution / sqrt_var
 
         # Complexity
-        logdet = torch.log(torch.diag(self.LB)).sum()
-        logdet += 0.5 * X.shape[0] * torch.log(variance)
+        if not self.no_log_det:
+            logdet = torch.log(torch.diag(self.LB)).sum()
+            logdet += 0.5 * X.shape[0] * torch.log(variance)
         # Data-fit
         datafit = 0.5 * torch.square(Y).sum() / variance
         datafit -= 0.5 * torch.square(self.c).sum()
@@ -125,6 +128,8 @@ class SGPR(NystromKRRModelMixinN, HyperOptimModel):
 
         const = 0.5 * X.shape[0] * torch.log(2 * torch.tensor(np.pi, dtype=X.dtype))
 
+        if self.no_log_det:
+            return datafit, trace
         return logdet, datafit, trace
 
     def predict(self, X):
@@ -137,8 +142,11 @@ class SGPR(NystromKRRModelMixinN, HyperOptimModel):
 
     @property
     def loss_names(self):
+        if self.no_log_det:
+            return "data-fit", "trace"
         return "log-det", "data-fit", "trace"
 
     def __repr__(self):
         return f"SGPR(sigma={get_scalar(self.sigma)}, penalty={get_scalar(self.penalty)}, num_centers={self.centers.shape[0]}, " \
-               f"opt_centers={self.opt_centers}, opt_sigma={self.opt_sigma}, opt_penalty={self.opt_penalty})"
+               f"opt_centers={self.opt_centers}, opt_sigma={self.opt_sigma}, opt_penalty={self.opt_penalty}, " \
+               f"log_det={not self.no_log_det})"

@@ -405,7 +405,11 @@ def init_model(model_type, data, penalty_init, sigma_init, centers_init, opt_pen
     elif model_type == "sgpr":
         model = SGPR(sigma_init=start_sigma, penalty_init=penalty_init, centers_init=centers_init,
                      opt_sigma=opt_sigma, opt_penalty=opt_penalty, opt_centers=opt_centers,
-                     cuda=cuda)
+                     cuda=cuda, no_log_det=False)
+    elif model_type == "sgpr-nologdet":
+        model = SGPR(sigma_init=start_sigma, penalty_init=penalty_init, centers_init=centers_init,
+                     opt_sigma=opt_sigma, opt_penalty=opt_penalty, opt_centers=opt_centers,
+                     cuda=cuda, no_log_det=True)
     elif model_type == "gcv":
         model = NystromGCV(sigma_init=start_sigma, penalty_init=penalty_init,
                            centers_init=centers_init,
