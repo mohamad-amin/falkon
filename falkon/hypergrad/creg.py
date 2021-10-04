@@ -10,6 +10,9 @@ from falkon.hypergrad.stochastic_creg_penfit import (
 from falkon.kernels import GaussianKernel
 
 
+EPS = 2e-5
+
+
 class CompDeffPenFitTr(HyperOptimModel):
     def __init__(
             self,
@@ -25,6 +28,7 @@ class CompDeffPenFitTr(HyperOptimModel):
             flk_maxiter: int = 10,
             nystrace_ste: bool = False,
     ):
+        super(CompDeffPenFitTr, self).__init__()
         self.stoch_model = StochasticDeffPenFitTr(sigma_init.clone(), penalty_init, centers_init.clone(), opt_centers, opt_sigma, opt_penalty, cuda, flk_opt, num_trace_est, flk_maxiter, nystrace_ste)
         self.det_model = DeffPenFitTr(sigma_init.clone(), penalty_init, centers_init.clone(), opt_centers, opt_sigma, opt_penalty, cuda)
         self.use_model = "stoch"
@@ -40,14 +44,6 @@ class CompDeffPenFitTr(HyperOptimModel):
             return self.stoch_model.named_parameters()
         else:
             return self.det_model.named_parameters()
-
-    def cuda(self):
-        self.stoch_model.cuda()
-        self.det_model.cuda()
-
-    def train(self):
-        self.stoch_model.train()
-        self.det_model.train()
 
     def eval(self):
         self.stoch_model.eval()
@@ -74,7 +70,6 @@ class CompDeffPenFitTr(HyperOptimModel):
 
     def predict(self, X):
         return self.det_model.predict(X)
-        return self.stoch_model.predict(X)
 
     @property
     def centers(self):
@@ -93,6 +88,7 @@ class CompDeffPenFitTr(HyperOptimModel):
         if self.use_model == "stoch":
             return self.stoch_model.penalty
         return self.det_model.penalty
+
     @property
     def loss_names(self):
         if self.use_model == "stoch":
@@ -207,22 +203,22 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
 
         m = self.centers.shape[0]
         kmn = full_rbf_kernel(self.centers, X, self.sigma)
-        kmm = (full_rbf_kernel(self.centers, self.centers, self.sigma) +
-               torch.eye(m, device=X.device, dtype=X.dtype) * 5e-5)
+        jitter = torch.eye(m, device=X.device, dtype=X.dtype) * EPS
+        kmm = full_rbf_kernel(self.centers, self.centers, self.sigma) + jitter
         self.L = cholesky(kmm)  # L @ L.T = kmm
         # A = L^{-1} K_mn / (sqrt(n*pen))
-        A = torch.triangular_solve(kmn, self.L, upper=False).solution# / sqrt_var
+        A = torch.triangular_solve(kmn, self.L, upper=False).solution  # / sqrt_var
         AAT = A @ A.T  # m*n @ n*m = m*m in O(n * m^2), equivalent to kmn @ knm.
         # B = A @ A.T + I
         B = AAT / variance + torch.eye(AAT.shape[0], device=X.device, dtype=X.dtype)
-        self.LB = cholesky(B)  # LB @ LB.T = B
-        AY = A @ Y / sqrt_var # m*1
+        self.LB = cholesky(B + jitter)  # LB @ LB.T = B
+        AY = A @ Y / sqrt_var  # m*1
         self.c = torch.triangular_solve(AY, self.LB, upper=False).solution / sqrt_var  # m*1
 
         C = torch.triangular_solve(A / sqrt_var, self.LB, upper=False).solution  # m*n
 
         # Complexity (nystrom-deff)
-        datafit = (torch.square(Y).sum() - torch.square(self.c * sqrt_var).sum())# / (1 - C.square().sum() / X.shape[0])
+        datafit = (torch.square(Y).sum() - torch.square(self.c * sqrt_var).sum())
         ndeff = (C.square().sum())
         trace = (Kdiag - torch.trace(AAT))
 
@@ -262,6 +258,7 @@ class CompDeffNoPenFitTr(HyperOptimModel):
             flk_maxiter: int = 10,
             nystrace_ste: bool = False,
     ):
+        super(CompDeffNoPenFitTr, self).__init__()
         self.stoch_model = StochasticDeffNoPenFitTr(sigma_init.clone(), penalty_init, centers_init.clone(), opt_centers, opt_sigma, opt_penalty, cuda, flk_opt, num_trace_est, flk_maxiter, nystrace_ste)
         self.det_model = DeffNoPenFitTr(sigma_init.clone(), penalty_init, centers_init.clone(), opt_centers, opt_sigma, opt_penalty, cuda)
         self.use_model = "stoch"
@@ -277,14 +274,6 @@ class CompDeffNoPenFitTr(HyperOptimModel):
             return self.stoch_model.named_parameters()
         else:
             return self.det_model.named_parameters()
-
-    def cuda(self):
-        self.stoch_model.cuda()
-        self.det_model.cuda()
-
-    def train(self):
-        self.stoch_model.train()
-        self.det_model.train()
 
     def eval(self):
         self.stoch_model.eval()
@@ -311,7 +300,6 @@ class CompDeffNoPenFitTr(HyperOptimModel):
 
     def predict(self, X):
         return self.det_model.predict(X)
-        return self.stoch_model.predict(X)
 
     @property
     def centers(self):
@@ -330,6 +318,7 @@ class CompDeffNoPenFitTr(HyperOptimModel):
         if self.use_model == "stoch":
             return self.stoch_model.penalty
         return self.det_model.penalty
+
     @property
     def loss_names(self):
         if self.use_model == "stoch":
@@ -445,15 +434,15 @@ class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
 
         m = self.centers.shape[0]
         kmn = full_rbf_kernel(self.centers, X, self.sigma)
-        kmm = (full_rbf_kernel(self.centers, self.centers, self.sigma) +
-               torch.eye(m, device=X.device, dtype=X.dtype) * 5e-5)
+        jitter = torch.eye(m, device=X.device, dtype=X.dtype) * EPS
+        kmm = full_rbf_kernel(self.centers, self.centers, self.sigma) + jitter
         L = cholesky(kmm)  # L @ L.T = kmm
         # A = L^{-1} K_mn / (sqrt(n*pen))
         A = torch.triangular_solve(kmn, L, upper=False).solution
         AAT = A @ A.T
         # B = A @ A.T + I
         B = AAT + torch.eye(AAT.shape[0], device=X.device, dtype=X.dtype) * variance
-        LB = cholesky(B)  # LB @ LB.T = B
+        LB = cholesky(B + jitter)  # LB @ LB.T = B
         AY = A @ Y
         c = torch.triangular_solve(AY, LB, upper=False).solution
         dfit_t1 = torch.triangular_solve(c, LB, upper=False, transpose=True).solution
@@ -462,9 +451,9 @@ class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         self.alpha = torch.triangular_solve(dfit_t1, L, upper=False, transpose=True).solution
         C = torch.triangular_solve(A, LB, upper=False).solution
 
-        ndeff = C.square().sum() #/ X.shape[0]  # = torch.trace(C.T @ C)
-        datafit = torch.square(dfit_vec).sum()#.mean()
-        trace = (Kdiag - torch.trace(AAT) ) #/ X.shape[0]
+        ndeff = C.square().sum()  # = torch.trace(C.T @ C)
+        datafit = torch.square(dfit_vec).sum()
+        trace = (Kdiag - torch.trace(AAT))
 
         if self.div_trace_by_lambda:
             trace = trace / variance
@@ -532,23 +521,23 @@ class CregNoTrace(NystromKRRModelMixinN, HyperOptimModel):
         sqrt_var = torch.sqrt(variance)
 
         m = self.centers.shape[0]
-        jitter = torch.eye(m, device=X.device, dtype=X.dtype) * 5e-5
+        jitter = torch.eye(m, device=X.device, dtype=X.dtype) * EPS
         kmn = full_rbf_kernel(self.centers, X, self.sigma)
         kmm = full_rbf_kernel(self.centers, self.centers, self.sigma)
         self.L = cholesky(kmm + jitter)  # L @ L.T = kmm
         # A = L^{-1} K_mn / (sqrt(n*pen))
-        A = torch.triangular_solve(kmn, self.L, upper=False).solution# / sqrt_var
+        A = torch.triangular_solve(kmn, self.L, upper=False).solution  # / sqrt_var
         AAT = A @ A.T  # m*n @ n*m = m*m in O(n * m^2), equivalent to kmn @ knm.
         # B = A @ A.T + I
         B = AAT / variance + torch.eye(AAT.shape[0], device=X.device, dtype=X.dtype)
         self.LB = cholesky(B + jitter)  # LB @ LB.T = B
-        AY = A @ Y / sqrt_var # m*1
+        AY = A @ Y / sqrt_var  # m*1
         self.c = torch.triangular_solve(AY, self.LB, upper=False).solution / sqrt_var  # m*1
 
         C = torch.triangular_solve(A / sqrt_var, self.LB, upper=False).solution  # m*n
 
         # Complexity (nystrom-deff)
-        datafit = (torch.square(Y).sum() - torch.square(self.c * sqrt_var).sum())# / (1 - C.square().sum() / X.shape[0])
+        datafit = (torch.square(Y).sum() - torch.square(self.c * sqrt_var).sum())
         ndeff = (C.square().sum())
 
         return ndeff, datafit
@@ -570,4 +559,3 @@ class CregNoTrace(NystromKRRModelMixinN, HyperOptimModel):
     def __repr__(self):
         return f"CregNoTrace(sigma={get_scalar(self.sigma)}, penalty={get_scalar(self.penalty)}, num_centers={self.centers.shape[0]}, " \
                f"opt_centers={self.opt_centers}, opt_sigma={self.opt_sigma}, opt_penalty={self.opt_penalty})"
-
