@@ -10,7 +10,19 @@ from falkon.hypergrad.stochastic_creg_penfit import (
 from falkon.kernels import GaussianKernel
 
 
-EPS = 2e-5
+EPS = 5e-5
+
+
+def do_chol(mat):
+    eye = torch.eye(mat.shape[0], device=mat.device, dtype=mat.dtype)
+    epsilons = [1e-6, 1e-5, 1e-4, 1e-3]
+    last_exception = None
+    for eps in epsilons:
+        try:
+            return cholesky(mat + eye * eps)
+        except RuntimeError as e:
+            last_exception = e
+    raise e
 
 
 class CompDeffPenFitTr(HyperOptimModel):
@@ -203,15 +215,14 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
 
         m = self.centers.shape[0]
         kmn = full_rbf_kernel(self.centers, X, self.sigma)
-        jitter = torch.eye(m, device=X.device, dtype=X.dtype) * EPS
-        kmm = full_rbf_kernel(self.centers, self.centers, self.sigma) + jitter
-        self.L = cholesky(kmm)  # L @ L.T = kmm
+        kmm = full_rbf_kernel(self.centers, self.centers, self.sigma)
+        self.L = do_chol(kmm)  # L @ L.T = kmm
         # A = L^{-1} K_mn / (sqrt(n*pen))
         A = torch.triangular_solve(kmn, self.L, upper=False).solution  # / sqrt_var
         AAT = A @ A.T  # m*n @ n*m = m*m in O(n * m^2), equivalent to kmn @ knm.
         # B = A @ A.T + I
         B = AAT / variance + torch.eye(AAT.shape[0], device=X.device, dtype=X.dtype)
-        self.LB = cholesky(B + jitter)  # LB @ LB.T = B
+        self.LB = do_chol(B)  # LB @ LB.T = B
         AY = A @ Y / sqrt_var  # m*1
         self.c = torch.triangular_solve(AY, self.LB, upper=False).solution / sqrt_var  # m*1
 
@@ -434,15 +445,14 @@ class DeffNoPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
 
         m = self.centers.shape[0]
         kmn = full_rbf_kernel(self.centers, X, self.sigma)
-        jitter = torch.eye(m, device=X.device, dtype=X.dtype) * EPS
-        kmm = full_rbf_kernel(self.centers, self.centers, self.sigma) + jitter
-        L = cholesky(kmm)  # L @ L.T = kmm
+        kmm = full_rbf_kernel(self.centers, self.centers, self.sigma)
+        L = do_chol(kmm)  # L @ L.T = kmm
         # A = L^{-1} K_mn / (sqrt(n*pen))
         A = torch.triangular_solve(kmn, L, upper=False).solution
         AAT = A @ A.T
         # B = A @ A.T + I
         B = AAT + torch.eye(AAT.shape[0], device=X.device, dtype=X.dtype) * variance
-        LB = cholesky(B + jitter)  # LB @ LB.T = B
+        LB = do_chol(B)  # LB @ LB.T = B
         AY = A @ Y
         c = torch.triangular_solve(AY, LB, upper=False).solution
         dfit_t1 = torch.triangular_solve(c, LB, upper=False, transpose=True).solution
@@ -521,16 +531,15 @@ class CregNoTrace(NystromKRRModelMixinN, HyperOptimModel):
         sqrt_var = torch.sqrt(variance)
 
         m = self.centers.shape[0]
-        jitter = torch.eye(m, device=X.device, dtype=X.dtype) * EPS
         kmn = full_rbf_kernel(self.centers, X, self.sigma)
         kmm = full_rbf_kernel(self.centers, self.centers, self.sigma)
-        self.L = cholesky(kmm + jitter)  # L @ L.T = kmm
+        self.L = do_chol(kmm)  # L @ L.T = kmm
         # A = L^{-1} K_mn / (sqrt(n*pen))
         A = torch.triangular_solve(kmn, self.L, upper=False).solution  # / sqrt_var
         AAT = A @ A.T  # m*n @ n*m = m*m in O(n * m^2), equivalent to kmn @ knm.
         # B = A @ A.T + I
         B = AAT / variance + torch.eye(AAT.shape[0], device=X.device, dtype=X.dtype)
-        self.LB = cholesky(B + jitter)  # LB @ LB.T = B
+        self.LB = do_chol(B)  # LB @ LB.T = B
         AY = A @ Y / sqrt_var  # m*1
         self.c = torch.triangular_solve(AY, self.LB, upper=False).solution / sqrt_var  # m*1
 
