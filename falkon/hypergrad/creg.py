@@ -15,14 +15,14 @@ EPS = 5e-5
 
 def do_chol(mat):
     eye = torch.eye(mat.shape[0], device=mat.device, dtype=mat.dtype)
-    epsilons = [1e-6, 1e-5, 1e-4, 1e-3]
+    epsilons = [1e-6, 1e-5, 1e-4, 1e-3, 5e-3]
     last_exception = None
     for eps in epsilons:
         try:
             return cholesky(mat + eye * eps)
         except RuntimeError as e:
             last_exception = e
-    raise e
+    raise last_exception
 
 
 class CompDeffPenFitTr(HyperOptimModel):
@@ -189,6 +189,8 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
             opt_sigma,
             opt_penalty,
             cuda: bool,
+            div_trace_by_lambda: bool = False,
+            div_deff_by_lambda: bool = False,
     ):
         super().__init__(
             penalty=penalty_init,
@@ -207,6 +209,8 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
 
         self.L, self.LB, self.c = None, None, None
         self.noise_estimate = None
+        self.div_trace_by_lambda = div_trace_by_lambda
+        self.div_deff_by_lambda = div_deff_by_lambda
 
     def hp_loss(self, X, Y):
         variance = self.penalty * X.shape[0]
@@ -233,6 +237,11 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         ndeff = (C.square().sum())
         trace = (Kdiag - torch.trace(AAT))
 
+        if self.div_trace_by_lambda:
+            trace = trace / variance
+        if self.div_deff_by_lambda:
+            ndeff = ndeff / variance
+
         return ndeff, datafit, trace
 
     def predict(self, X):
@@ -251,7 +260,8 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
 
     def __repr__(self):
         return f"DeffPenFitTr(sigma={get_scalar(self.sigma)}, penalty={get_scalar(self.penalty)}, num_centers={self.centers.shape[0]}, " \
-               f"opt_centers={self.opt_centers}, opt_sigma={self.opt_sigma}, opt_penalty={self.opt_penalty})"
+               f"opt_centers={self.opt_centers}, opt_sigma={self.opt_sigma}, opt_penalty={self.opt_penalty} " \
+               f"divtr={self.div_trace_by_lambda}, divdeff={self.div_deff_by_lambda})"
 
 
 class CompDeffNoPenFitTr(HyperOptimModel):
