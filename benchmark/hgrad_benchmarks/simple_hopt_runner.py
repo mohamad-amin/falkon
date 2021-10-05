@@ -103,6 +103,8 @@ def run_for_models(sigma_init: float,
                    ):
     for model in models:
         for i in range(num_rep):
+            if i == 0:
+                continue
             run_simple_hopt(sigma_init, pen_init, lr, num_epochs, M, dataset, val_pct, model,
                             optim, seed=DEFAULT_SEED + i, sigma=sigma, opt_centers=opt_centers,
                             num_trace_vecs=num_trace_vecs, flk_maxiter=flk_maxiter,
@@ -193,13 +195,12 @@ def run_multistart_2params():
 
 
 def run():
+    datasets = ["svhn", "mnist-small", "fashionmnist", "svhn", "cifar10"]
     datasets = ["protein", "chiet", "ictus", "codrna", "svmguide1", "phishing",
                 "spacega", "cadata", "mg", "cpusmall", "abalone", "blogfeedback",
                 "energy", "covtype", "ho-higgs", "ijcnn1",
                 "road3d", "buzz", "houseelectric",]
-    datasets = ["svhn", "mnist-small", "fashionmnist", "svhn", "cifar10"]
-    datasets = ["flights-cls"]
-    dataset = "cadata"
+    datasets = ["flights"]
     num_epochs = 200
     learning_rate = 0.05
     M = 2000
@@ -207,8 +208,8 @@ def run():
     val_pct = 0.6
     optim = "adam"
     sigma = "diag"
-    extra_exp_name = "test"#"all_startauto0.5"
-    sigma_init = 1.0
+    extra_exp_name = "test"
+    sigma_init = 1#"auto"
     penalty_init = "auto"
     # Stochastic stuff
     flk_maxiter = 150
@@ -221,9 +222,18 @@ def run():
     models = ["sgpr", "creg-penfit", "creg-nopenfit", "hgrad-closed", "creg-nopenfit-divtr", "creg-nopenfit-divtrdeff", "gcv"]
     models = ["stoch-creg-penfit"]
 
-
-
-    if False:
+    if False:  # Experiment with increasing M
+        ms = [100, 200, 400, 800, 1600]
+        dataset = "codrna"
+        models = ["creg-penfit-divtr", "sgpr", "creg-penfit", "creg-notrace", "creg-nopenfit", "creg-nopenfit-divtr"]
+        for M in ms:
+            run_for_models(
+                sigma_init=sigma_init, pen_init=penalty_init,
+                lr=learning_rate, num_epochs=num_epochs, M=M, dataset=dataset,
+                val_pct=val_pct, models=models, num_rep=3, optim=optim, sigma=sigma,
+                opt_centers=opt_m, exp_name=extra_exp_name, flk_maxiter=flk_maxiter,
+                num_trace_vecs=num_trace_vecs, cg_tol=cg_tol, approx_trace=approx_trace)
+    elif False:
         for t in [10, 20, 40, 70, 100]:
             run_for_models(
                 sigma_init=sigma_init, pen_init=penalty_init,
