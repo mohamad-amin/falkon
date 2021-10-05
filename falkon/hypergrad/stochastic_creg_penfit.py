@@ -141,7 +141,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
             trace_fwd, solve2 = calc_trace_fwd(
                 trace_fwd, k_mn=None, k_mn_zy=k_mn_zy, kmm_chol=kmm_chol,
                 use_stoch_trace=True, t=t)
-            trace_fwd = torch.tensor(0.0, device=trace_fwd.device)
+            #trace_fwd = torch.tensor(0.0, device=trace_fwd.device)
             #trace_fwd = _trace_fwd / pen_n
             # Nystrom effective dimension forward
             deff_fwd += zy_knm_solve_zy[:t].mean()
@@ -165,7 +165,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
                 zy_knm_solve_zy, zy_solve_knm_knm_solve_zy, zy_solve_kmm_solve_zy, pen_n, t,
                 include_kmm_term=True)
             #dfit_bwd = (-pen_n * dfit_fwd.detach() + pen_n.detach() * dfit_bwd) / (pen_n.detach()**2)
-            bwd = (deff_bwd + dfit_bwd)# + trace_bwd)
+            bwd = (deff_bwd + dfit_bwd + trace_bwd)
         return (deff_fwd, dfit_fwd, trace_fwd), bwd
 
     @staticmethod
@@ -284,7 +284,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
                     _trace_fwd, solve2 = calc_trace_fwd(
                         _trace_fwd, k_mn=k_mn, k_mn_zy=k_mn_zy, kmm_chol=kmm_chol,
                         use_stoch_trace=use_stoch_trace, t=t)
-                    trace_fwd = _trace_fwd# / penalty
+                    trace_fwd = _trace_fwd# / pen_n
                     # Nystrom effective dimension forward
                     _deff_fwd += zy_knm_solve_zy[:t].mean()
                     deff_fwd = _deff_fwd# / pen_n
