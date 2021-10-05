@@ -30,7 +30,7 @@ __all__ = [
 ]
 
 LOSS_EVERY = 5
-EARLY_STOP_EPOCHS = 31
+EARLY_STOP_EPOCHS = 101
 
 
 def report_losses(losses, loss_names, step) -> Dict[str, float]:
@@ -450,6 +450,16 @@ def init_model(model_type, data, penalty_init, sigma_init, centers_init, opt_pen
                                centers_init=centers_init, opt_sigma=opt_sigma,
                                opt_penalty=opt_penalty, opt_centers=opt_centers, cuda=cuda,
                                div_trace_by_lambda=True, div_trdeff_by_lambda=False)
+    elif model_type == "creg-penfit-divtr":
+        model = DeffPenFitTr(sigma_init=start_sigma, penalty_init=penalty_init,
+                             centers_init=centers_init, opt_sigma=opt_sigma,
+                             opt_penalty=opt_penalty, opt_centers=opt_centers, cuda=cuda,
+                             div_trace_by_lambda=True)
+    elif model_type == "creg-penfit-divdeff":
+        model = DeffPenFitTr(sigma_init=start_sigma, penalty_init=penalty_init,
+                               centers_init=centers_init, opt_sigma=opt_sigma,
+                               opt_penalty=opt_penalty, opt_centers=opt_centers, cuda=cuda,
+                               div_deff_by_lambda=True)
     elif model_type == "creg-nopenfit-divdeff":
         model = DeffNoPenFitTr(sigma_init=start_sigma, penalty_init=penalty_init,
                                centers_init=centers_init, opt_sigma=opt_sigma,
