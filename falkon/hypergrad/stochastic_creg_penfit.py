@@ -138,6 +138,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
             trace_fwd, solve2 = calc_trace_fwd(
                 trace_fwd, k_mn=None, k_mn_zy=k_mn_zy, kmm_chol=kmm_chol,
                 use_stoch_trace=True, t=t)
+            #trace_fwd = _trace_fwd / pen_n
             # Nystrom effective dimension forward
             deff_fwd += zy_knm_solve_zy[:t].mean()
             # Data-fit forward
@@ -149,6 +150,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
             # Nystrom kernel trace backward
             trace_bwd = calc_trace_bwd(
                 k_mn=None, k_mn_zy=k_mn_zy, solve2=solve2, kmm=kmm, use_stoch_trace=True, t=t)
+            #trace_bwd = (-pen_n * _trace_fwd.detach() + pen_n.detach() * trace_bwd) / (pen_n.detach()**2)
             # Nystrom effective dimension backward
             deff_bwd = calc_deff_bwd(
                 zy_knm_solve_zy, zy_solve_knm_knm_solve_zy, zy_solve_kmm_solve_zy, pen_n, t,
@@ -275,6 +277,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
                     trace_fwd, solve2 = calc_trace_fwd(
                         trace_fwd, k_mn=k_mn, k_mn_zy=k_mn_zy, kmm_chol=kmm_chol,
                         use_stoch_trace=use_stoch_trace, t=t)
+                    trace_fwd = _trace_fwd# / pen_n
                     # Nystrom effective dimension forward
                     deff_fwd += zy_knm_solve_zy[:t].mean()
                     # Data-fit forward
