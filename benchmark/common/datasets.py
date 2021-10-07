@@ -327,7 +327,7 @@ class MillionSongsDataset(KnownSplitDataset):
         return X, Y
 
     def preprocess_y(self, Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
-        return standardize_y(Ytr, Yts)
+        return mean_remove_y(Ytr, Yts)
 
     def preprocess_x(self, Xtr: np.ndarray, Xts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
         return standardize_x(Xtr, Xts)

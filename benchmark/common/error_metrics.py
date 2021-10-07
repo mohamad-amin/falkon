@@ -81,7 +81,7 @@ def ms_calc_mse(y_true, y_pred, **kwargs):
 
 
 def ms_calc_relerr(y_true, y_pred, **kwargs):
-    Y_std = kwargs['Y_std']
+    Y_std = kwargs.get('Y_std', 1.0)
     Y_mean = kwargs['Y_mean']
 
     y_true, y_pred = _ensure_numpy(y_true, y_pred)
