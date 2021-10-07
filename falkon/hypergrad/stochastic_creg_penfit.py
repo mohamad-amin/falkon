@@ -135,30 +135,39 @@ class RegLossAndDeffv2(torch.autograd.Function):
         deff_fwd = torch.tensor(0, dtype=X.dtype, device=M.device)
         trace_fwd = torch.tensor(X.shape[0], dtype=X.dtype, device=M.device)
         with Timer(RegLossAndDeffv2.fwd_times), torch.autograd.no_grad():
-            trace_fwd, solve2 = calc_trace_fwd(
+            pen_n = penalty * X.shape[0]
+            _trace_fwd, solve2 = calc_trace_fwd(
                 trace_fwd, k_mn=None, k_mn_zy=k_mn_zy, kmm_chol=kmm_chol,
                 use_stoch_trace=True, t=t)
-            #trace_fwd = _trace_fwd / pen_n
+            #trace_fwd = torch.tensor(0.0, dtype=M.dtype, device=M.device)
             # Nystrom effective dimension forward
             deff_fwd += zy_knm_solve_zy[:t].mean()
+            #deff_fwd = deff_fwd / pen_n
             # Data-fit forward
             dfit_fwd -= zy_knm_solve_zy[t:].mean()
+
+            trace_fwd = (_trace_fwd * dfit_fwd) / (pen_n * X.shape[0])
         # Backward
         with Timer(RegLossAndDeffv2.bwd_times), torch.autograd.enable_grad():
             zy_solve_knm_knm_solve_zy = kernel.mmv(X, M, solve_zy).square().sum(0)  # T+1
             pen_n = penalty * X.shape[0]
-            # Nystrom kernel trace backward
-            trace_bwd = calc_trace_bwd(
-                k_mn=None, k_mn_zy=k_mn_zy, solve2=solve2, kmm=kmm, use_stoch_trace=True, t=t)
-            #trace_bwd = (-pen_n * _trace_fwd.detach() + pen_n.detach() * trace_bwd) / (pen_n.detach()**2)
             # Nystrom effective dimension backward
             deff_bwd = calc_deff_bwd(
                 zy_knm_solve_zy, zy_solve_knm_knm_solve_zy, zy_solve_kmm_solve_zy, pen_n, t,
                 include_kmm_term=True)
+            #deff_bwd = (-pen_n * (deff_fwd.detach() * pen_n.detach()) + pen_n.detach() * deff_bwd) / (pen_n.detach()**2)
             # Data-fit backward
             dfit_bwd = calc_dfit_bwd(
                 zy_knm_solve_zy, zy_solve_knm_knm_solve_zy, zy_solve_kmm_solve_zy, pen_n, t,
                 include_kmm_term=True)
+            # Nystrom kernel trace backward
+            trace_bwd = calc_trace_bwd(
+                k_mn=None, k_mn_zy=k_mn_zy, solve2=solve2, kmm=kmm, use_stoch_trace=True, t=t)
+            trace_fwd_num = (_trace_fwd * dfit_fwd).detach()
+            trace_bwd_num = trace_bwd * dfit_fwd.detach() + _trace_fwd.detach() * dfit_bwd
+            trace_den = pen_n * X.shape[0]
+            trace_bwd = (trace_bwd_num * trace_den.detach() - trace_fwd_num * trace_den) / (trace_den.detach()**2)
+            #trace_bwd = (-pen_n * _trace_fwd.detach() + pen_n.detach() * trace_bwd) / (pen_n.detach()**2)
             bwd = (deff_bwd + dfit_bwd + trace_bwd)
         return (deff_fwd, dfit_fwd, trace_fwd), bwd
 
