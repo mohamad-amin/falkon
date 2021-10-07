@@ -291,7 +291,13 @@ def train_complexity_reg(
                                 losses_are_grads=model.losses_are_grads, verbose=False)
                 loss = reduce(torch.add, losses)
                 return float(loss)
-            opt_hp.step(closure)
+            try:
+                opt_hp.step(closure)
+            except RuntimeError as e:
+                if "Cholesky" not in str(e):
+                    raise e
+                print(f"Cholesky failure at epoch {epoch}. Exiting optimization!")
+                break
 
             cum_time += time.time() - t_start
             try:
@@ -304,6 +310,7 @@ def train_complexity_reg(
                 break
             finally:
                 del grads, losses
+        torch.cuda.empty_cache()
     if prof is not None:
         print(prof.key_averages().table())
     if retrain_nkrr:
@@ -432,6 +439,11 @@ def init_model(model_type, data, penalty_init, sigma_init, centers_init, opt_pen
                                 centers_init=centers_init, opt_centers=opt_centers,
                                 opt_sigma=opt_sigma, opt_penalty=opt_penalty, cuda=cuda,
                                 tr_indices=tr_idx, ts_indices=val_idx, cg_tol=cg_tol)
+    elif model_type == "creg-penfit-special":
+        model = DeffPenFitTr(sigma_init=start_sigma, penalty_init=penalty_init,
+                             centers_init=centers_init, opt_sigma=opt_sigma,
+                             opt_penalty=opt_penalty, opt_centers=opt_centers, cuda=cuda,
+                             special_one=True)
     elif model_type == "creg-notrace":
         model = CregNoTrace(sigma_init=start_sigma, penalty_init=penalty_init,
                             centers_init=centers_init, opt_sigma=opt_sigma,

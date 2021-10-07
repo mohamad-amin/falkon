@@ -5,6 +5,18 @@ from falkon.hypergrad.common import full_rbf_kernel, get_scalar, cholesky
 from falkon.hypergrad.complexity_reg import NystromKRRModelMixinN, KRRModelMixinN, HyperOptimModel
 
 
+def do_chol(mat):
+    eye = torch.eye(mat.shape[0], device=mat.device, dtype=mat.dtype)
+    epsilons = [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1]
+    last_exception = None
+    for eps in epsilons:
+        try:
+            return cholesky(mat + eye * eps)
+        except RuntimeError as e:
+            last_exception = e
+    raise last_exception
+
+
 class GPR(KRRModelMixinN, HyperOptimModel):
     def __init__(
             self,
@@ -94,24 +106,14 @@ class SGPR(NystromKRRModelMixinN, HyperOptimModel):
         m = self.centers.shape[0]
         kmn = full_rbf_kernel(self.centers, X, self.sigma)
         kmm = full_rbf_kernel(self.centers, self.centers, self.sigma)
-        try:
-            # L @ L.T = kmm
-            eps = 1e-5
-            self.L = cholesky(kmm + torch.eye(m, device=X.device, dtype=X.dtype) * eps)
-        except RuntimeError as e:
-            try:
-                eps = 1e-4
-                self.L = cholesky(kmm + torch.eye(m, device=X.device, dtype=X.dtype) * eps)
-            except RuntimeError as e:
-                eps = 1e-3
-                self.L = cholesky(kmm + torch.eye(m, device=X.device, dtype=X.dtype) * eps)
+        self.L = do_chol(kmm)
 
         # A = L^{-1} K_mn / (sqrt(n*pen))
         A = torch.triangular_solve(kmn, self.L, upper=False).solution / sqrt_var
         AAT = A @ A.T
         # B = A @ A.T + I
         B = AAT + torch.eye(AAT.shape[0], device=X.device, dtype=X.dtype)
-        self.LB = cholesky(B)  # LB @ LB.T = B
+        self.LB = do_chol(B)  # LB @ LB.T = B
         AY = A @ Y
         self.c = torch.triangular_solve(AY, self.LB, upper=False).solution / sqrt_var
 

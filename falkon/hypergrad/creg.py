@@ -15,12 +15,14 @@ EPS = 5e-5
 
 def do_chol(mat):
     eye = torch.eye(mat.shape[0], device=mat.device, dtype=mat.dtype)
-    epsilons = [1e-6, 1e-5, 1e-4, 1e-3, 5e-3]
+    epsilons = [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1e0]
     last_exception = None
     for eps in epsilons:
         try:
-            return cholesky(mat + eye * eps)
+            out = cholesky(mat + eye * eps)
+            return out
         except RuntimeError as e:
+            print("Matrix has NaNs", (~torch.isfinite(mat)).sum())
             last_exception = e
     raise last_exception
 
@@ -191,6 +193,7 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
             cuda: bool,
             div_trace_by_lambda: bool = False,
             div_deff_by_lambda: bool = False,
+            special_one: bool = False,
     ):
         super().__init__(
             penalty=penalty_init,
@@ -211,6 +214,7 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         self.noise_estimate = None
         self.div_trace_by_lambda = div_trace_by_lambda
         self.div_deff_by_lambda = div_deff_by_lambda
+        self.special_one = special_one
 
     def hp_loss(self, X, Y):
         variance = self.penalty * X.shape[0]
@@ -241,8 +245,10 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
             trace = trace / variance
         if self.div_deff_by_lambda:
             ndeff = ndeff / variance
+        if self.special_one:
+            trace = trace * datafit / (variance * X.shape[0])
 
-        return ndeff, datafit, trace
+        return (ndeff, datafit, trace)
 
     def predict(self, X):
         if self.L is None or self.LB is None or self.c is None:
@@ -260,8 +266,8 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
 
     def __repr__(self):
         return f"DeffPenFitTr(sigma={get_scalar(self.sigma)}, penalty={get_scalar(self.penalty)}, num_centers={self.centers.shape[0]}, " \
-               f"opt_centers={self.opt_centers}, opt_sigma={self.opt_sigma}, opt_penalty={self.opt_penalty} " \
-               f"divtr={self.div_trace_by_lambda}, divdeff={self.div_deff_by_lambda})"
+               f"opt_centers={self.opt_centers}, opt_sigma={self.opt_sigma}, opt_penalty={self.opt_penalty}, " \
+               f"divtr={self.div_trace_by_lambda}, divdeff={self.div_deff_by_lambda}, special_one={self.special_one})"
 
 
 class CompDeffNoPenFitTr(HyperOptimModel):
