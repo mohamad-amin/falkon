@@ -148,9 +148,9 @@ class StochasticDeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
 
     def hp_loss(self, X, Y):
         loss = creg_penfit(kernel_args=self.sigma, penalty=self.penalty, centers=self.centers,
-                           X=X, Y=Y, num_estimators=self.num_trace_est, deterministic=True,
+                           X=X, Y=Y, num_estimators=self.num_trace_est, deterministic=False,
                            solve_options=self.flk_opt, solve_maxiter=self.flk_maxiter,
-                           gaussian_random=True, use_stoch_trace=self.nystrace_ste, warm_start=True)
+                           gaussian_random=False, use_stoch_trace=self.nystrace_ste, warm_start=True)
         return [loss]
 
     def predict(self, X):
