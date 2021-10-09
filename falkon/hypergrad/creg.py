@@ -152,7 +152,7 @@ class StochasticDeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         loss = creg_penfit(kernel_args=self.sigma, penalty=self.penalty, centers=self.centers,
                            X=X, Y=Y, num_estimators=self.num_trace_est, deterministic=False,
                            solve_options=self.flk_opt, solve_maxiter=self.flk_maxiter,
-                           gaussian_random=False, use_stoch_trace=self.nystrace_ste, warm_start=True)
+                           gaussian_random=True, use_stoch_trace=self.nystrace_ste, warm_start=True)
         return [loss]
 
     def predict(self, X):
@@ -220,7 +220,6 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         variance = self.penalty * X.shape[0]
         sqrt_var = torch.sqrt(variance)
         Kdiag = X.shape[0]
-
         m = self.centers.shape[0]
         kmn = full_rbf_kernel(self.centers, X, self.sigma)
         kmm = full_rbf_kernel(self.centers, self.centers, self.sigma)
@@ -231,14 +230,14 @@ class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         # B = A @ A.T + I
         B = AAT / variance + torch.eye(AAT.shape[0], device=X.device, dtype=X.dtype)
         self.LB = do_chol(B)  # LB @ LB.T = B
-        AY = A @ Y / sqrt_var  # m*1
-        self.c = torch.triangular_solve(AY, self.LB, upper=False).solution / sqrt_var  # m*1
+        AY = A @ Y  # m*1
+        self.c = torch.triangular_solve(AY, self.LB, upper=False).solution  # m*p
 
-        C = torch.triangular_solve(A / sqrt_var, self.LB, upper=False).solution  # m*n
+        C = torch.triangular_solve(A, self.LB, upper=False).solution  # m*n
 
         # Complexity (nystrom-deff)
-        datafit = (torch.square(Y).sum() - torch.square(self.c * sqrt_var).sum())
-        ndeff = (C.square().sum())
+        datafit = (torch.square(Y).sum() - torch.square(self.c / sqrt_var).sum())
+        ndeff = (C / sqrt_var).square().sum()
         trace = (Kdiag - torch.trace(AAT))
 
         if self.div_trace_by_lambda:

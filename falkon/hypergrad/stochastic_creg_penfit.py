@@ -67,11 +67,11 @@ def calc_deff_bwd(zy_knm_solve_zy, zy_solve_knm_knm_solve_zy, zy_solve_kmm_solve
 def calc_dfit_bwd(zy_knm_solve_zy, zy_solve_knm_knm_solve_zy, zy_solve_kmm_solve_zy, pen_n, t,
                   include_kmm_term):
     dfit_bwd = -(
-            2 * zy_knm_solve_zy[t:].mean() -
-            zy_solve_knm_knm_solve_zy[t:].mean()
+            2 * zy_knm_solve_zy[t:].sum() -
+            zy_solve_knm_knm_solve_zy[t:].sum()
     )
     if include_kmm_term:
-        dfit_bwd += pen_n * zy_solve_kmm_solve_zy[t:].mean()
+        dfit_bwd += pen_n * zy_solve_kmm_solve_zy[t:].sum()
     return dfit_bwd
 
 
@@ -127,8 +127,8 @@ class RegLossAndDeffv2(torch.autograd.Function):
     def direct_nosplit(X, M, Y, penalty, kmm, kmm_chol, zy, solve_zy, zy_solve_kmm_solve_zy, kernel,
                        t):
         with Timer(RegLossAndDeffv2.iter_prep_times), torch.autograd.enable_grad():
-            k_mn_zy = kernel.mmv(M, X, zy)  # M x (T+1)
-            zy_knm_solve_zy = k_mn_zy.mul(solve_zy).sum(0)  # T+1
+            k_mn_zy = kernel.mmv(M, X, zy)  # M x (T+P)
+            zy_knm_solve_zy = k_mn_zy.mul(solve_zy).sum(0)  # T+P
 
         # Forward
         dfit_fwd = Y.square().sum().to(M.device)
@@ -139,17 +139,17 @@ class RegLossAndDeffv2(torch.autograd.Function):
             _trace_fwd, solve2 = calc_trace_fwd(
                 trace_fwd, k_mn=None, k_mn_zy=k_mn_zy, kmm_chol=kmm_chol,
                 use_stoch_trace=True, t=t)
+            print("Trace fwd (only trace): %.2e" % (_trace_fwd.item()), flush=True)
             #trace_fwd = torch.tensor(0.0, dtype=M.dtype, device=M.device)
             # Nystrom effective dimension forward
             deff_fwd += zy_knm_solve_zy[:t].mean()
             #deff_fwd = deff_fwd / pen_n
             # Data-fit forward
-            dfit_fwd -= zy_knm_solve_zy[t:].mean()
-
+            dfit_fwd -= zy_knm_solve_zy[t:].sum()
             trace_fwd = (_trace_fwd * dfit_fwd) / (pen_n * X.shape[0])
         # Backward
         with Timer(RegLossAndDeffv2.bwd_times), torch.autograd.enable_grad():
-            zy_solve_knm_knm_solve_zy = kernel.mmv(X, M, solve_zy).square().sum(0)  # T+1
+            zy_solve_knm_knm_solve_zy = kernel.mmv(X, M, solve_zy).square().sum(0)  # T+P
             pen_n = penalty * X.shape[0]
             # Nystrom effective dimension backward
             deff_bwd = calc_deff_bwd(
@@ -357,7 +357,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
 
         if use_stoch_trace and use_direct_for_stoch:
             if X.shape[1] < 50:  # If keops need to stay on CPU
-                device, avail_mem = "cpu", None
+                device, avail_mem = X.device, None
             else:
                 # Only device is used
                 device, avail_mem = RegLossAndDeffv2.choose_device_mem(X.device, X.dtype, solve_options)
