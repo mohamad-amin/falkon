@@ -149,7 +149,7 @@ def higgs_calc_auc(y_true, y_pred, **kwargs):
     fpr, tpr, thresholds = metrics.roc_curve(
         y_true, y_pred, pos_label=1)
     auc = metrics.auc(fpr, tpr)
-    return auc, "AUC"
+    return (1.0 - auc), "1-AUC"
 
 
 def binary_cerr(y_true, y_pred, **kwargs):
@@ -226,7 +226,7 @@ ERROR_FN_TYPE = Callable[[Any, Any, Dict[str, Any]], Tuple[float, str]]
 ERROR_METRICS: Dict[Dataset, List[ERROR_FN_TYPE]] = {
     Dataset.TIMIT: [timit_calc_error],
     Dataset.MILLIONSONGS: [ms_calc_relerr, ms_calc_mse],
-    Dataset.HIGGS: [binary_cerr, higgs_calc_auc],
+    Dataset.HIGGS: [higgs_calc_auc, binary_cerr],
     Dataset.HOHIGGS: [binary_cerr, higgs_calc_auc],
     Dataset.TAXI: [rmse_with_std],
     Dataset.YELP: [rmse],

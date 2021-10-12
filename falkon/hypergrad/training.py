@@ -30,7 +30,7 @@ __all__ = [
 ]
 
 LOSS_EVERY = 5
-EARLY_STOP_EPOCHS = 101
+EARLY_STOP_EPOCHS = 201
 
 
 def report_losses(losses, loss_names, step) -> Dict[str, float]:

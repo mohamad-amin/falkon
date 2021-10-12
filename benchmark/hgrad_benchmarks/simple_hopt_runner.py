@@ -63,7 +63,7 @@ def run_simple_hopt(sigma_init: float,
         f"--model {model}",
         f"--num-t {num_trace_vecs}",
         f"--flk-maxiter {flk_maxiter}",
-        #f"--cuda",
+        f"--cuda",
         f"--name {exp_name_final}",
     ]
     if model == "svgp":
@@ -103,8 +103,6 @@ def run_for_models(sigma_init: float,
                    ):
     for model in models:
         for i in range(num_rep):
-            if i == 0:
-                continue
             run_simple_hopt(sigma_init, pen_init, lr, num_epochs, M, dataset, val_pct, model,
                             optim, seed=DEFAULT_SEED + i, sigma=sigma, opt_centers=opt_centers,
                             num_trace_vecs=num_trace_vecs, flk_maxiter=flk_maxiter,
@@ -195,32 +193,37 @@ def run_multistart_2params():
 
 
 def run():
-    datasets = ["svhn", "mnist-small", "fashionmnist", "svhn", "cifar10"]
     datasets = ["protein", "chiet", "ictus", "codrna", "svmguide1", "phishing",
                 "spacega", "cadata", "mg", "cpusmall", "abalone", "blogfeedback",
                 "energy", "covtype", "ho-higgs", "ijcnn1",
                 "road3d", "buzz", "houseelectric",]
-    datasets = ["flights"]
+    datasets = ["svhn", "mnist-small", "fashionmnist", "cifar10"]
+    datasets = ["protein", "chiet", "ictus", "codrna", "svmguide1", "phishing",
+                "spacega", "cadata", "mg", "cpusmall", "abalone", "blogfeedback",
+                "energy", "covtype", "ho-higgs", "ijcnn1",
+                "road3d", "buzz", "houseelectric", "mnist-small", "svhn",
+                "fashionmnist"]
+    datasets = ["higgs"]
     num_epochs = 200
-    learning_rate = 0.05
+    learning_rate = 0.1
     M = 2000
     opt_m = True
     val_pct = 0.6
     optim = "adam"
     sigma = "diag"
-    extra_exp_name = "test"
-    sigma_init = 1#"auto"
+    extra_exp_name = "large_stoch_auto1"
+    sigma_init = 4
     penalty_init = "auto"
     # Stochastic stuff
-    flk_maxiter = 150
+    flk_maxiter = 100
     num_trace_vecs = 20
-    cg_tol = 5e-4
+    cg_tol = 1e-3
     approx_trace = True
     # Models to use for training
-    #models = ["gcv", "sgpr", "hgrad-closed", "creg-penfit", "creg-nopenfit", "creg-nopenfit-divtr", "creg-nopenfit-divtrdeff", "creg-nopenfit-divdeff"]
     models = ["creg-notrace", "hgrad-closed", "creg-penfit", "sgpr", "gcv", "loocv"]
-    models = ["sgpr", "creg-penfit", "creg-nopenfit", "hgrad-closed", "creg-nopenfit-divtr", "creg-nopenfit-divtrdeff", "gcv"]
+    models = ["sgpr", "hgrad-closed", "gcv", "creg-notrace", "creg-penfit-special", "creg-penfit-divtr"]
     models = ["stoch-creg-penfit"]
+
 
     if False:  # Experiment with increasing M
         ms = [100, 200, 400, 800, 1600]
