@@ -137,19 +137,15 @@ class ConjugateGradient(Optimizer):
                 converged = torch.less(Rsnew, tol)
                 idx_converged_curr = torch.where(converged)[0]
                 if torch.all(converged):
-                    for idx in idx_converged_curr:
-                        col_idx_converged.append(col_idx_notconverged[idx])
-                        x_converged.append(X[:, idx])
-                    col_idx_notconverged = col_idx_notconverged[~converged]
                     break
-                elif torch.any(converged):
+                if torch.any(converged):
                     for idx in idx_converged_curr:
                         col_idx_converged.append(col_idx_notconverged[idx])
                         x_converged.append(X[:, idx])
                     col_idx_notconverged = col_idx_notconverged[~converged]
                     P = P[:, ~converged]
                     R = R[:, ~converged]
-                    X = X[:, ~converged]
+                    X = X[:, ~converged]  # These are all copies
                     Rsnew = Rsnew[~converged]
                     Rsold = Rsold[~converged]
 
@@ -167,17 +163,12 @@ class ConjugateGradient(Optimizer):
                     except StopOptimizationException as e:
                         print(f"Optimization stopped from callback: {e.message}")
                         break
-        # if len(col_idx_notconverged) > 0:
-        #     for idx in range(len(col_idx_notconverged)):
-        #         col_idx_converged.append(col_idx_notconverged[idx])
-        #         x_converged.append(X[:, idx])
         if len(x_converged) > 0:
             for i, out_idx in enumerate(col_idx_converged):
                 X_orig[:, out_idx].copy_(x_converged[i])
-            # sort_idxs = np.argsort(col_idx_converged)
-            # for i, out_idx in enumerate(sort_idxs):
-            #     X_orig[:, i].copy_(x_converged[out_idx])
-            #     print(f"converged {out_idx }={x_converged[out_idx][0]} - orig={X_orig[0, out_idx]}")
+        if len(col_idx_notconverged) > 0:
+            for i, out_idx in enumerate(col_idx_notconverged):
+                X_orig[:, out_idx].copy_(X[:, i])
         return X_orig
 
 
