@@ -117,7 +117,6 @@ class ConjugateGradient(Optimizer):
         X_orig = X
 
         for self.num_iter in range(max_iter):
-            print("iter ", self.num_iter)
             with TicToc("Chol Iter", debug=False):
                 t_start = time.time()
                 AP = mmv(P)
@@ -168,9 +167,18 @@ class ConjugateGradient(Optimizer):
                     except StopOptimizationException as e:
                         print(f"Optimization stopped from callback: {e.message}")
                         break
-        assert len(col_idx_notconverged) == 0
-        sort_idxs = np.argsort(col_idx_converged)
-        return torch.stack([x_converged[i] for i in sort_idxs], dim=1, out=X_orig)
+        # if len(col_idx_notconverged) > 0:
+        #     for idx in range(len(col_idx_notconverged)):
+        #         col_idx_converged.append(col_idx_notconverged[idx])
+        #         x_converged.append(X[:, idx])
+        if len(x_converged) > 0:
+            for i, out_idx in enumerate(col_idx_converged):
+                X_orig[:, out_idx].copy_(x_converged[i])
+            # sort_idxs = np.argsort(col_idx_converged)
+            # for i, out_idx in enumerate(sort_idxs):
+            #     X_orig[:, i].copy_(x_converged[out_idx])
+            #     print(f"converged {out_idx }={x_converged[out_idx][0]} - orig={X_orig[0, out_idx]}")
+        return X_orig
 
 
 class FalkonConjugateGradient(Optimizer):
