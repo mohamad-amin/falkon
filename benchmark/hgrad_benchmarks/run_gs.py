@@ -54,7 +54,7 @@ def run_gs(
 
 def run():
     gs_file = "tmp_gs_file"
-    exp_name = "test_exp_m100_finn"
+    exp_name = "test_exp_m100_28_09"
     datasets = {
         #"ho-higgs": {
         #   "num_centers": 100,
@@ -72,7 +72,7 @@ def run():
            "num_centers": 100,
            "sigmas": np.logspace(0, 1.5, 15),
            "penalties": np.logspace(-6, 2, 15),
-           "train_size": 10,
+           "train_size": 10,  # TODO: Fake but only yseful for SVGP
         },
         "energy": {
            "num_centers": 100,
@@ -94,12 +94,12 @@ def run():
         },
     }
     models = {
+        "creg-notrace": {},
         "loocv": {},
         "gcv": {},
         "sgpr": {},
         "hgrad-closed": {'val_pct': 0.6},
         "creg-penfit": {},
-        "creg-notrace": {},
     }
     for dset, dset_params in datasets.items():
         for model, model_params in models.items():
