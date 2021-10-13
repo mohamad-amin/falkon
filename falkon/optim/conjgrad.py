@@ -3,6 +3,7 @@ import functools
 import time
 from typing import Optional, Callable
 
+import numpy as np
 import torch
 
 import falkon
@@ -99,7 +100,6 @@ class ConjugateGradient(Optimizer):
         else:
             R = B - mmv(X0)  # n*t
             X = X0
-        X_orig = X
 
         m_eps = self.params.cg_epsilon(X.dtype)
 
@@ -110,7 +110,14 @@ class ConjugateGradient(Optimizer):
         tol = self.params.cg_tolerance ** 2
 
         e_train = time.time() - t_start
+
+        x_converged = []
+        col_idx_converged = []
+        col_idx_notconverged = torch.arange(X.shape[1])
+        X_orig = X
+
         for self.num_iter in range(max_iter):
+            print("iter ", self.num_iter)
             with TicToc("Chol Iter", debug=False):
                 t_start = time.time()
                 AP = mmv(P)
@@ -129,13 +136,18 @@ class ConjugateGradient(Optimizer):
 
                 Rsnew = R.square().sum(dim=0)  # t
                 converged = torch.less(Rsnew, tol)
-                # print(Rsnew)
-                # print("Convergence to %e " % tol, converged)
+                idx_converged_curr = torch.where(converged)[0]
                 if torch.all(converged):
-                    #print("Stopping conjugate gradient descent at "
-                    #      "iteration %d. Solution has converged." % (self.num_iter + 1))
+                    for idx in idx_converged_curr:
+                        col_idx_converged.append(col_idx_notconverged[idx])
+                        x_converged.append(X[:, idx])
+                    col_idx_notconverged = col_idx_notconverged[~converged]
                     break
                 elif torch.any(converged):
+                    for idx in idx_converged_curr:
+                        col_idx_converged.append(col_idx_notconverged[idx])
+                        x_converged.append(X[:, idx])
+                    col_idx_notconverged = col_idx_notconverged[~converged]
                     P = P[:, ~converged]
                     R = R[:, ~converged]
                     X = X[:, ~converged]
@@ -156,8 +168,9 @@ class ConjugateGradient(Optimizer):
                     except StopOptimizationException as e:
                         print(f"Optimization stopped from callback: {e.message}")
                         break
-
-        return X_orig
+        assert len(col_idx_notconverged) == 0
+        sort_idxs = np.argsort(col_idx_converged)
+        return torch.stack([x_converged[i] for i in sort_idxs], dim=1, out=X_orig)
 
 
 class FalkonConjugateGradient(Optimizer):
