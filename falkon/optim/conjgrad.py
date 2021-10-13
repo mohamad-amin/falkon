@@ -156,6 +156,7 @@ class ConjugateGradient(Optimizer):
 
                 e_iter = time.time() - t_start
                 e_train += e_iter
+                #print("Iteration %d - X[0, :] = %s" % (self.num_iter, X[0, :]))
             with TicToc("Chol callback", debug=False):
                 if callback is not None:
                     try:
@@ -165,10 +166,12 @@ class ConjugateGradient(Optimizer):
                         break
         if len(x_converged) > 0:
             for i, out_idx in enumerate(col_idx_converged):
-                X_orig[:, out_idx].copy_(x_converged[i])
+                if X_orig[:, out_idx].data_ptr() != x_converged[i].data_ptr():
+                    X_orig[:, out_idx].copy_(x_converged[i])
         if len(col_idx_notconverged) > 0:
             for i, out_idx in enumerate(col_idx_notconverged):
-                X_orig[:, out_idx].copy_(X[:, i])
+                if X_orig[:, out_idx].data_ptr() != X[:, i].data_ptr():
+                    X_orig[:, out_idx].copy_(X[:, i])
         return X_orig
 
 

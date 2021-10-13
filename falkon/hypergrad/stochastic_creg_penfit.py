@@ -101,7 +101,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
     last_alpha = None
     iter_prep_times, fwd_times, bwd_times, solve_times, kmm_times, grad_times = [], [], [], [], [], []
     iter_times, num_flk_iters = [], []
-    solve_together = False
+    solve_together = True
     use_direct_for_stoch = True
     print(f"Initialized class RegLossAndDeffv2. solve_together={solve_together}, "
           f"use_direct_for_stoch={use_direct_for_stoch}")
@@ -213,9 +213,10 @@ class RegLossAndDeffv2(torch.autograd.Function):
                 initial_solution=RegLossAndDeffv2._last_solve_zy,
                 max_iter=solve_maxiter,
             )
-            solve_zy = precond.apply(solve_zy_prec)
             if warm_start:
                 RegLossAndDeffv2._last_solve_zy = solve_zy_prec.detach().clone()
+                RegLossAndDeffv2._last_solve_y = RegLossAndDeffv2._last_solve_zy[:, t:].clone()
+            solve_zy = precond.apply(solve_zy_prec)
             RegLossAndDeffv2.last_alpha = solve_zy[:, t:].detach().clone()
             num_iters = optim.optimizer.num_iter
         else:
