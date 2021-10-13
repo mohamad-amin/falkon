@@ -99,6 +99,7 @@ class ConjugateGradient(Optimizer):
         else:
             R = B - mmv(X0)  # n*t
             X = X0
+        X_orig = X
 
         m_eps = self.params.cg_epsilon(X.dtype)
 
@@ -109,7 +110,6 @@ class ConjugateGradient(Optimizer):
         tol = self.params.cg_tolerance ** 2
 
         e_train = time.time() - t_start
-
         for self.num_iter in range(max_iter):
             with TicToc("Chol Iter", debug=False):
                 t_start = time.time()
@@ -127,13 +127,20 @@ class ConjugateGradient(Optimizer):
                 # R -= AP @ diag(alpha)
                 R.addcmul_(AP, alpha.reshape(1, -1), value=-1.0)
 
-                Rsnew = R.square().sum(dim=0)
-                err = Rsnew.max().sqrt()
-                #print(f"residual iter {self.num_iter}: {err:.2e}")
-                if Rsnew.max().sqrt() < self.params.cg_tolerance:
+                Rsnew = R.square().sum(dim=0)  # t
+                converged = torch.less(Rsnew, tol)
+                # print(Rsnew)
+                # print("Convergence to %e " % tol, converged)
+                if torch.all(converged):
                     #print("Stopping conjugate gradient descent at "
                     #      "iteration %d. Solution has converged." % (self.num_iter + 1))
                     break
+                elif torch.any(converged):
+                    P = P[:, ~converged]
+                    R = R[:, ~converged]
+                    X = X[:, ~converged]
+                    Rsnew = Rsnew[~converged]
+                    Rsold = Rsold[~converged]
 
                 # P = R + P @ diag(mul)
                 multiplier = (Rsnew / Rsold.add_(m_eps)).reshape(1, -1)
@@ -149,7 +156,8 @@ class ConjugateGradient(Optimizer):
                     except StopOptimizationException as e:
                         print(f"Optimization stopped from callback: {e.message}")
                         break
-        return X
+
+        return X_orig
 
 
 class FalkonConjugateGradient(Optimizer):
