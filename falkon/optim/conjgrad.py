@@ -3,6 +3,7 @@ import functools
 import time
 from typing import Optional, Callable
 
+import numpy as np
 import torch
 
 import falkon
@@ -110,6 +111,11 @@ class ConjugateGradient(Optimizer):
 
         e_train = time.time() - t_start
 
+        x_converged = []
+        col_idx_converged = []
+        col_idx_notconverged = torch.arange(X.shape[1])
+        X_orig = X
+
         for self.num_iter in range(max_iter):
             with TicToc("Chol Iter", debug=False):
                 t_start = time.time()
@@ -127,13 +133,21 @@ class ConjugateGradient(Optimizer):
                 # R -= AP @ diag(alpha)
                 R.addcmul_(AP, alpha.reshape(1, -1), value=-1.0)
 
-                Rsnew = R.square().sum(dim=0)
-                err = Rsnew.max().sqrt()
-                #print(f"residual iter {self.num_iter}: {err:.2e}")
-                if Rsnew.max().sqrt() < self.params.cg_tolerance:
-                    #print("Stopping conjugate gradient descent at "
-                    #      "iteration %d. Solution has converged." % (self.num_iter + 1))
+                Rsnew = R.square().sum(dim=0)  # t
+                converged = torch.less(Rsnew, tol)
+                idx_converged_curr = torch.where(converged)[0]
+                if torch.all(converged):
                     break
+                if torch.any(converged):
+                    for idx in idx_converged_curr:
+                        col_idx_converged.append(col_idx_notconverged[idx])
+                        x_converged.append(X[:, idx])
+                    col_idx_notconverged = col_idx_notconverged[~converged]
+                    P = P[:, ~converged]
+                    R = R[:, ~converged]
+                    X = X[:, ~converged]  # These are all copies
+                    Rsnew = Rsnew[~converged]
+                    Rsold = Rsold[~converged]
 
                 # P = R + P @ diag(mul)
                 multiplier = (Rsnew / Rsold.add_(m_eps)).reshape(1, -1)
@@ -142,6 +156,7 @@ class ConjugateGradient(Optimizer):
 
                 e_iter = time.time() - t_start
                 e_train += e_iter
+                #print("Iteration %d - X[0, :] = %s" % (self.num_iter, X[0, :]))
             with TicToc("Chol callback", debug=False):
                 if callback is not None:
                     try:
@@ -149,7 +164,15 @@ class ConjugateGradient(Optimizer):
                     except StopOptimizationException as e:
                         print(f"Optimization stopped from callback: {e.message}")
                         break
-        return X
+        if len(x_converged) > 0:
+            for i, out_idx in enumerate(col_idx_converged):
+                if X_orig[:, out_idx].data_ptr() != x_converged[i].data_ptr():
+                    X_orig[:, out_idx].copy_(x_converged[i])
+        if len(col_idx_notconverged) > 0:
+            for i, out_idx in enumerate(col_idx_notconverged):
+                if X_orig[:, out_idx].data_ptr() != X[:, i].data_ptr():
+                    X_orig[:, out_idx].copy_(X[:, i])
+        return X_orig
 
 
 class FalkonConjugateGradient(Optimizer):

@@ -30,7 +30,7 @@ __all__ = [
 ]
 
 LOSS_EVERY = 5
-EARLY_STOP_EPOCHS = 101
+EARLY_STOP_EPOCHS = 201
 
 
 def report_losses(losses, loss_names, step) -> Dict[str, float]:
@@ -122,7 +122,7 @@ def pred_reporting(model: HyperOptimModel,
         if Xval is not None and Yval is not None:
             Xtr_full, Ytr_full = torch.cat((Xtr, Xval), dim=0), torch.cat((Ytr, Yval), dim=0)
         warm_start = None
-        if hasattr(model, "last_beta"):
+        if hasattr(model, "last_beta") and model.last_beta is not None:
             warm_start = model.last_beta.to(Xtr_full.device)
         flk_model.fit(Xtr_full, Ytr_full, warm_start=warm_start)#, Xts, Yts)
         model = flk_model

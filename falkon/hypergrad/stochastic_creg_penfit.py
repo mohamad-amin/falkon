@@ -101,7 +101,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
     last_alpha = None
     iter_prep_times, fwd_times, bwd_times, solve_times, kmm_times, grad_times = [], [], [], [], [], []
     iter_times, num_flk_iters = [], []
-    solve_together = False
+    solve_together = True
     use_direct_for_stoch = True
     print(f"Initialized class RegLossAndDeffv2. solve_together={solve_together}, "
           f"use_direct_for_stoch={use_direct_for_stoch}")
@@ -213,9 +213,10 @@ class RegLossAndDeffv2(torch.autograd.Function):
                 initial_solution=RegLossAndDeffv2._last_solve_zy,
                 max_iter=solve_maxiter,
             )
-            solve_zy = precond.apply(solve_zy_prec)
             if warm_start:
                 RegLossAndDeffv2._last_solve_zy = solve_zy_prec.detach().clone()
+                RegLossAndDeffv2._last_solve_y = RegLossAndDeffv2._last_solve_zy[:, t:].clone()
+            solve_zy = precond.apply(solve_zy_prec)
             RegLossAndDeffv2.last_alpha = solve_zy[:, t:].detach().clone()
             num_iters = optim.optimizer.num_iter
         else:
@@ -239,8 +240,9 @@ class RegLossAndDeffv2(torch.autograd.Function):
             solve_z_prec = optim_z.solve(X, M_, Z, penalty_,
                                          initial_solution=RegLossAndDeffv2._last_solve_z,
                                          max_iter=solve_maxiter_z)
-            solve_z = precond.apply(solve_z_prec)
+
             solve_y = precond.apply(solve_y_prec)
+            solve_z = precond.apply(solve_z_prec)
             solve_zy = torch.cat((solve_z, solve_y), dim=1)
             if warm_start:
                 RegLossAndDeffv2._last_solve_y = solve_y_prec.detach().clone()
@@ -375,7 +377,8 @@ class RegLossAndDeffv2(torch.autograd.Function):
 
             with Timer(RegLossAndDeffv2.solve_times):
                 solve_zy, num_flk_iters = RegLossAndDeffv2.solve_flk(
-                    X, M_dev, Y, Z, ZY, penalty_dev, kernel_args_dev, solve_options, solve_maxiter, warm_start)
+                    X=X, M=M_dev, Y=Y, Z=Z, ZY=ZY, penalty=penalty_dev, kernel_args=kernel_args_dev,
+                    solve_options=solve_options, solve_maxiter=solve_maxiter, warm_start=warm_start)
                 RegLossAndDeffv2.num_flk_iters.append(num_flk_iters)
 
             with Timer(RegLossAndDeffv2.kmm_times):  # Move small matrices to the computation device
@@ -393,9 +396,10 @@ class RegLossAndDeffv2(torch.autograd.Function):
             if use_stoch_trace and use_direct_for_stoch:
                 with torch.autograd.enable_grad():
                     kernel = GaussianKernel(kernel_args_dev, solve_options)
-                fwd, bwd = RegLossAndDeffv2.direct_nosplit(X, M_dev, Y, penalty_dev, kmm, kmm_chol, ZY,
-                                                           solve_zy_dev, zy_solve_kmm_solve_zy, kernel,
-                                                           t)
+                fwd, bwd = RegLossAndDeffv2.direct_nosplit(
+                    X=X, M=M_dev, Y=Y, penalty=penalty_dev, kmm=kmm, kmm_chol=kmm_chol,
+                    zy=ZY, solve_zy=solve_zy_dev, zy_solve_kmm_solve_zy=zy_solve_kmm_solve_zy,
+                    kernel=kernel, t=t)
                 with Timer(RegLossAndDeffv2.grad_times):
                     grads_ = calc_grads_tensors(inputs=(kernel_args_dev, penalty_dev, M_dev),
                                                 inputs_need_grad=ctx.needs_input_grad, backward=bwd,
