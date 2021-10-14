@@ -147,12 +147,15 @@ class StochasticDeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         self.num_trace_est = num_trace_est
         self.flk_maxiter = flk_maxiter
         self.nystrace_ste = nystrace_ste
+        self.deterministic_ste = True
+        self.gaussian_ste = True
+        self.warm_start = True
 
     def hp_loss(self, X, Y):
         loss = creg_penfit(kernel_args=self.sigma, penalty=self.penalty, centers=self.centers,
-                           X=X, Y=Y, num_estimators=self.num_trace_est, deterministic=False,
+                           X=X, Y=Y, num_estimators=self.num_trace_est, deterministic=self.deterministic_ste,
                            solve_options=self.flk_opt, solve_maxiter=self.flk_maxiter,
-                           gaussian_random=True, use_stoch_trace=self.nystrace_ste, warm_start=True)
+                           gaussian_random=self.gaussian_ste, use_stoch_trace=self.nystrace_ste, warm_start=self.warm_start)
         return [loss]
 
     def predict(self, X):
@@ -178,7 +181,7 @@ class StochasticDeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
         return f"StochasticDeffPenFitTr(sigma={get_scalar(self.sigma)}, penalty={get_scalar(self.penalty)}, " \
                f"num_centers={self.centers.shape[0]}, opt_centers={self.opt_centers}, " \
                f"opt_sigma={self.opt_sigma}, opt_penalty={self.opt_penalty}, t={self.num_trace_est}, " \
-               f"flk_iter={self.flk_maxiter})"
+               f"flk_iter={self.flk_maxiter}, det_ste={self.deterministic_ste}, gauss_ste={self.gaussian_ste}, warm={self.warm_start})"
 
 
 class DeffPenFitTr(NystromKRRModelMixinN, HyperOptimModel):
