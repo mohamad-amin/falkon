@@ -1,17 +1,16 @@
-from contextlib import ExitStack
 import functools
 import time
-from typing import Optional, Callable
+from contextlib import ExitStack
+from typing import Optional, Callable, List
 
-import numpy as np
 import torch
 
 import falkon
-from falkon.options import ConjugateGradientOptions, FalkonOptions
 from falkon.mmv_ops.fmmv_incore import incore_fdmmv, incore_fmmv
-from falkon.utils.tensor_helpers import copy_same_stride, create_same_stride
-from falkon.utils.stream_utils import get_non_default_stream
+from falkon.options import ConjugateGradientOptions, FalkonOptions
 from falkon.utils import TicToc
+from falkon.utils.tensor_helpers import copy_same_stride, create_same_stride
+
 
 # More readable 'pseudocode' for conjugate gradient.
 # function [x] = conjgrad(A, b, x)
@@ -102,19 +101,25 @@ class ConjugateGradient(Optimizer):
             X = X0
 
         m_eps = self.params.cg_epsilon(X.dtype)
+        full_grad_every = self.params.cg_full_gradient_every or max_iter * 2
+        tol = self.params.cg_tolerance ** 2
+        diff_conv = self.params.cg_differential_convergence and X.shape[1] > 1
 
         P = R.clone()
         R0 = R.square().sum(dim=0)
         Rsold = R0.clone()
 
-        tol = self.params.cg_tolerance ** 2
-
         e_train = time.time() - t_start
 
-        x_converged = []
-        col_idx_converged = []
-        col_idx_notconverged = torch.arange(X.shape[1])
-        X_orig = X
+        if diff_conv:
+            # Differential convergence: when any column of X converges we remove it from optimization.
+            # column-vectors of X which have converged
+            x_converged: List[torch.Tensor] = []
+            # indices of columns in `x_converged` as they originally appeared in `X`
+            col_idx_converged: List[int] = []
+            # indices of columns which have not converged, as they originally were in `X`
+            col_idx_notconverged: torch.Tensor = torch.arange(X.shape[1])
+            X_orig = X
 
         for self.num_iter in range(max_iter):
             with TicToc("Chol Iter", debug=False):
@@ -124,22 +129,21 @@ class ConjugateGradient(Optimizer):
                 # X += P @ diag(alpha)
                 X.addcmul_(P, alpha.reshape(1, -1))
 
-                #if (self.num_iter + 1) % self.params.cg_full_gradient_every == 0:
-                #    if X.is_cuda:
-                #        # addmm_ may not be finished yet causing mmv to get stale inputs.
-                #        torch.cuda.synchronize()
-                #    R = B - mmv(X)
-                #else:
-                # R -= AP @ diag(alpha)
-                R.addcmul_(AP, alpha.reshape(1, -1), value=-1.0)
+                if (self.num_iter + 1) % full_grad_every == 0:
+                    if X.is_cuda:
+                        # addmm_ may not be finished yet causing mmv to get stale inputs.
+                        torch.cuda.synchronize()
+                    R = B - mmv(X)
+                else:
+                    # R -= AP @ diag(alpha)
+                    R.addcmul_(AP, alpha.reshape(1, -1), value=-1.0)
 
                 Rsnew = R.square().sum(dim=0)  # t
                 converged = torch.less(Rsnew, tol)
-                idx_converged_curr = torch.where(converged)[0]
                 if torch.all(converged):
                     break
-                if torch.any(converged):
-                    for idx in idx_converged_curr:
+                if diff_conv and torch.any(converged):
+                    for idx in torch.where(converged)[0]:
                         col_idx_converged.append(col_idx_notconverged[idx])
                         x_converged.append(X[:, idx])
                     col_idx_notconverged = col_idx_notconverged[~converged]
@@ -156,7 +160,6 @@ class ConjugateGradient(Optimizer):
 
                 e_iter = time.time() - t_start
                 e_train += e_iter
-                #print("Iteration %d - X[0, :] = %s" % (self.num_iter, X[0, :]))
             with TicToc("Chol callback", debug=False):
                 if callback is not None:
                     try:
@@ -164,15 +167,17 @@ class ConjugateGradient(Optimizer):
                     except StopOptimizationException as e:
                         print(f"Optimization stopped from callback: {e.message}")
                         break
-        if len(x_converged) > 0:
-            for i, out_idx in enumerate(col_idx_converged):
-                if X_orig[:, out_idx].data_ptr() != x_converged[i].data_ptr():
-                    X_orig[:, out_idx].copy_(x_converged[i])
-        if len(col_idx_notconverged) > 0:
-            for i, out_idx in enumerate(col_idx_notconverged):
-                if X_orig[:, out_idx].data_ptr() != X[:, i].data_ptr():
-                    X_orig[:, out_idx].copy_(X[:, i])
-        return X_orig
+        if diff_conv:
+            if len(x_converged) > 0:
+                for i, out_idx in enumerate(col_idx_converged):
+                    if X_orig[:, out_idx].data_ptr() != x_converged[i].data_ptr():
+                        X_orig[:, out_idx].copy_(x_converged[i])
+            if len(col_idx_notconverged) > 0:
+                for i, out_idx in enumerate(col_idx_notconverged):
+                    if X_orig[:, out_idx].data_ptr() != X[:, i].data_ptr():
+                        X_orig[:, out_idx].copy_(X[:, i])
+            X = X_orig
+        return X
 
 
 class FalkonConjugateGradient(Optimizer):
