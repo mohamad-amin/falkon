@@ -694,7 +694,6 @@ class ChietDataset(KnownSplitDataset, Hdf5Dataset):
 
     def preprocess_y(self, Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
         return standardize_y(Ytr, Yts)
-        return mean_remove_y(Ytr, Yts)
 
 
 class EnergyDataset(RandomSplitDataset, Hdf5Dataset):
@@ -707,7 +706,6 @@ class EnergyDataset(RandomSplitDataset, Hdf5Dataset):
 
     def preprocess_y(self, Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
         return standardize_y(Ytr, Yts)
-        return mean_remove_y(Ytr, Yts)
 
 
 class BostonDataset(RandomSplitDataset, Hdf5Dataset):
@@ -733,7 +731,6 @@ class ProteinDataset(RandomSplitDataset, Hdf5Dataset):
 
     def preprocess_y(self, Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
         return standardize_y(Ytr, Yts)
-        return mean_remove_y(Ytr, Yts)
 
 
 class Kin40kDataset(KnownSplitDataset, Hdf5Dataset):
@@ -766,8 +763,7 @@ class CodRnaDataset(KnownSplitDataset):
         return standardize_x(Xtr, Xts)
 
     def preprocess_y(self, Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
-        return standardize_y(Ytr, Yts)
-        return Ytr.reshape(-1, 1), Yts.reshape(-1, 1), {}
+        return Ytr.reshape(-1, 1), Yts.reshape(-1, 1), {}  # Is already -1, +1
 
 
 class SvmGuide1Dataset(KnownSplitDataset):
@@ -819,7 +815,6 @@ class SpaceGaDataset(RandomSplitDataset):
 
     def preprocess_y(self, Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
         return standardize_y(Ytr, Yts)
-        return mean_remove_y(Ytr, Yts)
 
 
 class CadataDataset(RandomSplitDataset):
@@ -853,7 +848,6 @@ class MgDataset(RandomSplitDataset):
 
     def preprocess_y(self, Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
         return standardize_y(Ytr, Yts)
-        return mean_remove_y(Ytr, Yts)
 
 
 class CpuSmallDataset(RandomSplitDataset):
@@ -870,7 +864,6 @@ class CpuSmallDataset(RandomSplitDataset):
 
     def preprocess_y(self, Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
         return standardize_y(Ytr, Yts)
-        return mean_remove_y(Ytr, Yts)
 
 
 class AbaloneDataset(RandomSplitDataset):
@@ -913,7 +906,6 @@ class BlogFeedbackDataset(KnownSplitDataset, Hdf5Dataset):
 
     def preprocess_y(self, Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
         return standardize_y(Ytr, Yts)
-        return Ytr.reshape(-1, 1), Yts.reshape(-1, 1), {}
 
 
 class CovTypeDataset(RandomSplitDataset, Hdf5Dataset):
@@ -937,8 +929,7 @@ class Ijcnn1Dataset(KnownSplitDataset, Hdf5Dataset):
         return Xtr, Xts, {}  # Data already standardized
 
     def preprocess_y(self, Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
-        return standardize_y(Ytr, Yts)
-        return Ytr.reshape(-1, 1), Yts.reshape(-1, 1), {}
+        return Ytr.reshape(-1, 1), Yts.reshape(-1, 1), {}  # binary-classif : already -1, +1
 
 
 class BuzzDataset(RandomSplitDataset, Hdf5Dataset):
@@ -954,7 +945,7 @@ class BuzzDataset(RandomSplitDataset, Hdf5Dataset):
         # Weird preprocessing from AGW
         Ytr = np.log(Ytr + 1.0)
         Yts = np.log(Yts + 1.0)
-        return mean_remove_y(Ytr, Yts)
+        return standardize_y(Ytr, Yts)
 
 
 class Road3DDataset(RandomSplitDataset, Hdf5Dataset):
@@ -968,8 +959,6 @@ class Road3DDataset(RandomSplitDataset, Hdf5Dataset):
 
     def preprocess_y(self, Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
         return standardize_y(Ytr, Yts)
-        # preprocessing from AGW
-        return mean_remove_y(Ytr, Yts)
 
 
 class HouseEelectricDataset(RandomSplitDataset, Hdf5Dataset):
@@ -985,7 +974,7 @@ class HouseEelectricDataset(RandomSplitDataset, Hdf5Dataset):
         # Weird preprocessing from AGW
         Ytr = np.log(Ytr)
         Yts = np.log(Yts)
-        return mean_remove_y(Ytr, Yts)
+        return standardize_y(Ytr, Yts)
 
 
 """ Public API """
