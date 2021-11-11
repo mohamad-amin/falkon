@@ -31,18 +31,8 @@ class ArgsFmmv:
     out: torch.Tensor
     kernel: 'falkon.kernels.Kernel'
     max_mem: float
+    w: torch.Tensor = None
     differentiable: bool = False
-
-
-@dataclass(frozen=True)
-class ArgsFdmmv:
-    X1: Union[torch.Tensor, SparseTensor]
-    X2: Union[torch.Tensor, SparseTensor]
-    v: torch.Tensor
-    w: torch.Tensor
-    out: torch.Tensor
-    kernel: 'falkon.kernels.Kernel'
-    max_mem: float
 
 
 def _sparse_mmv_blk_sizes(n, d, m, t, avail_mem, extra_mem, incore: bool, m1_density: float,
@@ -112,8 +102,8 @@ def mmv_run_starter(proc_idx, queue, device_id):
         blk_n, blk_m = select_dim_over_nm_v2(
             max_n=n, max_m=m, max_mem=avail_mem,
             coef_nm=diff_coef_nm + extra_mem.get('nm', 0),
-            coef_n=2*(d + t + extra_mem.get('n', 0) + extra_mem.get('nd', 0) * d),
-            coef_m=2*(d + t + extra_mem.get('m', 0) + extra_mem.get('md', 0) * d),
+            coef_n=2 * (d + t + extra_mem.get('n', 0) + extra_mem.get('nd', 0) * d),
+            coef_m=2 * (d + t + extra_mem.get('m', 0) + extra_mem.get('md', 0) * d),
             rest=extra_mem.get('d', 0))
         return mmv_diff_run_thread(X1, X2, v, out, kernel, blk_n, blk_m, dev)
     if is_sparse:
@@ -209,7 +199,8 @@ def mmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Tensor]
     # Initialize extra buffers
     flat_gpu = torch.empty(size=(mem_needed,), dtype=m1.dtype, device=dev)
     flat_offset = 0
-    dev_ker, flat_offset = _extract_flat(flat_gpu, size=(blk_n, blk_m), other=out, offset=flat_offset)
+    dev_ker, flat_offset = _extract_flat(flat_gpu, size=(blk_n, blk_m), other=out,
+                                         offset=flat_offset)
     if m1_ic:
         dev_m1 = None
     else:
@@ -225,7 +216,8 @@ def mmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Tensor]
     if out_ic:
         dev_out = None
     else:
-        dev_out, flat_offset = _extract_flat(flat_gpu, size=(blk_n, T), other=out, offset=flat_offset)
+        dev_out, flat_offset = _extract_flat(flat_gpu, size=(blk_n, T), other=out,
+                                             offset=flat_offset)
 
     with ExitStack() as stack:
         s1, s2 = None, None
@@ -295,11 +287,9 @@ def mmv_diff_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Te
                     if not incore:
                         stack_s2.enter_context(tcd.stream(s2))
                     c_dev_v = v[j: j + lenj, :].to(dev, non_blocking=True, copy=False)
-                #c_dev_ker = kernel.compute_diff(c_dev_m1, c_dev_m2)
                 if not incore:
                     s2.synchronize()
                 c_dev_out = c_dev_out + kernel.mmv_diff(c_dev_m1, c_dev_m2, c_dev_v)
-                #c_dev_out.addmm_(c_dev_ker, c_dev_v)
                 if not incore:
                     s1.synchronize()  # sync necessary to avoid s2 overwriting dev_v/dev_w
             # end iter over M
@@ -374,10 +364,11 @@ def _dense_dmmv_blk_sizes(n, d, m, t, avail_mem: float, extra_mem: dict,
 
 
 def dmmv_run_starter(proc_idx, queue, device_id):
-    a: ArgsFdmmv = queue.get()
+    a: ArgsFmmv = queue.get()
     X1, X2, v, w, out = a.X1, a.X2, a.v, a.w, a.out
     kernel = a.kernel
     max_mem = a.max_mem
+    assert not a.differentiable, "D-MMV not implemented for differentiable outputs"
     dev = _dev_from_id(device_id)
     incore = _is_incore(dev, X1.device)
     dev_out_exists = out.device == dev  # out has already been allocated on the computation device
@@ -385,6 +376,7 @@ def dmmv_run_starter(proc_idx, queue, device_id):
 
     # Choose batch sizes
     avail_mem = max_mem / sizeof_dtype(X1.dtype)
+    print("Avail", avail_mem)
     extra_mem = kernel.extra_mem()
     n, d = X1.shape
     m, t = v.shape
@@ -397,10 +389,10 @@ def dmmv_run_starter(proc_idx, queue, device_id):
     else:
         m1_ic, m2_ic, v_ic, out_ic = (_is_incore(dev, X1.device), _is_incore(dev, X2.device),
                                       _is_incore(dev, v.device), _is_incore(dev, out.device))
-
         blk_n, mem_needed = _dense_dmmv_blk_sizes(
             n=n, d=d, m=m, t=t, avail_mem=avail_mem, extra_mem=extra_mem,
             m1_ic=m1_ic, m2_ic=m2_ic, v_ic=v_ic, out_ic=out_ic)
+        print(f"blk_n: {blk_n}/{n}")
         dmmv_run_thread(X1, X2, v, w, out, kernel, blk_n, mem_needed, dev)
 
 
@@ -477,7 +469,6 @@ def dmmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor,
     m1_ic, m2_ic, v_ic, out_ic = (_is_incore(dev, m1.device), _is_incore(dev, m2.device),
                                   _is_incore(dev, v.device), _is_incore(dev, out.device))
     w_ic = _is_incore(dev, w.device) if w is not None else True
-    incore = all((m1_ic, m2_ic, v_ic, out_ic, w_ic))
     N, D = m1.shape
     M, T = v.shape
 
@@ -559,7 +550,8 @@ def fmmv(X1: Union[torch.Tensor, SparseTensor],
                             comp_dev_type=comp_dev_type, other_mat=X1)
 
     if comp_dev_type == 'cpu' and all([ddev.type == 'cpu' for ddev in data_devs]):
-        args = ArgsFmmv(X1=X1, X2=X2, v=v, out=out, kernel=kernel, max_mem=opt.max_cpu_mem, differentiable=differentiable)
+        args = ArgsFmmv(X1=X1, X2=X2, v=v, out=out, kernel=kernel, max_mem=opt.max_cpu_mem,
+                        differentiable=differentiable)
         _call_direct(mmv_run_starter, (args, -1))
     elif comp_dev_type == 'cuda' and all([ddev.type == 'cuda' for ddev in data_devs]):
         if is_sparse:
@@ -598,6 +590,7 @@ def fmmv(X1: Union[torch.Tensor, SparseTensor],
 def fdmmv(X1: Union[torch.Tensor, SparseTensor], X2: Union[torch.Tensor, SparseTensor],
           v: torch.Tensor, w: Optional[torch.Tensor],
           kernel: 'falkon.kernels.Kernel', out: Optional[torch.Tensor] = None,
+          differentiable: bool = False,
           opt: Optional[BaseOptions] = None) -> torch.Tensor:
     """
     X1 : N x D
@@ -606,6 +599,10 @@ def fdmmv(X1: Union[torch.Tensor, SparseTensor], X2: Union[torch.Tensor, SparseT
     w  : N x T
     performs fnc(X1*X2', X1, X2)' * ( fnc(X1*X2', X1, X2) * v  +  w )  : M x T
     """
+    if differentiable:
+        raise NotImplementedError(
+            "Manual D-MMV is not implemented for differentiable inputs. "
+            "Try using the KeOps version instead.")
     is_sparse = isinstance(X1, SparseTensor)
     if not is_sparse:
         _check_contiguity((X1, 'X1'), (X2, 'X2'), (v, 'v'), (out, 'out'))
@@ -621,7 +618,7 @@ def fdmmv(X1: Union[torch.Tensor, SparseTensor], X2: Union[torch.Tensor, SparseT
                             comp_dev_type=comp_dev_type, other_mat=X1)
 
     if comp_dev_type == 'cpu' and all([ddev.type == 'cpu' for ddev in data_devs]):
-        args = ArgsFdmmv(X1=X1, X2=X2, v=v, w=w, out=out, kernel=kernel, max_mem=opt.max_cpu_mem)
+        args = ArgsFmmv(X1=X1, X2=X2, v=v, w=w, out=out, kernel=kernel, max_mem=opt.max_cpu_mem)
         _call_direct(dmmv_run_starter, (args, -1))
     elif comp_dev_type == 'cuda' and all([ddev.type == 'cuda' for ddev in data_devs]):
         if is_sparse:
@@ -630,8 +627,8 @@ def fdmmv(X1: Union[torch.Tensor, SparseTensor], X2: Union[torch.Tensor, SparseT
         gpu_info = _get_gpu_info(opt, slack=0.9)
         data_dev = data_devs[0]
         single_gpu_info = [g for g in gpu_info if g.Id == data_dev.index][0]
-        args = ArgsFdmmv(X1=X1, X2=X2, v=v, w=w, out=out, kernel=kernel,
-                         max_mem=single_gpu_info.usable_memory)
+        args = ArgsFmmv(X1=X1, X2=X2, v=v, w=w, out=out, kernel=kernel,
+                        max_mem=single_gpu_info.usable_memory)
         _call_direct(dmmv_run_starter, (args, data_dev.index))
     elif comp_dev_type == 'cuda':
         gpu_info = _get_gpu_info(opt, slack=0.9)
@@ -652,7 +649,7 @@ def fdmmv(X1: Union[torch.Tensor, SparseTensor], X2: Union[torch.Tensor, SparseT
                 X1_block = X1.narrow_rows(block_sizes[i], bwidth)
             else:
                 X1_block = X1.narrow(0, block_sizes[i], bwidth)
-            args.append((ArgsFdmmv(
+            args.append((ArgsFmmv(
                 X1=X1_block,
                 X2=X2, v=v,
                 w=w.narrow(0, block_sizes[i], bwidth) if w is not None else None,

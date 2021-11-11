@@ -72,7 +72,7 @@ class KeopsKernelMixin():
                              out=out, formula=formula, aliases=aliases, axis=1,
                              reduction='Sum', differentiable=differentiable, opt=opt)
 
-    def keops_dmmv_helper(self, X1, X2, v, w, kernel, out, opt, mmv_fn):
+    def keops_dmmv_helper(self, X1, X2, v, w, kernel, out, differentiable, opt, mmv_fn):
         """
         performs fnc(X1*X2', X1, X2)' * ( fnc(X1*X2', X1, X2) * v  +  w )
 
@@ -105,14 +105,17 @@ class KeopsKernelMixin():
 
         """
         if v is not None and w is not None:
-            out1 = mmv_fn(X1, X2, v, kernel, None, False, opt)
-            out1.add_(w)
-            return mmv_fn(X2, X1, out1, kernel, out, False, opt)
+            out1 = mmv_fn(X1, X2, v, kernel, out=None, differentiable=differentiable, opt=opt)
+            if differentiable:
+                out1 = out1.add(w)
+            else:
+                out1.add_(w)
+            return mmv_fn(X2, X1, out1, kernel, out=out, differentiable=differentiable, opt=opt)
         elif v is None:
-            return mmv_fn(X2, X1, w, kernel, out, False, opt)
+            return mmv_fn(X2, X1, w, kernel, out=out, differentiable=differentiable, opt=opt)
         elif w is None:
-            out1 = mmv_fn(X1, X2, v, kernel, None, False, opt)
-            return mmv_fn(X2, X1, out1, kernel, out, False, opt)
+            out1 = mmv_fn(X1, X2, v, kernel, out=None, differentiable=differentiable, opt=opt)
+            return mmv_fn(X2, X1, out1, kernel, out=out, differentiable=differentiable, opt=opt)
 
     # noinspection PyUnusedLocal
     def keops_can_handle_mm(self, X1, X2, opt) -> bool:

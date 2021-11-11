@@ -107,13 +107,6 @@ def run_mmv_formula(formula: str,
     variables = [X1, X2, v] + other_vars
     myconv, tags = load_keops_fn(formula, aliases, backend, dtype, optional_flags, rec_multVar_highdim, out, *variables)
 
-    # Compile on a small data subset
-    device_idx = data_device.index or -1
-    fn = partial(myconv.genred_pytorch_out, tags.tagCPUGPU, tags.tag1D2D, tags.tagHostDevice, device_idx, ranges, nx, ny)
-    #small_data_variables = [X1[:100], X2[:10], v[:10]] + other_vars
-    #small_data_out = torch.empty((100, v.shape[1]), dtype=X1.dtype, device=data_device)
-    #fn(small_data_out, *small_data_variables)
-
     if backend.startswith("GPU") and data_device.type == 'cpu':
         # Info about GPUs
         ram_slack = 0.7  # slack is high due to imprecise memory usage estimates
@@ -152,6 +145,9 @@ def run_mmv_formula(formula: str,
             ), gpu_info[i].Id))
         _start_wait_processes(_single_gpu_method, subproc_args)
     else:  # Run on CPU or GPU with CUDA inputs
+        device_idx = data_device.index or -1
+        fn = partial(myconv.genred_pytorch_out, tags.tagCPUGPU, tags.tag1D2D,
+                     tags.tagHostDevice, device_idx, ranges, nx, ny)
         out = fn(out, *variables)
 
     return out, myconv
@@ -188,6 +184,12 @@ class TilingGenredAutograd(torch.autograd.Function):
         if not check_same_device(out, *args):
             raise ValueError("[KeOps] Input and output arrays must be located on the same device.")
         device = X1.device
+
+        # N.B.: KeOps C++ expects contiguous data arrays
+        if not check_all_contig(X1, X2, v, *args):
+            print("[pyKeOps,TilingGenRed] Warning : at least one of the input tensors is not contiguous. "
+                  "Consider using contiguous data arrays to avoid unnecessary copies.")
+            X1, X2, v, *args = ensure_all_contig(X1, X2, v, *args)
         if out is None:
             # noinspection PyArgumentList
             out = torch.empty(X1.shape[0], v.shape[1], dtype=X1.dtype, device=device,
@@ -276,7 +278,7 @@ class TilingGenredAutograd(torch.autograd.Function):
         G = G.contiguous()
         grads = []  # list of gradients wrt. args;
 
-        for (var_ind, (sig, arg_ind)) in enumerate(zip(aliases, args)):  # Run through the arguments
+        for var_ind, (sig, arg_ind) in enumerate(zip(aliases, args)):  # Run through the arguments
             # If the current gradient is to be discarded immediatly...
             if not ctx.needs_input_grad[var_ind + TilingGenredAutograd.NUM_NON_GRAD_ARGS]:  # because of (formula, aliases, backend, dtype, device_id, ranges, accuracy_flags, out)
                 grads.append(None)  # Don't waste time computing it.
@@ -400,3 +402,17 @@ class TilingGenred():
             out = postprocess_half2(out, tag_dummy, self.reduction_op, N)
 
         return postprocess(out, "torch", self.reduction_op, nout, self.opt_arg, self.dtype)
+
+
+def check_all_contig(*args):
+    for a in args:
+        if not a.is_contiguous():
+            return False
+    return True
+
+
+def ensure_all_contig(*args):
+    for a in args:
+        if not a.is_contiguous():
+            a = a.contiguous()
+        yield a

@@ -6,6 +6,8 @@ __all__ = (
     "square_norm_diff",
 )
 
+# TODO: This function should ideally be implemented as an autograd.Function in Cpp.
+
 
 # noinspection PyMethodOverriding
 class SquareNormFunction(torch.autograd.Function):

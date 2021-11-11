@@ -102,6 +102,7 @@ def _dev_from_id(device_id: int) -> torch.device:
         return torch.device('cpu')
     return torch.device('cuda:%d' % device_id)
 
+
 def create_output_mat(out: Optional[torch.Tensor],
                       data_devs: Sequence[torch.device],
                       is_sparse: bool,

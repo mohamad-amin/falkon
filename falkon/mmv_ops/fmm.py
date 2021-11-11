@@ -24,6 +24,7 @@ class ArgsFmm():
     kernel: 'falkon.kernels.Kernel'
     gpu_dtype: torch.dtype
     max_mem: float
+    differentiable: bool
     num_streams: int = 1
 
 
@@ -31,6 +32,7 @@ def mm_run_starter(proc_idx, queue, device_id):
     a: ArgsFmm = queue.get()
     X1, X2, out = a.X1, a.X2, a.out
     kernel, computation_dtype = a.kernel, a.gpu_dtype
+    differentiable = a.differentiable
     max_mem = a.max_mem
     # `dev` decides where computations are run (cuda or cpu)
     if device_id < 0:
@@ -45,7 +47,18 @@ def mm_run_starter(proc_idx, queue, device_id):
     avail_mem = max_mem / sizeof_dtype(computation_dtype)
     extra_mem = kernel.extra_mem()
 
-    if is_sparse:
+    if differentiable:
+        diff_coef_nm = 10
+        assert not is_sparse, "Sparse + differentiable mmvs are not supported"
+        n, m = select_dim_over_nm(max_n=X1.shape[0], max_m=X2.shape[0], d=X1.shape[1],
+                                  coef_nd=extra_mem.get('nd', 0) + 1,
+                                  coef_md=extra_mem.get('md', 0) + 1,
+                                  coef_nm=(extra_mem.get('nm', 0) + 1) * diff_coef_nm,
+                                  coef_n=extra_mem.get('n', 0),
+                                  coef_m=extra_mem.get('m', 0),
+                                  rest=extra_mem.get('d', 0),
+                                  max_mem=avail_mem)
+    elif is_sparse:
         if is_ooc or change_dtype:
             # coef_nm = 3 because: assume density of output == 1, then 2*nm are necessary for the
             # output stored as CSR, + 1 for the dense output.
@@ -92,7 +105,9 @@ def mm_run_starter(proc_idx, queue, device_id):
                                       max_mem=avail_mem)
 
     # Run
-    if is_sparse:
+    if differentiable:
+        mm_diff_run_thread(X1, X2, out, kernel, n, m, computation_dtype, dev)
+    elif is_sparse:
         sparse_mm_run_thread(X1, X2, out, kernel, n, m, computation_dtype, dev)
     else:
         mm_run_thread(X1, X2, out, kernel, n, m, computation_dtype, dev)
@@ -149,13 +164,15 @@ def sparse_mm_run_thread(m1: SparseTensor, m2: SparseTensor, out: torch.Tensor,
                     c_dev_out = out[i: i + leni, j: j + lenj]
                 c_dev_out.fill_(0.0)
 
+                c_dev_out = kernel.compute_sparse(c_m1, c_m2, c_dev_out)
                 ddd = kernel._prepare_sparse(c_m1, c_m2)
                 c_dev_out = kernel._apply_sparse(c_dev_m1, c_dev_m2, c_dev_out)
                 c_dev_out = kernel._finalize(c_dev_out, ddd)
 
                 # Copy back to host
                 if has_gpu_bufs:
-                    copy(c_dev_out, out[i: i + leni, j: j + lenj], s=stream, allow_dtype_change=True)
+                    copy(c_dev_out, out[i: i + leni, j: j + lenj], s=stream,
+                         allow_dtype_change=True)
 
 
 def mm_run_thread(m1: torch.Tensor, m2: torch.Tensor, out: torch.Tensor,
@@ -190,7 +207,8 @@ def mm_run_thread(m1: torch.Tensor, m2: torch.Tensor, out: torch.Tensor,
             leni = min(n, N - i)
 
             if has_gpu_bufs:
-                c_dev_m1 = copy(m1[i: i + leni, :], dev_m1[:leni, :], s=stream, allow_dtype_change=True)
+                c_dev_m1 = copy(m1[i: i + leni, :], dev_m1[:leni, :], s=stream,
+                                allow_dtype_change=True)
             else:
                 c_dev_m1 = m1[i: i + leni, :]
 
@@ -198,7 +216,8 @@ def mm_run_thread(m1: torch.Tensor, m2: torch.Tensor, out: torch.Tensor,
                 lenj = min(m, M - j)
 
                 if has_gpu_bufs:
-                    c_dev_m2 = copy(m2[j: j + lenj, :], dev_m2[:lenj, :], s=stream, allow_dtype_change=True)
+                    c_dev_m2 = copy(m2[j: j + lenj, :], dev_m2[:lenj, :], s=stream,
+                                    allow_dtype_change=True)
                     c_dev_out = dev_nm[:leni, :lenj]
                 else:
                     c_dev_m2 = m2[j: j + lenj, :]
@@ -210,13 +229,40 @@ def mm_run_thread(m1: torch.Tensor, m2: torch.Tensor, out: torch.Tensor,
 
                 # Copy back to host
                 if has_gpu_bufs:
-                    copy(c_dev_out, out[i: i + leni, j: j + lenj], s=stream, allow_dtype_change=True)
+                    copy(c_dev_out, out[i: i + leni, j: j + lenj], s=stream,
+                         allow_dtype_change=True)
+
+
+def mm_diff_run_thread(m1: torch.Tensor, m2: torch.Tensor, out: torch.Tensor,
+                       kernel, n: int, m: int, comp_dt: torch.dtype, dev: torch.device):
+    N, D = m1.shape
+    M = m2.shape[0]
+
+    """ Run splitting along N, M """
+    with ExitStack() as stack:
+        if dev.type == 'cuda':
+            stack.enter_context(tcd.device(dev))
+            stream = tcd.current_stream(dev)
+            stack.enter_context(tcd.stream(stream))
+
+        for i in range(0, N, n):
+            leni = min(n, N - i)
+            c_dev_m1 = m1[i: i + leni, :].to(device=dev, dtype=comp_dt, non_blocking=True,
+                                             copy=False)
+            for j in range(0, M, m):
+                lenj = min(m, M - j)
+                c_dev_m2 = m2[j: j + lenj, :].to(device=dev, dtype=comp_dt, non_blocking=True,
+                                                 copy=False)
+                c_dev_out = kernel.compute_diff(c_dev_m1, c_dev_m2)
+                out[i: i + leni, j: j + lenj] = c_dev_out.to(
+                    device=out.device, dtype=out.dtype, non_blocking=True, copy=False)
 
 
 def fmm(X1: Union[torch.Tensor, SparseTensor],
         X2: Union[torch.Tensor, SparseTensor],
         kernel: 'falkon.kernels.Kernel',
         out: Optional[torch.Tensor] = None,
+        differentiable: bool = False,
         opt: Optional[BaseOptions] = None) -> torch.Tensor:
     """
     performs fnc(X1*X2', X1, X2) in blocks on multiple GPUs
@@ -245,7 +291,7 @@ def fmm(X1: Union[torch.Tensor, SparseTensor],
 
     if comp_dev_type == 'cpu' and data_dev.type == 'cpu':
         args = ArgsFmm(X1=X1, X2=X2, out=out, kernel=kernel, gpu_dtype=comp_dtype,
-                       max_mem=opt.max_cpu_mem, num_streams=1)
+                       max_mem=opt.max_cpu_mem, num_streams=1, differentiable=differentiable)
         _call_direct(mm_run_starter, (args, -1))
     elif comp_dev_type == 'cuda' and data_dev.type == 'cuda':
         if is_sparse:
@@ -254,7 +300,8 @@ def fmm(X1: Union[torch.Tensor, SparseTensor],
         gpu_info = _get_gpu_info(opt, slack=0.9)
         single_gpu_info = [g for g in gpu_info if g.Id == data_dev.index][0]
         args = ArgsFmm(X1=X1, X2=X2, out=out, kernel=kernel, gpu_dtype=comp_dtype,
-                       max_mem=single_gpu_info.usable_memory, num_streams=opt.num_fmm_streams)
+                       max_mem=single_gpu_info.usable_memory, num_streams=opt.num_fmm_streams,
+                       differentiable=differentiable)
         _call_direct(mm_run_starter, (args, data_dev.index))
     elif comp_dev_type == 'cuda' and data_dev.type == 'cpu':
         gpu_info = _get_gpu_info(opt, slack=0.9)
@@ -270,7 +317,8 @@ def fmm(X1: Union[torch.Tensor, SparseTensor],
                 X1_block = X1.narrow(0, block_sizes[i], bwidth)
             args.append((ArgsFmm(X1=X1_block, X2=X2, out=out.narrow(0, block_sizes[i], bwidth),
                                  kernel=kernel, gpu_dtype=comp_dtype, max_mem=g.usable_memory,
-                                 num_streams=opt.num_fmm_streams), g.Id))
+                                 num_streams=opt.num_fmm_streams, differentiable=differentiable),
+                         g.Id))
         _start_wait_processes(mm_run_starter, args)
     else:
         raise RuntimeError("Requested CPU computations with CUDA data. This should not happen.")

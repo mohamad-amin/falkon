@@ -167,7 +167,8 @@ class Kernel(ABC):
         if opt is not None:
             params = dataclasses.replace(self.params, **dataclasses.asdict(opt))
         mm_impl = self._decide_mm_impl(X1, X2, params)
-        return mm_impl(X1, X2, self, out, params)
+        diff = any([t.requires_grad for t in [X1, X2] + list(self.kernel_tensor_params.values())])
+        return mm_impl(X1, X2, self, out, diff, params)
 
     def _decide_mm_impl(self, X1, X2, opt: FalkonOptions):
         """Choose which `mm` function to use for this data.
@@ -247,7 +248,7 @@ class Kernel(ABC):
         sparsity = check_sparse(X1, X2)
         diff = False
         if not any(sparsity):
-            diff = any([t.requires_grad for t in (X1, X2, v)])
+            diff = any([t.requires_grad for t in [X1, X2, v] + list(self.kernel_tensor_params.values())])
         return mmv_impl(X1, X2, v, self, out, diff, params)
 
     def _decide_mmv_impl(self, X1, X2, v, opt: FalkonOptions):
@@ -335,7 +336,11 @@ class Kernel(ABC):
         if opt is not None:
             params = dataclasses.replace(self.params, **dataclasses.asdict(opt))
         dmmv_impl = self._decide_dmmv_impl(X1, X2, v, w, params)
-        return dmmv_impl(X1, X2, v, w, self, out, params)
+        sparsity = check_sparse(X1, X2)
+        diff = False
+        if not any(sparsity):
+            diff = any([t.requires_grad for t in [X1, X2, v, w] + list(self.kernel_tensor_params.values()) if t is not None])
+        return dmmv_impl(X1, X2, v, w, self, out, diff, params)
 
     def _decide_dmmv_impl(self, X1, X2, v, w, opt: FalkonOptions):
         """Choose which `dmmv` function to use for this data.
@@ -372,123 +377,123 @@ class Kernel(ABC):
             raise ValueError("Either all or none of 'X1', 'X2' must be sparse.")
         return fdmmv
 
-    @abstractmethod
-    def _prepare(self, X1, X2) -> Any:
-        """Pre-processing operations necessary to compute the kernel.
-
-        This function will be called with two blocks of data which may be subsampled on the
-        first dimension (i.e. X1 may be of size `n x D` where `n << N`). The function should
-        not modify `X1` and `X2`. If necessary, it may return some data which is then made available
-        to the :meth:`_finalize` method.
-
-        For example, in the Gaussian kernel, this method is used to compute the squared norms
-        of the datasets.
-
-        Parameters
-        ----------
-        X1 : torch.Tensor
-            (n x D) tensor. It is a block of the `X1` input matrix, possibly subsampled in the
-            first dimension.
-        X2 : torch.Tensor
-            (m x D) tensor. It is a block of the `X2` input matrix, possibly subsampled in the
-            first dimension.
-
-        Returns
-        -------
-        Data which may be used for the :meth:`_finalize` method. If no such information is
-        necessary, returns None.
-        """
-        pass
-
-    @abstractmethod
-    def _apply(self, X1, X2, out) -> None:
-        """Main kernel operation, usually matrix multiplication.
-
-        This function will be called with two blocks of data which may be subsampled on the
-        first and second dimension (i.e. X1 may be of size `n x d` where `n << N` and `d << D`).
-        The output shall be stored in the `out` argument, and not be returned.
-
-        Parameters
-        ----------
-        X1 : torch.Tensor
-            (n x d) tensor. It is a block of the `X1` input matrix, possibly subsampled in the
-            first dimension.
-        X2 : torch.Tensor
-            (m x d) tensor. It is a block of the `X2` input matrix, possibly subsampled in the
-            first dimension.
-        out : torch.Tensor
-            (n x m) tensor. A tensor in which the output of the operation shall be accumulated.
-            This tensor is initialized to 0 before calling `_apply`, but in case of subsampling
-            of the data along the second dimension, multiple calls will be needed to compute a
-            single (n x m) output block. In such case, the first call to this method will have
-            a zeroed tensor, while subsequent calls will simply reuse the same object.
-        """
-        pass
-
-    @abstractmethod
-    def _finalize(self, A, d):
-        """Final actions to be performed on a partial kernel matrix.
-
-        All elementwise operations on the kernel matrix should be performed in this method.
-        Operations should be performed inplace by modifying the matrix `A`, to improve memory
-        efficiency. If operations are not in-place, out-of-memory errors are possible when
-        using the GPU.
-
-        Parameters
-        ----------
-        A : torch.Tensor
-            A (m x n) tile of the kernel matrix, as obtained by the :meth:`_apply` method.
-        d
-            Additional data, as computed by the :meth:`_prepare` method.
-
-        Returns
-        -------
-        A
-            The same tensor as the input, if operations are performed in-place. Otherwise
-            another tensor of the same shape.
-        """
-        pass
-
-    @abstractmethod
-    def _prepare_sparse(self, X1, X2):
-        """Data preprocessing for sparse tensors.
-
-        This is an equivalent to the :meth:`_prepare` method for sparse tensors.
-
-        Parameters
-        ----------
-        X1 : falkon.sparse.sparse_tensor.SparseTensor
-            Sparse tensor of shape (n x D), with possibly n << N.
-        X2 : falkon.sparse.sparse_tensor.SparseTensor
-            Sparse tensor of shape (m x D), with possibly m << M.
-
-        Returns
-        -------
-        Data derived from `X1` and `X2` which is needed by the :meth:`_finalize` method when
-        finishing to compute a kernel tile.
-        """
-        raise NotImplementedError("_prepare_sparse not implemented for kernel %s" %
-                                  (self.kernel_type))
-
-    @abstractmethod
-    def _apply_sparse(self, X1, X2, out):
-        """Main kernel computation for sparse tensors.
-
-        Unlike the :meth`_apply` method, the `X1` and `X2` tensors are only subsampled along
-        the first dimension. Take note that the `out` tensor **is not sparse**.
-
-        Parameters
-        ----------
-        X1 : falkon.sparse.sparse_tensor.SparseTensor
-            Sparse tensor of shape (n x D), with possibly n << N.
-        X2 : falkon.sparse.sparse_tensor.SparseTensor
-            Sparse tensor of shape (m x D), with possibly m << M.
-        out : torch.Tensor
-            Tensor of shape (n x m) which should hold a tile of the kernel. The output of this
-            function (typically a matrix multiplication) should be placed in this tensor.
-        """
-        raise NotImplementedError("_apply_sparse not implemented for kernel %s" %
-                                  (self.kernel_type))
+    # @abstractmethod
+    # def _prepare(self, X1, X2) -> Any:
+    #     """Pre-processing operations necessary to compute the kernel.
+    #
+    #     This function will be called with two blocks of data which may be subsampled on the
+    #     first dimension (i.e. X1 may be of size `n x D` where `n << N`). The function should
+    #     not modify `X1` and `X2`. If necessary, it may return some data which is then made available
+    #     to the :meth:`_finalize` method.
+    #
+    #     For example, in the Gaussian kernel, this method is used to compute the squared norms
+    #     of the datasets.
+    #
+    #     Parameters
+    #     ----------
+    #     X1 : torch.Tensor
+    #         (n x D) tensor. It is a block of the `X1` input matrix, possibly subsampled in the
+    #         first dimension.
+    #     X2 : torch.Tensor
+    #         (m x D) tensor. It is a block of the `X2` input matrix, possibly subsampled in the
+    #         first dimension.
+    #
+    #     Returns
+    #     -------
+    #     Data which may be used for the :meth:`_finalize` method. If no such information is
+    #     necessary, returns None.
+    #     """
+    #     pass
+    #
+    # @abstractmethod
+    # def _apply(self, X1, X2, out) -> None:
+    #     """Main kernel operation, usually matrix multiplication.
+    #
+    #     This function will be called with two blocks of data which may be subsampled on the
+    #     first and second dimension (i.e. X1 may be of size `n x d` where `n << N` and `d << D`).
+    #     The output shall be stored in the `out` argument, and not be returned.
+    #
+    #     Parameters
+    #     ----------
+    #     X1 : torch.Tensor
+    #         (n x d) tensor. It is a block of the `X1` input matrix, possibly subsampled in the
+    #         first dimension.
+    #     X2 : torch.Tensor
+    #         (m x d) tensor. It is a block of the `X2` input matrix, possibly subsampled in the
+    #         first dimension.
+    #     out : torch.Tensor
+    #         (n x m) tensor. A tensor in which the output of the operation shall be accumulated.
+    #         This tensor is initialized to 0 before calling `_apply`, but in case of subsampling
+    #         of the data along the second dimension, multiple calls will be needed to compute a
+    #         single (n x m) output block. In such case, the first call to this method will have
+    #         a zeroed tensor, while subsequent calls will simply reuse the same object.
+    #     """
+    #     pass
+    #
+    # @abstractmethod
+    # def _finalize(self, A, d):
+    #     """Final actions to be performed on a partial kernel matrix.
+    #
+    #     All elementwise operations on the kernel matrix should be performed in this method.
+    #     Operations should be performed inplace by modifying the matrix `A`, to improve memory
+    #     efficiency. If operations are not in-place, out-of-memory errors are possible when
+    #     using the GPU.
+    #
+    #     Parameters
+    #     ----------
+    #     A : torch.Tensor
+    #         A (m x n) tile of the kernel matrix, as obtained by the :meth:`_apply` method.
+    #     d
+    #         Additional data, as computed by the :meth:`_prepare` method.
+    #
+    #     Returns
+    #     -------
+    #     A
+    #         The same tensor as the input, if operations are performed in-place. Otherwise
+    #         another tensor of the same shape.
+    #     """
+    #     pass
+    #
+    # @abstractmethod
+    # def _prepare_sparse(self, X1, X2):
+    #     """Data preprocessing for sparse tensors.
+    #
+    #     This is an equivalent to the :meth:`_prepare` method for sparse tensors.
+    #
+    #     Parameters
+    #     ----------
+    #     X1 : falkon.sparse.sparse_tensor.SparseTensor
+    #         Sparse tensor of shape (n x D), with possibly n << N.
+    #     X2 : falkon.sparse.sparse_tensor.SparseTensor
+    #         Sparse tensor of shape (m x D), with possibly m << M.
+    #
+    #     Returns
+    #     -------
+    #     Data derived from `X1` and `X2` which is needed by the :meth:`_finalize` method when
+    #     finishing to compute a kernel tile.
+    #     """
+    #     raise NotImplementedError("_prepare_sparse not implemented for kernel %s" %
+    #                               (self.kernel_type))
+    #
+    # @abstractmethod
+    # def _apply_sparse(self, X1, X2, out):
+    #     """Main kernel computation for sparse tensors.
+    #
+    #     Unlike the :meth`_apply` method, the `X1` and `X2` tensors are only subsampled along
+    #     the first dimension. Take note that the `out` tensor **is not sparse**.
+    #
+    #     Parameters
+    #     ----------
+    #     X1 : falkon.sparse.sparse_tensor.SparseTensor
+    #         Sparse tensor of shape (n x D), with possibly n << N.
+    #     X2 : falkon.sparse.sparse_tensor.SparseTensor
+    #         Sparse tensor of shape (m x D), with possibly m << M.
+    #     out : torch.Tensor
+    #         Tensor of shape (n x m) which should hold a tile of the kernel. The output of this
+    #         function (typically a matrix multiplication) should be placed in this tensor.
+    #     """
+    #     raise NotImplementedError("_apply_sparse not implemented for kernel %s" %
+    #                               (self.kernel_type))
 
     @abstractmethod
     def compute(self, X1, X2, out):

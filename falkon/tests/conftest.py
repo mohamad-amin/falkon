@@ -89,6 +89,14 @@ def fix_mat(t, dtype, order, device="cpu", copy=False, numpy=False):
     return t
 
 
+def fix_mats(*mats, order, device, dtype):
+    order = make_tuple(order, len(mats))
+    device = make_tuple(device, len(mats))
+    dtype = make_tuple(dtype, len(mats))
+    for i, m in enumerate(mats):
+        yield fix_mat(m, order=order[i], device=device[i], dtype=dtype[i])
+
+
 def fix_sparse_mat(t, dtype, device="cpu"):
     out = t.to(dtype=numpy_to_torch_type(dtype), device=device)
     return out
@@ -108,3 +116,9 @@ def fix_mat_dt(t, dtype=None, numpy=False):
         if not numpy:
             out = torch.from_numpy(out)
     return out
+
+
+def make_tuple(val, length):
+    if isinstance(val, tuple) or isinstance(val, list):
+        assert len(val) == length, "Input to `make_tuple` is already a list of the incorrect length."
+    return tuple([val] * length)

@@ -10,13 +10,14 @@ __all__ = ("naive_gaussian_kernel", "naive_sigmoid_kernel", "naive_laplacian_ker
 
 
 def naive_diff_gaussian_kernel(X1, X2, sigma):
-    pairwise_dists = torch.cdist(X1, X2, p=2).square()
-    return torch.exp(-pairwise_dists / (2 * sigma ** 2))
+    pairwise_dists = torch.cdist(X1 / sigma, X2 / sigma, p=2).square()
+    return torch.exp(-0.5 * pairwise_dists)
 
 
 def naive_diff_laplacian_kernel(X1, X2, sigma):
-    pairwise_dists = torch.cdist(X1, X2, p=2)
-    return torch.exp(-pairwise_dists / (2 * sigma ** 2))
+    # http://crsouza.com/2010/03/17/kernel-functions-for-machine-learning-applications/#laplacian
+    pairwise_dists = torch.cdist(X1 / sigma, X2 / sigma, p=2)
+    return torch.exp(-pairwise_dists)
 
 
 def naive_diff_linear_kernel(X1, X2, beta, sigma):
