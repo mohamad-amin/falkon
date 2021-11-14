@@ -100,9 +100,8 @@ class FalkonBase(base.BaseEstimator, ABC):
             err_name = "error"
             if isinstance(err, tuple) and len(err) == 2:
                 err, err_name = err
-            mse = torch.mean(pred.sub_(Y).square_())
             print(f"Iteration {it:3d} - Elapsed {self.fit_times_[-1]:.2f}s - "
-                  f"{err_str} {err_name}: {err:.8f} - mse: {mse:.4e}", flush=True)
+                  f"{err_str} {err_name}: {err:.8f}", flush=True)
 
         return val_cback
 
