@@ -63,7 +63,7 @@ def nrmse(y_true, y_pred, **kwargs):
     y_pred = y_pred * Y_std + Y_mean
 
     pred_rmse = rmse(y_true, y_pred, **kwargs)[0]
-    pred_nrmse = pred_rmse / Y_mean
+    pred_nrmse = np.abs(pred_rmse / Y_mean)
     return pred_nrmse, "NRMSE"
 
 
@@ -257,9 +257,9 @@ ERROR_METRICS: Dict[Dataset, List[ERROR_FN_TYPE]] = {
     Dataset.COVTYPE: [binary_cerr],
     Dataset.IJCNN1: [binary_cerr],
     Dataset.FASHION_MNIST: [mnist_calc_cerr],
-    Dataset.BUZZ: [rmse],
-    Dataset.ROAD3D: [rmse],
-    Dataset.HOUSEELECTRIC: [rmse],
+    Dataset.BUZZ: [nrmse],
+    Dataset.ROAD3D: [nrmse],
+    Dataset.HOUSEELECTRIC: [nrmse],
 }
 TF_ERROR_METRICS: Dict[Dataset, ERROR_FN_TYPE] = {
     Dataset.TIMIT: timit_calc_error_tf,
