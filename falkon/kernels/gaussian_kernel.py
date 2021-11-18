@@ -248,6 +248,11 @@ class DistanceKernel(Kernel, KeopsKernelMixin, abc.ABC):
             new_kernel_params[k] = v.to(device=to_mat.device, dtype=to_mat.dtype)
         return new_kernel_params
 
+    def _detach_params(self):
+        detached_tensor_params = {k: v.detach() for k, v in self.kernel_tensor_params}
+        detached_tensor_params.update(**self.kernel_other_params)
+        return detached_tensor_params
+
     def mmv_diff(self, X1, X2, vec):
         dev_kernel_tensor_params = self._move_kernel_params(X1)
         out = torch.empty((X1.shape[0], X2.shape[0]), dtype=X1.dtype, device=X1.device)
@@ -335,7 +340,6 @@ class GaussianKernel(DistanceKernel):
 
     def __init__(self, sigma: Union[float, torch.Tensor], opt: Optional[FalkonOptions] = None):
         self.sigma = validate_sigma(sigma)
-        self.gamma = -0.5 / (self.sigma ** 2)  # TODO: Unused
 
         super().__init__(self.kernel_name, opt, core_fn=GaussianKernel.core_fn,
                          mmv_class=GaussianKernelMmvFn, sigma=self.sigma)
@@ -361,6 +365,10 @@ class GaussianKernel(DistanceKernel):
             'm': 1,
             'n': 1,
         }
+
+    def detach(self) -> 'GaussianKernel':
+        detached_params = self._detach_params()
+        return GaussianKernel(detached_params["sigma"], opt=self.params)
 
     def __repr__(self):
         return f"GaussianKernel(sigma={self.sigma})"
@@ -419,6 +427,10 @@ class LaplacianKernel(DistanceKernel):
             'm': 1,
             'n': 1,
         }
+
+    def detach(self) -> 'LaplacianKernel':
+        detached_params = self._detach_params()
+        return LaplacianKernel(detached_params["sigma"], opt=self.params)
 
     def __repr__(self):
         return f"LaplacianKernel(sigma={self.sigma})"
@@ -504,6 +516,10 @@ class MaternKernel(DistanceKernel):
             # Extra kernel block in transform
             extra_mem['nm'] = 1
         return extra_mem
+
+    def detach(self) -> 'MaternKernel':
+        detached_params = self._detach_params()
+        return MaternKernel(detached_params["sigma"], detached_params["nu"], opt=self.params)
 
     @staticmethod
     def validate_nu(nu: Union[torch.Tensor, float]) -> float:
