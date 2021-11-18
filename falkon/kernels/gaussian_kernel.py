@@ -249,7 +249,7 @@ class DistanceKernel(Kernel, KeopsKernelMixin, abc.ABC):
         return new_kernel_params
 
     def _detach_params(self):
-        detached_tensor_params = {k: v.detach() for k, v in self.kernel_tensor_params}
+        detached_tensor_params = {k: v.detach() for k, v in self.kernel_tensor_params.items()}
         detached_tensor_params.update(**self.kernel_other_params)
         return detached_tensor_params
 

@@ -60,7 +60,10 @@ def _single_gpu_method(proc_idx, queue, device_id):
             cout = out[ni: ni + nl, :]
 
             variables = [cX1, cX2, cv] + other_vars
-            fn(cout, *variables)
+            fn(nl,    # nx
+               ml,    # ny
+               cout,  # out
+               *variables)
         torch.cuda.synchronize(device_id)
         if ml != M and mi > 0:
             oout.add_(out)
@@ -69,6 +72,7 @@ def _single_gpu_method(proc_idx, queue, device_id):
 
 
 def load_keops_fn(formula, aliases, backend, dtype, optional_flags, rec_multVar_highdim, out, *args):
+    optional_flags += ["-DTILING_GENRED=1"]
     if rec_multVar_highdim is not None:
         optional_flags += ['-DMULT_VAR_HIGHDIM=1']
     fn = LoadKeOps(formula, aliases, dtype, 'torch', optional_flags, include_dirs).import_module()
@@ -130,8 +134,6 @@ def run_mmv_formula(formula: str,
                          tags.tagHostDevice,
                          gpu_info[i].Id,
                          ranges,
-                         nx,
-                         ny,
                          )
             subproc_args.append((ArgsFmmv(
                 X1=X1.narrow(0, block_sizes[i], bwidth),

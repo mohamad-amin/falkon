@@ -402,14 +402,18 @@ class KernelMmFnFull(torch.autograd.Function):
         if sizeof_dtype(comp_dtype) < 8 and opt.no_single_kernel:
             comp_dtype = torch.float64
 
-        if comp_dev_type == 'cpu' and data_dev.type == 'cpu':
-            out = KernelMmFnFull.run_cpu_cpu(X1, X2, out, kernel, comp_dtype, opt, False)
-        elif comp_dev_type == 'cuda' and data_dev.type == 'cuda':
-            out = KernelMmFnFull.run_gpu_gpu(X1, X2, out, kernel, comp_dtype, opt, False)
-        elif comp_dev_type == 'cuda' and data_dev.type == 'cpu':
-            out = KernelMmFnFull.run_cpu_gpu(X1, X2, out, kernel, comp_dtype, opt, False)
-        else:
-            raise RuntimeError("Requested CPU computations with CUDA data. This should not happen.")
+        with torch.inference_mode():
+            X1d = X1.detach()
+            X2d = X2.detach()
+            kerneld = kernel.detach()
+            if comp_dev_type == 'cpu' and data_dev.type == 'cpu':
+                out = KernelMmFnFull.run_cpu_cpu(X1d, X2d, out, kerneld, comp_dtype, opt, False)
+            elif comp_dev_type == 'cuda' and data_dev.type == 'cuda':
+                out = KernelMmFnFull.run_gpu_gpu(X1d, X2d, out, kerneld, comp_dtype, opt, False)
+            elif comp_dev_type == 'cuda' and data_dev.type == 'cpu':
+                out = KernelMmFnFull.run_cpu_gpu(X1d, X2d, out, kerneld, comp_dtype, opt, False)
+            else:
+                raise RuntimeError("Requested CPU computations with CUDA data. This should not happen.")
         if not differentiable:
             ctx.mark_non_differentiable(out)
         else:

@@ -11,6 +11,7 @@ from falkon.tests.gen_random import gen_random
 from falkon.tests.naive_kernels import *
 from falkon.utils import decide_cuda
 from falkon.utils.switches import decide_keops
+from falkon.utils.helpers import sizeof_dtype
 
 cuda_mark = pytest.mark.skipif(not decide_cuda(), reason="No GPU found.")
 keops_mark = pytest.mark.skipif(not decide_keops(), reason="no KeOps found.")
@@ -25,7 +26,7 @@ m = 25
 d = 3
 t = 2
 
-max_mem = 1 * 2**10
+max_mem = 2 * 2**20
 basic_options = FalkonOptions(debug=True, compute_arch_speed=False,
                               max_cpu_mem=max_mem, max_gpu_mem=max_mem)
 
@@ -103,8 +104,12 @@ def run_dense_test(k_cls, naive_fn, m1, m2, v, w, rtol, atol, opt,
     mm_out_wgrad = torch.empty(m1.shape[0], m2.shape[0], dtype=m1.dtype, device=m1.device)
     with memory_checker(opt) as new_opt:
         actual = kernel(m1, m2, out=mm_out, opt=new_opt)
+    with memory_checker(opt, extra_mem=m1.shape[0] * m2.shape[0] * sizeof_dtype(m1.dtype)) as new_opt:
         actual_noout = kernel(m1, m2, opt=new_opt)
+    with memory_checker(opt) as new_opt:
         actual_wgrad = kernel_wgrad(m1_wgrad, m2_wgrad, out=mm_out_wgrad, opt=new_opt)
+    #grad = torch.autograd.grad(actual_wgrad.sum(), [m2_wgrad, m1_wgrad, kernel_params_wgrad['sigma']])
+
     assert mm_out.data_ptr() == actual.data_ptr(), "MM Output data tensor was not used"
     assert mm_out_wgrad.data_ptr() == actual_wgrad.data_ptr(), "MM Output data tensor was not used"
     torch.testing.assert_allclose(actual_wgrad, actual, rtol=rtol, atol=atol, msg="MM Wgrad and normal return different stuff")
@@ -123,7 +128,9 @@ def run_dense_test(k_cls, naive_fn, m1, m2, v, w, rtol, atol, opt,
     mmv_out_wgrad = torch.empty(m1.shape[0], v.shape[1], dtype=m1.dtype, device=m1.device)
     with memory_checker(opt) as new_opt:
         actual = kernel.mmv(m1, m2, v, out=mmv_out, opt=new_opt)
+    with memory_checker(opt, extra_mem=m1.shape[0] * v.shape[1] * sizeof_dtype(m1.dtype)) as new_opt:
         actual_noout = kernel.mmv(m1, m2, v, opt=new_opt)
+    with memory_checker(opt) as new_opt:
         actual_wgrad = kernel_wgrad.mmv(m1_wgrad, m2_wgrad, v_wgrad, out=mmv_out_wgrad, opt=new_opt)
     assert mmv_out.data_ptr() == actual.data_ptr(), "MMV Output data tensor was not used"
     assert mmv_out_wgrad.data_ptr() == actual_wgrad.data_ptr(), "MMV Output data tensor was not used"
@@ -143,7 +150,9 @@ def run_dense_test(k_cls, naive_fn, m1, m2, v, w, rtol, atol, opt,
     dmmv_out = torch.empty(m2.shape[0], v.shape[1], dtype=m1.dtype, device=m1.device)
     with memory_checker(opt) as new_opt:
         actual = kernel.dmmv(m1, m2, v, w, out=dmmv_out, opt=new_opt)
+    with memory_checker(opt, extra_mem=m2.shape[0] * v.shape[1] * sizeof_dtype(m1.dtype)) as new_opt:
         actual_noout = kernel.dmmv(m1, m2, v, w, opt=new_opt)
+    with memory_checker(opt) as new_opt:
         try:
             actual_wgrad = kernel_wgrad.dmmv(m1_wgrad, m2_wgrad, v_wgrad, w_wgrad, opt=new_opt)
         except NotImplementedError as e:
@@ -182,7 +191,8 @@ class TestLaplacianKernel():
         A, B, v, w, sigma = fix_mats(A, B, v, w, sigma, order=order, device=input_dev, dtype=np.float64)
         opt = dataclasses.replace(basic_options, use_cpu=comp_dev == "cpu", keops_active="no")
         run_dense_test(TestLaplacianKernel.k_class, TestLaplacianKernel.naive_fn, m1=A, m2=B,
-                       v=v, w=w, rtol=rtol[A.dtype], atol=atol[A.dtype], opt=opt, sigma=sigma)
+                       v=v, w=w, rtol=rtol[A.dtype], atol=atol[A.dtype], opt=opt, sigma=sigma,
+                       grad_check=False)
 
     @keops_mark
     def test_keops_kernel(self, A, B, v, w, sigma, rtol, atol, input_dev, comp_dev):
@@ -270,7 +280,7 @@ class TestMaternKernel():
 class TestLargeComputations():
     naive_fn = naive_diff_gaussian_kernel
     k_class = GaussianKernel
-    n = 500
+    n = 1500
     m = 250
     d = 3
     t = 2
@@ -305,10 +315,11 @@ class TestLargeComputations():
 
     @keops_mark
     def test_keops_kernel(self, A, B, v, w, sigma, rtol, atol, input_dev, comp_dev):
-        A, B, v, w, sigma = fix_mats(A, B, v, w, sigma, order="F", device=input_dev, dtype=np.float32)
+        A, B, v, w, sigma = fix_mats(A, B, v, w, sigma, order="C", device=input_dev, dtype=np.float32)
         opt = dataclasses.replace(basic_options, use_cpu=comp_dev == "cpu", keops_active="force")
         run_dense_test(TestGaussianKernel.k_class, TestGaussianKernel.naive_fn, m1=A, m2=B, v=v,
-                       w=w, rtol=rtol[A.dtype], atol=atol[A.dtype], opt=opt, sigma=sigma)
+                       w=w, rtol=rtol[A.dtype], atol=atol[A.dtype], opt=opt, sigma=sigma,
+                       grad_check=False)
 
 
 if __name__ == "__main__":
