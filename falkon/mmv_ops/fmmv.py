@@ -5,6 +5,7 @@ from typing import Optional, Union, Tuple, Dict, Sequence
 import numpy as np
 import torch
 import torch.cuda as tcd
+import torch.cuda.comm
 
 import falkon
 from falkon.mmv_ops.utils import *
@@ -270,6 +271,9 @@ def mmv_diff_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Te
     N, D = m1.shape
     M, T = v.shape
 
+    if blk_n == N:
+        blk_n = blk_n - 1
+
     with ExitStack() as stack:
         if dev.type == 'cuda':
             s1, s2 = tcd.current_stream(dev), tcd.Stream(dev)
@@ -289,7 +293,8 @@ def mmv_diff_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Te
                     c_dev_v = v[j: j + lenj, :].to(dev, non_blocking=True, copy=False)
                 if not incore:
                     s2.synchronize()
-                c_dev_out = c_dev_out + kernel.mmv_diff(c_dev_m1, c_dev_m2, c_dev_v)
+                c_dev_out.add_(kernel.mmv_diff(c_dev_m1, c_dev_m2, c_dev_v))
+                #c_dev_out = c_dev_out + kernel.mmv_diff(c_dev_m1, c_dev_m2, c_dev_v)
                 if not incore:
                     s1.synchronize()  # sync necessary to avoid s2 overwriting dev_v/dev_w
             # end iter over M

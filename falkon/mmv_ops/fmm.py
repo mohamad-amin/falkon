@@ -239,6 +239,8 @@ def mm_diff_run_thread(m1: torch.Tensor, m2: torch.Tensor, out: torch.Tensor,
     M = m2.shape[0]
 
     """ Run splitting along N, M """
+    if m == M:  # TODO: This makes no sense, but prevents a AutoGrad error from occuring
+        m = m - 1
     with ExitStack() as stack:
         if dev.type == 'cuda':
             stack.enter_context(tcd.device(dev))
@@ -255,7 +257,7 @@ def mm_diff_run_thread(m1: torch.Tensor, m2: torch.Tensor, out: torch.Tensor,
                                                  copy=False)
                 c_dev_out = kernel.compute_diff(c_dev_m1, c_dev_m2)
                 out[i: i + leni, j: j + lenj] = c_dev_out.to(
-                    device=out.device, dtype=out.dtype, non_blocking=True, copy=False)
+                    device=out.device, dtype=out.dtype, non_blocking=False, copy=False)
 
 
 def fmm(X1: Union[torch.Tensor, SparseTensor],

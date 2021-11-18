@@ -4,10 +4,9 @@ from typing import Union, Optional, Dict
 
 import torch
 
-from falkon.kernels import KeopsKernelMixin
+from falkon.kernels import KeopsKernelMixin, Kernel
 from falkon.la_helpers.square_norm_fn import square_norm_diff
 from falkon.options import FalkonOptions
-from falkon.kernels import Kernel
 
 
 SQRT3 = 1.7320508075688772
