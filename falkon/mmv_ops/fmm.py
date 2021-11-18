@@ -323,3 +323,134 @@ def fmm(X1: Union[torch.Tensor, SparseTensor],
     else:
         raise RuntimeError("Requested CPU computations with CUDA data. This should not happen.")
     return out
+
+
+# noinspection PyMethodOverriding
+class KernelMmFnFull(torch.autograd.Function):
+    @staticmethod
+    def run_cpu_cpu(X1, X2, out, kernel, dtype, options, diff):
+        args = ArgsFmm(X1=X1, X2=X2, out=out, kernel=kernel, gpu_dtype=dtype,
+                       max_mem=options.max_cpu_mem, num_streams=1, differentiable=diff)
+        _call_direct(mm_run_starter, (args, -1))
+        return out
+
+    @staticmethod
+    def run_cpu_gpu(X1, X2, out, kernel, dtype, options, diff):
+        gpu_info = _get_gpu_info(options, slack=0.9)
+        args = []  # Arguments passed to each subprocess
+        block_sizes = calc_gpu_block_sizes(gpu_info, X1.shape[0])
+        for i, g in enumerate(gpu_info):
+            bwidth = block_sizes[i + 1] - block_sizes[i]
+            if bwidth <= 0:
+                continue
+            if isinstance(X1, SparseTensor):
+                X1_block = X1.narrow_rows(block_sizes[i], bwidth)
+            else:
+                X1_block = X1.narrow(0, block_sizes[i], bwidth)
+            args.append((ArgsFmm(X1=X1_block, X2=X2, out=out.narrow(0, block_sizes[i], bwidth),
+                                 kernel=kernel, gpu_dtype=dtype, max_mem=g.usable_memory,
+                                 num_streams=options.num_fmm_streams, differentiable=diff),
+                         g.Id))
+        _start_wait_processes(mm_run_starter, args)
+        return out
+
+    @staticmethod
+    def run_gpu_gpu(X1, X2, out, kernel, dtype, options, diff):
+        if isinstance(X1, SparseTensor):
+            raise NotImplementedError("In-core, sparse fmm not implemented. "
+                                      "Use the out-of-core version instead.")
+        data_dev = X1.device
+        gpu_info = _get_gpu_info(options, slack=0.9)
+        single_gpu_info = [g for g in gpu_info if g.Id == data_dev.index][0]
+        args = ArgsFmm(X1=X1, X2=X2, out=out, kernel=kernel, gpu_dtype=dtype,
+                       max_mem=single_gpu_info.usable_memory, num_streams=options.num_fmm_streams,
+                       differentiable=diff)
+        _call_direct(mm_run_starter, (args, data_dev.index))
+        return out
+
+    @staticmethod
+    def forward(ctx,
+                kernel: 'falkon.kernels.Kernel',
+                opt: Optional[BaseOptions],
+                out: Optional[torch.Tensor],
+                X1: Union[torch.Tensor, SparseTensor],
+                X2: Union[torch.Tensor, SparseTensor],
+                *kernel_params,
+                ):
+        is_sparse = isinstance(X1, SparseTensor)
+        if is_sparse:
+            differentiable = False
+        else:
+            _check_contiguity((X1, 'X1'), (X2, 'X2'), (out, 'out'))
+            differentiable = any([t.requires_grad for t in [X1, X2] + list(*kernel_params)])
+
+        N = X1.shape[0]
+        M = X2.shape[0]
+        data_dev = X1.device
+        comp_dev_type = 'cpu' if opt.use_cpu or not torch.cuda.is_available() else 'cuda'
+        if out is None:
+            if is_sparse:
+                out = create_fortran((N, M), dtype=X1.dtype, device=data_dev,
+                                     pin_memory=data_dev.type != 'cuda' and comp_dev_type == 'cuda')
+            else:
+                out = create_same_stride((N, M), X1, X1.dtype, device=data_dev,
+                                         pin_memory=data_dev.type != 'cuda' and comp_dev_type == 'cuda')
+        # If float32 we need to upcast to float64 to avoid numerical precision errors in the kernel
+        comp_dtype = X1.dtype
+        if sizeof_dtype(comp_dtype) < 8 and opt.no_single_kernel:
+            comp_dtype = torch.float64
+
+        if comp_dev_type == 'cpu' and data_dev.type == 'cpu':
+            out = KernelMmFnFull.run_cpu_cpu(X1, X2, out, kernel, comp_dtype, opt, False)
+        elif comp_dev_type == 'cuda' and data_dev.type == 'cuda':
+            out = KernelMmFnFull.run_gpu_gpu(X1, X2, out, kernel, comp_dtype, opt, False)
+        elif comp_dev_type == 'cuda' and data_dev.type == 'cpu':
+            out = KernelMmFnFull.run_cpu_gpu(X1, X2, out, kernel, comp_dtype, opt, False)
+        else:
+            raise RuntimeError("Requested CPU computations with CUDA data. This should not happen.")
+        if not differentiable:
+            ctx.mark_non_differentiable(out)
+        else:
+            ctx.save_for_backward(X1, X2, *kernel_params)
+            ctx.out = out
+            ctx.kernel = kernel
+            ctx.opt = opt
+            ctx.comp_dtype = comp_dtype
+        return out
+
+    @staticmethod
+    def backward(ctx, outputs):
+        X1, X2, *kernel_params = ctx.saved_tensors
+
+        data_dev = X1.device
+        comp_dev_type = 'cpu' if ctx.opt.use_cpu or not torch.cuda.is_available() else 'cuda'
+
+        # We must rerun MM in differentiable mode this time.
+        with torch.autograd.enable_grad():
+            if comp_dev_type == 'cpu' and data_dev.type == 'cpu':
+                out = KernelMmFnFull.run_cpu_cpu(X1, X2, ctx.out.detach(), ctx.kernel, ctx.comp_dtype, ctx.opt, True)
+            elif comp_dev_type == 'cuda' and data_dev.type == 'cuda':
+                out = KernelMmFnFull.run_gpu_gpu(X1, X2, ctx.out.detach(), ctx.kernel, ctx.comp_dtype, ctx.opt, True)
+            elif comp_dev_type == 'cuda' and data_dev.type == 'cpu':
+                out = KernelMmFnFull.run_cpu_gpu(X1, X2, ctx.out.detach(), ctx.kernel, ctx.comp_dtype, ctx.opt, True)
+            else:
+                raise RuntimeError("Requested CPU computations with CUDA data. This should not happen.")
+            bwd = (out * outputs).sum()
+
+        saved_idx = 0
+        needs_grad = []
+        for i, i_grad in enumerate(ctx.needs_input_grad):
+            if i_grad:
+                needs_grad.append(ctx.saved_tensors[saved_idx])
+                saved_idx += 1
+        grads = torch.autograd.grad(
+            bwd, needs_grad, retain_graph=False, allow_unused=False)
+        grads_idx = 0
+        results = []
+        for i, i_grad in enumerate(ctx.needs_input_grad):
+            if i_grad:
+                results.append(grads[grads_idx])
+                grads_idx += 1
+            else:
+                results.append(None)
+        return tuple(results)

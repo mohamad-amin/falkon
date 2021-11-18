@@ -2,7 +2,7 @@ import dataclasses
 from abc import ABC, abstractmethod
 from typing import Optional, Any, Dict
 
-from falkon.mmv_ops.fmm import fmm
+from falkon.mmv_ops.fmm import fmm, KernelMmFnFull
 from falkon.mmv_ops.fmmv import fmmv, fdmmv
 from falkon.utils.helpers import check_same_dtype, check_sparse, check_same_device
 from falkon.options import FalkonOptions
@@ -167,8 +167,9 @@ class Kernel(ABC):
         if opt is not None:
             params = dataclasses.replace(self.params, **dataclasses.asdict(opt))
         mm_impl = self._decide_mm_impl(X1, X2, params)
-        diff = any([t.requires_grad for t in [X1, X2] + list(self.kernel_tensor_params.values())])
-        return mm_impl(X1, X2, self, out, diff, params)
+        # diff = any([t.requires_grad for t in [X1, X2] + list(self.kernel_tensor_params.values())])
+        return KernelMmFnFull.apply(self, params, out, X1, X2, *self.kernel_tensor_params.values())
+        # return mm_impl(X1, X2, self, out, diff, params)
 
     def _decide_mm_impl(self, X1, X2, opt: FalkonOptions):
         """Choose which `mm` function to use for this data.

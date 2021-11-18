@@ -7,7 +7,7 @@ import torch
 from falkon.kernels import KeopsKernelMixin
 from falkon.la_helpers.square_norm_fn import square_norm_diff
 from falkon.options import FalkonOptions
-from kernels import Kernel
+from falkon.kernels import Kernel
 
 
 SQRT3 = 1.7320508075688772
@@ -53,6 +53,20 @@ def calc_grads(bwd, saved_tensors, needs_input_grad):
     return tuple(results)
 
 
+def _addmm_wrap(mat1, mat2, norm_mat1, norm_mat2, out: Optional[torch.Tensor]) -> torch.Tensor:
+    if mat1.dim() == 3:
+        if out is None:
+            out = torch.baddbmm(norm_mat1, mat1, mat2.transpose(-2, -1), alpha=-2, beta=1)  # b*n*m
+        else:
+            out = torch.baddbmm(norm_mat1, mat1, mat2.transpose(-2, -1), alpha=-2, beta=1, out=out)  # b*n*m
+    else:
+        if out is None:
+            out = torch.addmm(norm_mat1, mat1, mat2.transpose(-2, -1), alpha=-2, beta=1)  # n*m
+        else:
+            out = torch.addmm(norm_mat1, mat1, mat2.transpose(-2, -1), alpha=-2, beta=1, out=out)  # n*m
+    return out
+
+
 # noinspection DuplicatedCode
 def rbf_core(mat1, mat2, out: Optional[torch.Tensor], sigma):
     """
@@ -75,16 +89,7 @@ def rbf_core(mat1, mat2, out: Optional[torch.Tensor], sigma):
     norm_sq_mat1 = square_norm_diff(mat1_div_sig, -1, True)  # b*n*1 or n*1
     norm_sq_mat2 = square_norm_diff(mat2_div_sig, -1, True)  # b*m*1 or m*1
 
-    if mat1.dim() == 3:
-        if out is None:
-            out = torch.baddbmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1)  # b*n*m
-        else:
-            out = torch.baddbmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1, out=out)  # b*n*m
-    else:
-        if out is None:
-            out = torch.addmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1)  # n*m
-        else:
-            out = torch.addmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1, out=out)  # n*m
+    out = _addmm_wrap(mat1_div_sig, mat2_div_sig, norm_sq_mat1, norm_sq_mat2, out)
     out.add_(norm_sq_mat2.transpose(-2, -1))
     out.clamp_min_(1e-20)
     out.mul_(-0.5)
@@ -99,16 +104,7 @@ def laplacian_core(mat1, mat2, out: Optional[torch.Tensor], sigma):
     norm_sq_mat1 = square_norm_diff(mat1_div_sig, -1, True)  # b*n*1
     norm_sq_mat2 = square_norm_diff(mat2_div_sig, -1, True)  # b*m*1
     orig_out = out
-    if mat1.dim() == 3:
-        if out is None:
-            out = torch.baddbmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1)  # b*n*m
-        else:
-            out = torch.baddbmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1, out=out)  # b*n*m
-    else:
-        if out is None:
-            out = torch.addmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1)  # n*m
-        else:
-            out = torch.addmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1, out=out)  # n*m
+    out = _addmm_wrap(mat1_div_sig, mat2_div_sig, norm_sq_mat1, norm_sq_mat2, out)
     out.add_(norm_sq_mat2.transpose(-2, -1))
     out.clamp_min_(1e-20)
     out.sqrt_()  # Laplacian: sqrt of squared-difference
@@ -133,16 +129,7 @@ def matern_core(mat1, mat2, out: Optional[torch.Tensor], sigma, nu):
     norm_sq_mat1 = square_norm_diff(mat1_div_sig, -1, True)  # b*n*1
     norm_sq_mat2 = square_norm_diff(mat2_div_sig, -1, True)  # b*m*1
 
-    if mat1.dim() == 3:
-        if out is None:
-            out = torch.baddbmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1)  # b*n*m
-        else:
-            out = torch.baddbmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1, out=out)  # b*n*m
-    else:
-        if out is None:
-            out = torch.addmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1)  # n*m
-        else:
-            out = torch.addmm(norm_sq_mat1, mat1_div_sig, mat2_div_sig.transpose(-2, -1), alpha=-2, beta=1, out=out)  # n*m
+    out = _addmm_wrap(mat1_div_sig, mat2_div_sig, norm_sq_mat1, norm_sq_mat2, out)
     out.add_(norm_sq_mat2.transpose(-2, -1))
     out.clamp_min_(1e-20)
     if nu == 1.5:
