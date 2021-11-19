@@ -173,6 +173,7 @@ def sparse_mm_run_thread(m1: SparseTensor, m2: SparseTensor, out: torch.Tensor,
                 if has_gpu_bufs:
                     copy(c_dev_out, out[i: i + leni, j: j + lenj], s=stream,
                          allow_dtype_change=True)
+    return out
 
 
 def mm_run_thread(m1: torch.Tensor, m2: torch.Tensor, out: torch.Tensor,
@@ -231,6 +232,7 @@ def mm_run_thread(m1: torch.Tensor, m2: torch.Tensor, out: torch.Tensor,
                 if has_gpu_bufs:
                     copy(c_dev_out, out[i: i + leni, j: j + lenj], s=stream,
                          allow_dtype_change=True)
+    return out
 
 
 def mm_diff_run_thread(m1: torch.Tensor, m2: torch.Tensor, out: torch.Tensor,
@@ -260,30 +262,30 @@ def mm_diff_run_thread(m1: torch.Tensor, m2: torch.Tensor, out: torch.Tensor,
                 bwd_out = bwd_out + c_out.mul(out[i: i + leni, j: j + lenj]).sum()
     return bwd_out
 
+
 # noinspection PyMethodOverriding
 class KernelMmFnFull(torch.autograd.Function):
     @staticmethod
     def run_cpu_cpu(X1, X2, out, kernel, dtype, options, diff):
         args = ArgsFmm(X1=X1, X2=X2, out=out, kernel=kernel, gpu_dtype=dtype,
                        max_mem=options.max_cpu_mem, num_streams=1, differentiable=diff)
-        _call_direct(mm_run_starter, (args, -1))
-        return out
+        return _call_direct(mm_run_starter, (args, -1))
 
-    @staticmethod
-    def run_multiproc_diff(X1, X2, out, kernel, dtype, options, gpu_info, block_sizes):
-        args = []
-        for i, g in enumerate(gpu_info):
-            bwidth = block_sizes[i + 1] - block_sizes[i]
-            if bwidth <= 0:
-                continue
-            X1_block = X1.narrow(0, block_sizes[i], bwidth)
-            out_block = out.narrow(0, block_sizes[i], bwidth)
-            args.append((ArgsFmm(X1=X1_block, X2=X2, out=out_block,
-                                 kernel=kernel, gpu_dtype=dtype, max_mem=g.usable_memory,
-                                 num_streams=options.num_fmm_streams, differentiable=True),
-                         g.Id))
-        bwd_out_procs = _start_wait_processes(mm_run_starter, args)
-        return sum(bwd_out_procs)
+    # @staticmethod
+    # def run_multiproc_diff(X1, X2, out, kernel, dtype, options, gpu_info, block_sizes):
+    #     args = []
+    #     for i, g in enumerate(gpu_info):
+    #         bwidth = block_sizes[i + 1] - block_sizes[i]
+    #         if bwidth <= 0:
+    #             continue
+    #         X1_block = X1.narrow(0, block_sizes[i], bwidth)
+    #         out_block = out.narrow(0, block_sizes[i], bwidth)
+    #         args.append((ArgsFmm(X1=X1_block, X2=X2, out=out_block,
+    #                              kernel=kernel, gpu_dtype=dtype, max_mem=g.usable_memory,
+    #                              num_streams=options.num_fmm_streams, differentiable=True),
+    #                      g.Id))
+    #     bwd_out_procs = _start_wait_processes(mm_run_starter, args)
+    #     return sum(bwd_out_procs)
 
     @staticmethod
     def run_cpu_gpu(X1, X2, out, kernel, dtype, options, diff):
@@ -301,13 +303,11 @@ class KernelMmFnFull(torch.autograd.Function):
                 X1_block = X1.narrow_rows(block_sizes[i], bwidth)
             else:
                 X1_block = X1.narrow(0, block_sizes[i], bwidth)
-            out_block = out.narrow(0, block_sizes[i], bwidth)
-            args.append((ArgsFmm(X1=X1_block, X2=X2, out=out_block,
+            args.append((ArgsFmm(X1=X1_block, X2=X2, out=out.narrow(0, block_sizes[i], bwidth),
                                  kernel=kernel, gpu_dtype=dtype, max_mem=g.usable_memory,
                                  num_streams=options.num_fmm_streams, differentiable=diff),
                          g.Id))
-        _start_wait_processes(mm_run_starter, args)
-        return out
+        return _start_wait_processes(mm_run_starter, args)
 
     @staticmethod
     def run_gpu_gpu(X1, X2, out, kernel, dtype, options, diff):
@@ -320,8 +320,7 @@ class KernelMmFnFull(torch.autograd.Function):
         args = ArgsFmm(X1=X1, X2=X2, out=out, kernel=kernel, gpu_dtype=dtype,
                        max_mem=single_gpu_info.usable_memory, num_streams=options.num_fmm_streams,
                        differentiable=diff)
-        _call_direct(mm_run_starter, (args, data_dev.index))
-        return out
+        return _call_direct(mm_run_starter, (args, data_dev.index))
 
     @staticmethod
     def forward(ctx,
@@ -355,7 +354,7 @@ class KernelMmFnFull(torch.autograd.Function):
         if sizeof_dtype(comp_dtype) < 8 and opt.no_single_kernel:
             comp_dtype = torch.float64
 
-        with torch.autograd.no_grad():#inference_mode():
+        with torch.inference_mode():
             X1d = X1.detach()
             X2d = X2.detach()
             kerneld = kernel.detach()
@@ -371,7 +370,6 @@ class KernelMmFnFull(torch.autograd.Function):
             ctx.mark_non_differentiable(out)
         else:
             ctx.save_for_backward(X1, X2, *kernel_params)
-            ctx.out = out
             ctx.kernel = kernel
             ctx.opt = opt
             ctx.comp_dtype = comp_dtype
@@ -385,32 +383,17 @@ class KernelMmFnFull(torch.autograd.Function):
         data_dev = X1.device
         comp_dev_type = 'cpu' if ctx.opt.use_cpu or not torch.cuda.is_available() else 'cuda'
 
-        # Clone out
-        out = ctx.out.detach()
-
         # We must rerun MM in differentiable mode this time.
         with torch.autograd.enable_grad():
             if comp_dev_type == 'cpu' and data_dev.type == 'cpu':
-                out = KernelMmFnFull.run_cpu_cpu(X1, X2, out, ctx.kernel, ctx.comp_dtype, ctx.opt, True)
+                out = KernelMmFnFull.run_cpu_cpu(X1, X2, outputs, ctx.kernel, ctx.comp_dtype, ctx.opt, True)
             elif comp_dev_type == 'cuda' and data_dev.type == 'cuda':
-                out = KernelMmFnFull.run_gpu_gpu(X1, X2, out, ctx.kernel, ctx.comp_dtype, ctx.opt, True)
+                out = KernelMmFnFull.run_gpu_gpu(X1, X2, outputs, ctx.kernel, ctx.comp_dtype, ctx.opt, True)
             elif comp_dev_type == 'cuda' and data_dev.type == 'cpu':
                 out = KernelMmFnFull.run_cpu_gpu(X1, X2, outputs, ctx.kernel, ctx.comp_dtype, ctx.opt, True)
             else:
                 raise RuntimeError("Requested CPU computations with CUDA data. This should not happen.")
-            bwd = out
-            print("bwd", bwd)
-            if False:
-                if isinstance(out, list) or isinstance(out, tuple):
-                    assert sum(o.shape[0] for o in out) == outputs.shape[0]
-                    assert out[0].shape[1] == outputs.shape[1]
-                    bwd = torch.tensor(0.0)
-                    idx = 0
-                    for o in out:
-                        bwd = bwd + (o * outputs[idx: idx + o.shape[0], :]).sum()
-                        idx += o.shape[0]
-                else:
-                    bwd = (out * outputs).sum()
+            bwd = sum(out)
 
         saved_idx = 0  # Don't diff wrt out
         needs_grad = []
