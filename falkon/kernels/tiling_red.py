@@ -1,5 +1,7 @@
 from functools import partial
 from typing import List, Optional, Tuple
+from copy import copy
+import warnings
 
 import torch
 from dataclasses import dataclass
@@ -72,10 +74,10 @@ def _single_gpu_method(proc_idx, queue, device_id):
 
 
 def load_keops_fn(formula, aliases, backend, dtype, optional_flags, rec_multVar_highdim, out, *args):
-    optional_flags += ["-DTILING_GENRED=1"]
+    flags = copy(optional_flags)
     if rec_multVar_highdim is not None:
-        optional_flags += ['-DMULT_VAR_HIGHDIM=1']
-    fn = LoadKeOps(formula, aliases, dtype, 'torch', optional_flags, include_dirs).import_module()
+        flags.append('-DMULT_VAR_HIGHDIM=1')
+    fn = LoadKeOps(formula, aliases, dtype, 'torch', flags, include_dirs).import_module()
     tagCPUGPU, tag1D2D, tagHostDevice = get_tag_backend(backend, args, output=out)
     tags = KeopsTags(tagCPUGPU=tagCPUGPU, tag1D2D=tag1D2D, tagHostDevice=tagHostDevice)
     return fn, tags
@@ -189,8 +191,9 @@ class TilingGenredAutograd(torch.autograd.Function):
 
         # N.B.: KeOps C++ expects contiguous data arrays
         if not check_all_contig(X1, X2, v, *args):
-            print("[pyKeOps,TilingGenRed] Warning : at least one of the input tensors is not contiguous. "
-                  "Consider using contiguous data arrays to avoid unnecessary copies.")
+            warnings.warn(
+                "[pyKeOps,TilingGenRed] At least one of the input tensors is not contiguous. "
+                "Consider using contiguous data arrays to avoid unnecessary copies.")
             X1, X2, v, *args = ensure_all_contig(X1, X2, v, *args)
         if out is None:
             # noinspection PyArgumentList
