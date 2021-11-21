@@ -265,6 +265,8 @@ def mm_diff_run_thread(m1: torch.Tensor, m2: torch.Tensor, out: torch.Tensor,
 
 # noinspection PyMethodOverriding
 class KernelMmFnFull(torch.autograd.Function):
+    NUM_NON_DIFF_INPUTS = 3
+
     @staticmethod
     def run_cpu_cpu(X1, X2, out, kernel, dtype, options, diff):
         args = ArgsFmm(X1=X1, X2=X2, out=out, kernel=kernel, gpu_dtype=dtype,
@@ -383,11 +385,12 @@ class KernelMmFnFull(torch.autograd.Function):
             else:
                 bwd = out
 
-        saved_idx = 0  # Don't diff wrt out
+        saved_idx = 0
         needs_grad = []
         for i, i_grad in enumerate(ctx.needs_input_grad):
             if i_grad:
                 needs_grad.append(ctx.saved_tensors[saved_idx])
+            if i >= KernelMmFnFull.NUM_NON_DIFF_INPUTS:
                 saved_idx += 1
         grads = torch.autograd.grad(
             bwd, needs_grad, retain_graph=False, allow_unused=False)

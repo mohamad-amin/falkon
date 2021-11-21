@@ -185,7 +185,6 @@ def run_keops_mmv(X1: torch.Tensor,
                   aliases: List[str],
                   axis: int,
                   reduction: str = 'Sum',
-                  differentiable: bool = False,
                   opt: Optional[FalkonOptions] = None) -> torch.Tensor:
     if opt is None:
         opt = FalkonOptions()
@@ -202,6 +201,11 @@ def run_keops_mmv(X1: torch.Tensor,
                       "please pass CPU tensors; to avoid this warning if the GPU backend is "
                       "desired, check your options (i.e. set 'use_cpu=False').")
         backend = "GPU_1D"
+
+    differentiable = any(
+        [X1.requires_grad, X2.requires_grad, v.requires_grad] +
+        [o.requires_grad for o in other_vars]
+    )
 
     if differentiable:
         from falkon.kernels.tiling_red import TilingGenred

@@ -207,6 +207,24 @@ class TestLaplacianKernel():
                        v=v, w=w, rtol=rtol[A.dtype], atol=atol[A.dtype], opt=opt, sigma=sigma,
                        grad_check=True)
 
+    def test_not_all_grads(self, A, B, v, w, sigma, rtol, atol, input_dev, comp_dev):
+        m1, m2, v, w, sigma = fix_mats(A, B, v, w, sigma, order="F", device=input_dev, dtype=np.float64)
+
+        m1_wgrad = m1.clone().requires_grad_(False)
+        m2_wgrad = m2.clone().requires_grad_()
+        v_wgrad = v.clone().requires_grad_(False)
+        s_wgrad = sigma.clone().requires_grad_()
+
+        opt = dataclasses.replace(basic_options, use_cpu=comp_dev == "cpu", keops_active="no")
+
+        def autogradcheck_mm(_m1, _m2, *_kernel_params):
+            return TestLaplacianKernel.k_class(*_kernel_params, opt=opt)(_m1, _m2)
+        torch.autograd.gradcheck(autogradcheck_mm, inputs=(m1_wgrad, m2_wgrad, s_wgrad))
+
+        def autogradcheck_mmv(_m1, _m2, _v, *_kernel_params):
+            return TestLaplacianKernel.k_class(*_kernel_params, opt=opt).mmv(_m1, _m2, _v)
+        torch.autograd.gradcheck(autogradcheck_mmv, inputs=(m1_wgrad, m2_wgrad, v_wgrad, s_wgrad))
+
     @keops_mark
     def test_keops_kernel(self, A, B, v, w, sigma, rtol, atol, input_dev, comp_dev):
         A, B, v, w, sigma = fix_mats(A, B, v, w, sigma, order="C", device=input_dev, dtype=np.float64)

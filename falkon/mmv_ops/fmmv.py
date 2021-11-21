@@ -310,6 +310,7 @@ def mmv_diff_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Te
                 c_dev_grads_old = [c_dev_m1_g, c_dev_m2_g, c_dev_v_g] + grads[3:]
                 c_dev_grads = torch.autograd.grad(
                     c_dev_mmv, [c_inputs[idx] for idx in input_idxs], grad_outputs=c_dev_out)
+                print("Computed grad devices", [g.device for g in c_dev_grads if g is not None])
                 for c_grad, c_idx in zip(c_dev_grads, input_idxs):
                     c_dev_grads_old[c_idx].add_(c_grad)
                 if grads[1] is not None:
@@ -403,7 +404,6 @@ def dmmv_run_starter(proc_idx, queue, device_id):
 
     # Choose batch sizes
     avail_mem = max_mem / sizeof_dtype(X1.dtype)
-    print("Avail", avail_mem)
     extra_mem = kernel.extra_mem()
     n, d = X1.shape
     m, t = v.shape
@@ -419,7 +419,6 @@ def dmmv_run_starter(proc_idx, queue, device_id):
         blk_n, mem_needed = _dense_dmmv_blk_sizes(
             n=n, d=d, m=m, t=t, avail_mem=avail_mem, extra_mem=extra_mem,
             m1_ic=m1_ic, m2_ic=m2_ic, v_ic=v_ic, out_ic=out_ic)
-        print(f"blk_n: {blk_n}/{n}")
         dmmv_run_thread(X1, X2, v, w, out, kernel, blk_n, mem_needed, dev)
 
 
@@ -599,7 +598,6 @@ class KernelMmvFnFull(torch.autograd.Function):
                 fin_outputs.append(sum(o[i] for o in outputs))
         return fin_outputs
 
-
     @staticmethod
     def run_gpu_gpu(X1, X2, v, out, kernel, options, diff):
         if isinstance(X1, SparseTensor):
@@ -662,7 +660,6 @@ class KernelMmvFnFull(torch.autograd.Function):
 
         # We must rerun MM in differentiable mode this time.
         with torch.autograd.enable_grad():
-            print("In Backward")
             if comp_dev_type == 'cpu' and data_dev.type == 'cpu':
                 grads = KernelMmvFnFull.run_cpu_cpu(X1, X2, v, outputs, ctx.kernel, ctx.opt, True)
             elif comp_dev_type == 'cuda' and data_dev.type == 'cuda':
@@ -672,6 +669,15 @@ class KernelMmvFnFull(torch.autograd.Function):
             else:
                 raise RuntimeError("Requested CPU computations with CUDA data. This should not happen.")
             return tuple([None, None, None] + grads)
+
+
+def fmmv(X1: Union[torch.Tensor, SparseTensor],
+         X2: Union[torch.Tensor, SparseTensor],
+         v: torch.Tensor,
+         kernel: 'falkon.kernels.Kernel',
+         out: Optional[torch.Tensor] = None,
+         opt: Optional[BaseOptions] = None):
+    return KernelMmvFnFull.apply(kernel, opt, out, X1, X2, v, *kernel.kernel_tensor_params.values())
 
 
 def fdmmv(X1: Union[torch.Tensor, SparseTensor], X2: Union[torch.Tensor, SparseTensor],

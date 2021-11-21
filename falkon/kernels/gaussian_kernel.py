@@ -227,7 +227,7 @@ class DistanceKernel(Kernel, KeopsKernelMixin, abc.ABC):
         self.kernel_other_params = {k: v for k, v in kernel_params.items() if not isinstance(v, torch.Tensor)}
 
     @abc.abstractmethod
-    def _keops_mmv_impl(self, X1, X2, v, kernel, out, differentiable: bool, opt: FalkonOptions):
+    def _keops_mmv_impl(self, X1, X2, v, kernel, out, opt: FalkonOptions):
         pass
 
     def _decide_mmv_impl(self, X1, X2, v, opt: FalkonOptions):
@@ -344,7 +344,7 @@ class GaussianKernel(DistanceKernel):
         super().__init__(self.kernel_name, opt, core_fn=GaussianKernel.core_fn,
                          mmv_class=GaussianKernelMmvFn, sigma=self.sigma)
 
-    def _keops_mmv_impl(self, X1, X2, v, kernel, out, differentiable: bool, opt: FalkonOptions):
+    def _keops_mmv_impl(self, X1, X2, v, kernel, out, opt: FalkonOptions):
         formula = 'Exp(SqDist(x1 / g, x2 / g) * IntInv(-2)) * v'
         aliases = [
             'x1 = Vi(%d)' % (X1.shape[1]),
@@ -354,7 +354,7 @@ class GaussianKernel(DistanceKernel):
         ]
         other_vars = [self.sigma.to(device=X1.device, dtype=X1.dtype)]
 
-        return self.keops_mmv(X1, X2, v, out, formula, aliases, other_vars, differentiable, opt)
+        return self.keops_mmv(X1, X2, v, out, formula, aliases, other_vars, opt)
 
     def extra_mem(self) -> Dict[str, float]:
         return {
@@ -406,7 +406,7 @@ class LaplacianKernel(DistanceKernel):
         super().__init__(self.kernel_name, opt, core_fn=laplacian_core,
                          mmv_class=LaplacianKernelMmvFn, sigma=self.sigma)
 
-    def _keops_mmv_impl(self, X1, X2, v, kernel, out, differentiable: bool, opt: FalkonOptions):
+    def _keops_mmv_impl(self, X1, X2, v, kernel, out, opt: FalkonOptions):
         formula = 'Exp(-Sqrt(SqDist(x1 / g, x2 / g))) * v'
         aliases = [
             'x1 = Vi(%d)' % (X1.shape[1]),
@@ -416,7 +416,7 @@ class LaplacianKernel(DistanceKernel):
         ]
         other_vars = [self.sigma.to(device=X1.device, dtype=X1.dtype)]
 
-        return self.keops_mmv(X1, X2, v, out, formula, aliases, other_vars, differentiable, opt)
+        return self.keops_mmv(X1, X2, v, out, formula, aliases, other_vars, opt)
 
     def extra_mem(self) -> Dict[str, float]:
         return {
@@ -478,7 +478,7 @@ class MaternKernel(DistanceKernel):
         super().__init__(self.kernel_name, opt, core_fn=matern_core,
                          mmv_class=MaternKernelMmvFn, sigma=self.sigma, nu=self.nu)
 
-    def _keops_mmv_impl(self, X1, X2, v, kernel, out, differentiable: bool, opt: FalkonOptions):
+    def _keops_mmv_impl(self, X1, X2, v, kernel, out, opt: FalkonOptions):
         if self.nu == 0.5:
             formula = 'Exp(-Norm2(x1 / s - x2 / s)) * v'
         elif self.nu == 1.5:
@@ -501,7 +501,7 @@ class MaternKernel(DistanceKernel):
         ]
         other_vars = [self.sigma.to(device=X1.device, dtype=X1.dtype)]
 
-        return self.keops_mmv(X1, X2, v, out, formula, aliases, other_vars, differentiable, opt)
+        return self.keops_mmv(X1, X2, v, out, formula, aliases, other_vars, opt)
 
     def extra_mem(self) -> Dict[str, float]:
         extra_mem = {
