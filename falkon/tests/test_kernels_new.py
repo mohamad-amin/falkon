@@ -21,8 +21,8 @@ device_marks = [
     pytest.param("cuda", "cuda", marks=[cuda_mark])
 ]
 # Global data dimensions
-n = 50
-m = 25
+n = 20
+m = 5
 d = 3
 t = 2
 
@@ -81,6 +81,7 @@ def sigma(request) -> torch.Tensor:
 
 def run_dense_test(k_cls, naive_fn, m1, m2, v, w, rtol, atol, opt,
                    grad_check: bool = True, **kernel_params):
+    print("Test is starting: k_cls %s, grad_check %s" % (k_cls, grad_check), flush=True)
     torch.autograd.set_detect_anomaly(True)
 
     m1_wgrad = m1.clone().requires_grad_()
@@ -99,45 +100,50 @@ def run_dense_test(k_cls, naive_fn, m1, m2, v, w, rtol, atol, opt,
     extra_mem = 10 * 2**30 if opt.use_cpu else 0
     opt = dataclasses.replace(opt, max_cpu_mem=opt.max_cpu_mem + extra_mem)
 
-    # 1. MM
-    mm_out = torch.empty(m1.shape[0], m2.shape[0], dtype=m1.dtype, device=m1.device)
-    mm_out_wgrad = torch.empty(m1.shape[0], m2.shape[0], dtype=m1.dtype, device=m1.device)
-    with memory_checker(opt) as new_opt:
-        actual = kernel(m1, m2, out=mm_out, opt=new_opt)
-    with memory_checker(opt, extra_mem=m1.shape[0] * m2.shape[0] * sizeof_dtype(m1.dtype)) as new_opt:
-        actual_noout = kernel(m1, m2, opt=new_opt)
-    with memory_checker(opt) as new_opt:
-        actual_wgrad = kernel_wgrad(m1_wgrad, m2_wgrad, out=mm_out_wgrad, opt=new_opt)
-    #grad = torch.autograd.grad(actual_wgrad.sum(), [m2_wgrad, m1_wgrad, kernel_params_wgrad['sigma']])
-
-    assert mm_out.data_ptr() == actual.data_ptr(), "MM Output data tensor was not used"
-    assert mm_out_wgrad.data_ptr() == actual_wgrad.data_ptr(), "MM Output data tensor was not used"
-    torch.testing.assert_allclose(actual_wgrad, actual, rtol=rtol, atol=atol, msg="MM Wgrad and normal return different stuff")
-    torch.testing.assert_allclose(actual_noout, actual, rtol=rtol, atol=atol, msg="MM with out and without return different stuff")
     expected_mm = naive_fn(m1, m2, **kernel_params)
-    torch.testing.assert_allclose(expected_mm, actual, rtol=rtol, atol=atol, msg="MM result is incorrect")
+    # 1. MM
+    if opt.keops_active != "force":  # Don't test MM if keops is active
+        mm_out = torch.empty(m1.shape[0], m2.shape[0], dtype=m1.dtype, device=m1.device)
+        mm_out_wgrad = torch.empty(m1.shape[0], m2.shape[0], dtype=m1.dtype, device=m1.device)
+        with memory_checker(opt) as new_opt:
+            actual = kernel(m1, m2, out=mm_out, opt=new_opt)
+        with memory_checker(opt, extra_mem=m1.shape[0] * m2.shape[0] * sizeof_dtype(m1.dtype)) as new_opt:
+            actual_noout = kernel(m1, m2, opt=new_opt)
+        with memory_checker(opt) as new_opt:
+            actual_wgrad = kernel_wgrad(m1_wgrad, m2_wgrad, out=mm_out_wgrad, opt=new_opt)
+        #grad = torch.autograd.grad(actual_wgrad.sum(), [m2_wgrad, m1_wgrad, kernel_params_wgrad['sigma']])
 
-    # 2. MM gradients
-    if grad_check:
-        def autogradcheck_mm(_m1, _m2, *_kernel_params):
-            return k_cls(*_kernel_params, opt=opt)(_m1, _m2)
-        torch.autograd.gradcheck(autogradcheck_mm, inputs=(m1_wgrad, m2_wgrad, *kernel_params_wgrad.values()))
+        assert mm_out.data_ptr() == actual.data_ptr(), "MM Output data tensor was not used"
+        assert mm_out_wgrad.data_ptr() == actual_wgrad.data_ptr(), "MM Output data tensor was not used"
+        torch.testing.assert_allclose(actual_wgrad, actual, rtol=rtol, atol=atol, msg="MM Wgrad and normal return different stuff")
+        torch.testing.assert_allclose(actual_noout, actual, rtol=rtol, atol=atol, msg="MM with out and without return different stuff")
+        torch.testing.assert_allclose(expected_mm, actual, rtol=rtol, atol=atol, msg="MM result is incorrect")
+
+        # 2. MM gradients
+        if grad_check:
+            def autogradcheck_mm(_m1, _m2, *_kernel_params):
+                return k_cls(*_kernel_params, opt=opt)(_m1, _m2)
+            torch.autograd.gradcheck(autogradcheck_mm, inputs=(m1_wgrad, m2_wgrad, *kernel_params_wgrad.values()))
 
     # 3. MMV
     mmv_out = torch.empty(m1.shape[0], v.shape[1], dtype=m1.dtype, device=m1.device)
     mmv_out_wgrad = torch.empty(m1.shape[0], v.shape[1], dtype=m1.dtype, device=m1.device)
     with memory_checker(opt) as new_opt:
         actual = kernel.mmv(m1, m2, v, out=mmv_out, opt=new_opt)
+    print("MMV 1 Finished", flush=True)
     with memory_checker(opt, extra_mem=m1.shape[0] * v.shape[1] * sizeof_dtype(m1.dtype)) as new_opt:
         actual_noout = kernel.mmv(m1, m2, v, opt=new_opt)
+    print("MMV 2 Finished", flush=True)
     with memory_checker(opt) as new_opt:
         actual_wgrad = kernel_wgrad.mmv(m1_wgrad, m2_wgrad, v_wgrad, out=mmv_out_wgrad, opt=new_opt)
+    print("MMV 3 Finished", flush=True)
     assert mmv_out.data_ptr() == actual.data_ptr(), "MMV Output data tensor was not used"
     assert mmv_out_wgrad.data_ptr() == actual_wgrad.data_ptr(), "MMV Output data tensor was not used"
     torch.testing.assert_allclose(actual_wgrad, actual, rtol=rtol, atol=atol, msg="MMV Wgrad and normal return different stuff")
     torch.testing.assert_allclose(actual_noout, actual, rtol=rtol, atol=atol, msg="MMV with out and without return different stuff")
     expected_mmv = expected_mm @ v
     torch.testing.assert_allclose(expected_mmv, actual, rtol=rtol, atol=atol, msg="MMV result is incorrect")
+    print("MMV (No Grad Check) Finished", flush=True)
 
     # 4. MMV gradients
     if grad_check:
@@ -145,13 +151,17 @@ def run_dense_test(k_cls, naive_fn, m1, m2, v, w, rtol, atol, opt,
             return k_cls(*_kernel_params, opt=opt).mmv(_m1, _m2, _v)
         torch.autograd.gradcheck(autogradcheck_mmv, inputs=(m1_wgrad, m2_wgrad, v_wgrad, *kernel_params_wgrad.values()))
 
+    print("MMV Finished", flush=True)
     # 5. Double MMV (doesn't exist for gradients)
     dmmv_grad_allowed = True
     dmmv_out = torch.empty(m2.shape[0], v.shape[1], dtype=m1.dtype, device=m1.device)
+    print("Computing dMMv", flush=True)
     with memory_checker(opt) as new_opt:
         actual = kernel.dmmv(m1, m2, v, w, out=dmmv_out, opt=new_opt)
+    print("dMMV1 Finished", flush=True)
     with memory_checker(opt, extra_mem=m2.shape[0] * v.shape[1] * sizeof_dtype(m1.dtype)) as new_opt:
         actual_noout = kernel.dmmv(m1, m2, v, w, opt=new_opt)
+    print("dMMV2 Finished", flush=True)
     with memory_checker(opt) as new_opt:
         try:
             actual_wgrad = kernel_wgrad.dmmv(m1_wgrad, m2_wgrad, v_wgrad, w_wgrad, opt=new_opt)
@@ -159,6 +169,7 @@ def run_dense_test(k_cls, naive_fn, m1, m2, v, w, rtol, atol, opt,
             assert new_opt.keops_active == "no", "KeOps D-MMV raise error %s unexpectedly" % (e)
             # On the other hand it is expected that we throw a not implemented error.
             dmmv_grad_allowed = False
+    print("dMMV3 Finished", flush=True)
 
     assert dmmv_out.data_ptr() == actual.data_ptr(), "D-MMV Output data tensor was not used"
     if dmmv_grad_allowed:
@@ -169,9 +180,11 @@ def run_dense_test(k_cls, naive_fn, m1, m2, v, w, rtol, atol, opt,
 
     # 6. D-MMV gradients
     if grad_check and dmmv_grad_allowed:
+        print("Checking DMMV Gradients", flush=True)
         def autogradcheck_dmmv(_m1, _m2, _v, _w, *_kernel_params):
             return k_cls(*_kernel_params, opt=opt).dmmv(_m1, _m2, _v, _w)
         torch.autograd.gradcheck(autogradcheck_dmmv, inputs=(m1_wgrad, m2_wgrad, v_wgrad, w_wgrad, *kernel_params_wgrad.values()))
+    print("Test Finished", flush=True)
 
 
 @pytest.mark.parametrize("input_dev,comp_dev", device_marks)
