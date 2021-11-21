@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Any, Dict
 
 from falkon.mmv_ops.fmm import KernelMmFnFull
-from falkon.mmv_ops.fmmv import fmmv, fdmmv
+from falkon.mmv_ops.fmmv import fdmmv, KernelMmvFnFull
 from falkon.utils.helpers import check_same_dtype, check_sparse, check_same_device
 from falkon.options import FalkonOptions
 
@@ -246,11 +246,7 @@ class Kernel(ABC):
         if opt is not None:
             params = dataclasses.replace(self.params, **dataclasses.asdict(opt))
         mmv_impl = self._decide_mmv_impl(X1, X2, v, params)
-        sparsity = check_sparse(X1, X2)
-        diff = False
-        if not any(sparsity):
-            diff = any([t.requires_grad for t in [X1, X2, v] + list(self.kernel_tensor_params.values())])
-        return mmv_impl(X1, X2, v, self, out, diff, params)
+        return mmv_impl(self, params, out, X1, X2, v, *self.kernel_tensor_params.values())
 
     def _decide_mmv_impl(self, X1, X2, v, opt: FalkonOptions):
         """Choose which `mmv` function to use for this data.
@@ -282,7 +278,7 @@ class Kernel(ABC):
         sparsity = check_sparse(X1, X2)
         if not all(sparsity) and any(sparsity):
             raise ValueError("Either all or none of 'X1', 'X2' must be sparse.")
-        return fmmv
+        return KernelMmvFnFull.apply
 
     def dmmv(self, X1, X2, v, w, out=None, opt: Optional[FalkonOptions] = None):
         # noinspection PyShadowingNames

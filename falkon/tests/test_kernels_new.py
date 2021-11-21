@@ -205,7 +205,7 @@ class TestLaplacianKernel():
         opt = dataclasses.replace(basic_options, use_cpu=comp_dev == "cpu", keops_active="no")
         run_dense_test(TestLaplacianKernel.k_class, TestLaplacianKernel.naive_fn, m1=A, m2=B,
                        v=v, w=w, rtol=rtol[A.dtype], atol=atol[A.dtype], opt=opt, sigma=sigma,
-                       grad_check=False)
+                       grad_check=True)
 
     @keops_mark
     def test_keops_kernel(self, A, B, v, w, sigma, rtol, atol, input_dev, comp_dev):

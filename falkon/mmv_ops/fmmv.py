@@ -271,8 +271,16 @@ def mmv_diff_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Te
     N, D = m1.shape
     M, T = v.shape
 
-    if blk_n == N:
-        blk_n = blk_n - 1
+    kernel_params = kernel.kernel_tensor_params.values()
+    inputs = [m1, m2, v] + list(kernel_params)
+    grads = []
+    for ipt in inputs:
+        if ipt.requires_grad:
+            grads.append(torch.zeros_like(ipt))
+        else:
+            grads.append(None)
+    inputs_need_grad, input_idxs = zip(
+        *[(ipt, idx) for idx, ipt in enumerate(inputs) if ipt.requires_grad])
 
     with ExitStack() as stack:
         if dev.type == 'cuda':
@@ -282,26 +290,40 @@ def mmv_diff_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Te
         for i in range(0, N, blk_n):
             leni = min(blk_n, N - i)
             c_dev_m1 = m1[i: i + leni, :].to(dev, non_blocking=True, copy=False)
-            c_dev_out = torch.zeros((leni, T), device=dev, dtype=m1.dtype)
+            c_dev_m1_g = None if grads[0] is None else grads[0][i: i + leni, :].to(dev, non_blocking=True, copy=False)
+            c_dev_out = out[i: i + leni, :].to(dev, non_blocking=True, copy=False)
 
             for j in range(0, M, blk_m):
                 lenj = min(blk_m, M - j)
                 c_dev_m2 = m2[j: j + lenj, :].to(dev, non_blocking=True, copy=False)
+                c_dev_m2_g = None if grads[1] is None else grads[1][j: j + lenj, :].to(dev, non_blocking=True, copy=False)
                 with ExitStack() as stack_s2:
                     if not incore:
                         stack_s2.enter_context(tcd.stream(s2))
                     c_dev_v = v[j: j + lenj, :].to(dev, non_blocking=True, copy=False)
+                    c_dev_v_g = None if grads[2] is None else grads[2][j: j + lenj, :].to(dev, non_blocking=True, copy=False)
+                c_dev_ker = kernel.compute_diff(c_dev_m1, c_dev_m2)
                 if not incore:
                     s2.synchronize()
-                c_dev_out.add_(kernel.mmv_diff(c_dev_m1, c_dev_m2, c_dev_v))
-                #c_dev_out = c_dev_out + kernel.mmv_diff(c_dev_m1, c_dev_m2, c_dev_v)
+                c_dev_mmv = c_dev_ker @ c_dev_v
+                c_inputs = [c_dev_m1, c_dev_m2, c_dev_v] + list(kernel_params)
+                c_dev_grads_old = [c_dev_m1_g, c_dev_m2_g, c_dev_v_g] + grads[3:]
+                c_dev_grads = torch.autograd.grad(
+                    c_dev_mmv, [c_inputs[idx] for idx in input_idxs], grad_outputs=c_dev_out)
+                for c_grad, c_idx in zip(c_dev_grads, input_idxs):
+                    c_dev_grads_old[c_idx].add_(c_grad)
+                if grads[1] is not None:
+                    grads[1][j: j + lenj, :] = c_dev_m2_g.to(grads[1].device, non_blocking=True, copy=False)
+                if grads[2] is not None:
+                    grads[2][j: j + lenj, :] = c_dev_v_g.to(grads[2].device, non_blocking=True, copy=False)
                 if not incore:
                     s1.synchronize()  # sync necessary to avoid s2 overwriting dev_v/dev_w
             # end iter over M
-            out[i: i + leni] = c_dev_out.to(out.device, non_blocking=True, copy=False)
+            if grads[0] is not None:
+                grads[0][i: i + leni, :] = c_dev_m1_g.to(grads[0].device, non_blocking=True, copy=False)
         # end iter over N
     # exit context manager (device, stream)
-    return out
+    return grads
 
 
 def _sparse_dmmv_blk_sizes(n, d, m, t, avail_mem, extra_mem: dict, incore: bool,
@@ -535,43 +557,20 @@ def dmmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor,
             copy(dev_out, out, s=s1)
 
 
-def fmmv(X1: Union[torch.Tensor, SparseTensor],
-         X2: Union[torch.Tensor, SparseTensor],
-         v: torch.Tensor,
-         kernel: 'falkon.kernels.Kernel',
-         out: Optional[torch.Tensor] = None,
-         differentiable: bool = False,
-         opt: Optional[BaseOptions] = None) -> torch.Tensor:
-    is_sparse = isinstance(X1, SparseTensor)
-    if not is_sparse:
-        _check_contiguity((X1, 'X1'), (X2, 'X2'), (v, 'v'), (out, 'out'))
-    data_devs = (X1.device, X2.device, v.device)
+# noinspection PyMethodOverriding
+class KernelMmvFnFull(torch.autograd.Function):
+    @staticmethod
+    def run_cpu_cpu(X1, X2, v, out, kernel, options, diff):
+        args = ArgsFmmv(X1=X1, X2=X2, v=v, out=out, kernel=kernel, max_mem=options.max_cpu_mem,
+                        differentiable=diff)
+        return _call_direct(mmv_run_starter, (args, -1))
 
-    comp_dev_type = 'cpu' if opt.use_cpu or not torch.cuda.is_available() else 'cuda'
-    N, D = X1.shape
-    T = v.shape[-1]
-    # Create output matrix
-    out = create_output_mat(out, data_devs, is_sparse, shape=(N, T), dtype=v.dtype,
-                            comp_dev_type=comp_dev_type, other_mat=X1)
-
-    if comp_dev_type == 'cpu' and all([ddev.type == 'cpu' for ddev in data_devs]):
-        args = ArgsFmmv(X1=X1, X2=X2, v=v, out=out, kernel=kernel, max_mem=opt.max_cpu_mem,
-                        differentiable=differentiable)
-        _call_direct(mmv_run_starter, (args, -1))
-    elif comp_dev_type == 'cuda' and all([ddev.type == 'cuda' for ddev in data_devs]):
-        if is_sparse:
-            raise NotImplementedError("In-core, sparse fmmv not implemented. "
-                                      "Use the out-of-core version instead.")
-        data_dev = data_devs[0]
-        gpu_info = _get_gpu_info(opt, slack=0.9)
-        single_gpu_info = [g for g in gpu_info if g.Id == data_dev.index][0]
-        args = ArgsFmmv(X1=X1, X2=X2, v=v, out=out, kernel=kernel,
-                        max_mem=single_gpu_info.usable_memory, differentiable=differentiable)
-        _call_direct(mmv_run_starter, (args, data_dev.index))
-    elif comp_dev_type == 'cuda':
-        gpu_info = _get_gpu_info(opt, slack=0.9)
+    @staticmethod
+    def run_cpu_gpu(X1, X2, v, out, kernel, options, diff):
+        is_sparse = isinstance(X1, SparseTensor)
+        gpu_info = _get_gpu_info(options, slack=0.9)
         args = []  # Arguments passed to each subprocess
-        block_sizes = calc_gpu_block_sizes(gpu_info, N)
+        block_sizes = calc_gpu_block_sizes(gpu_info, X1.shape[0])
         for i, g in enumerate(gpu_info):
             bwidth = block_sizes[i + 1] - block_sizes[i]
             if bwidth <= 0:
@@ -585,11 +584,94 @@ def fmmv(X1: Union[torch.Tensor, SparseTensor],
                 X2=X2, v=v,
                 out=out.narrow(0, block_sizes[i], bwidth),
                 kernel=kernel, max_mem=g.usable_memory,
-                differentiable=differentiable), g.Id))
-        _start_wait_processes(mmv_run_starter, args)
-    else:
-        raise RuntimeError("Requested CPU computations with CUDA data. This should not happen.")
-    return out
+                differentiable=diff), g.Id))
+        outputs = _start_wait_processes(mmv_run_starter, args)
+        if not diff:
+            return outputs
+        if len(gpu_info) == 1:
+            return outputs[0]
+        # Need to rejoin the gradient with respect to X1
+        fin_outputs = []
+        for i in range(len(outputs[0])):
+            if i == 0:
+                fin_outputs.append(torch.cat([o[i] for o in outputs], dim=0))
+            else:
+                fin_outputs.append(sum(o[i] for o in outputs))
+        return fin_outputs
+
+
+    @staticmethod
+    def run_gpu_gpu(X1, X2, v, out, kernel, options, diff):
+        if isinstance(X1, SparseTensor):
+            raise NotImplementedError("In-core, sparse fmmv not implemented. "
+                                      "Use the out-of-core version instead.")
+        data_dev = X1.device
+        gpu_info = _get_gpu_info(options, slack=0.9)
+        single_gpu_info = [g for g in gpu_info if g.Id == data_dev.index][0]
+        args = ArgsFmmv(X1=X1, X2=X2, v=v, out=out, kernel=kernel,
+                        max_mem=single_gpu_info.usable_memory, differentiable=diff)
+        return _call_direct(mmv_run_starter, (args, data_dev.index))
+
+    @staticmethod
+    def forward(ctx, kernel: 'falkon.kernels.Kernel', opt: Optional[BaseOptions],
+                out: Optional[torch.Tensor], X1: Union[torch.Tensor, SparseTensor],
+                X2: Union[torch.Tensor, SparseTensor], v: torch.Tensor,
+                *kernel_params):
+        is_sparse = isinstance(X1, SparseTensor)
+        if is_sparse:
+            differentiable = False
+        else:
+            _check_contiguity((X1, 'X1'), (X2, 'X2'), (v, 'v'), (out, 'out'))
+            differentiable = any([t.requires_grad for t in [X1, X2, v] + list(*kernel_params)])
+        data_devs = (X1.device, X2.device, v.device)
+        comp_dev_type = 'cpu' if opt.use_cpu or not torch.cuda.is_available() else 'cuda'
+        N, D = X1.shape
+        T = v.shape[-1]
+        # Create output matrix
+        out = create_output_mat(out, data_devs, is_sparse, shape=(N, T), dtype=v.dtype,
+                                comp_dev_type=comp_dev_type, other_mat=X1)
+
+        with torch.inference_mode():
+            X1d = X1.detach()
+            X2d = X2.detach()
+            vd = v.detach()
+            kerneld = kernel.detach()
+            if comp_dev_type == 'cpu' and all([ddev.type == 'cpu' for ddev in data_devs]):
+                KernelMmvFnFull.run_cpu_cpu(X1d, X2d, vd, out, kerneld, opt, False)
+            elif comp_dev_type == 'cuda' and all([ddev.type == 'cuda' for ddev in data_devs]):
+                KernelMmvFnFull.run_gpu_gpu(X1d, X2d, vd, out, kerneld, opt, False)
+            elif comp_dev_type == 'cuda':
+                KernelMmvFnFull.run_cpu_gpu(X1d, X2d, vd, out, kerneld, opt, False)
+            else:
+                raise RuntimeError("Requested CPU computations with CUDA data. This should not happen.")
+
+        if not differentiable:
+            ctx.mark_non_differentiable(out)
+        else:
+            ctx.save_for_backward(X1, X2, v, *kernel_params)
+            ctx.kernel = kernel
+            ctx.opt = opt
+        return out
+
+    @staticmethod
+    def backward(ctx, outputs):
+        X1, X2, v, *kernel_params = ctx.saved_tensors
+
+        data_dev = X1.device
+        comp_dev_type = 'cpu' if ctx.opt.use_cpu or not torch.cuda.is_available() else 'cuda'
+
+        # We must rerun MM in differentiable mode this time.
+        with torch.autograd.enable_grad():
+            print("In Backward")
+            if comp_dev_type == 'cpu' and data_dev.type == 'cpu':
+                grads = KernelMmvFnFull.run_cpu_cpu(X1, X2, v, outputs, ctx.kernel, ctx.opt, True)
+            elif comp_dev_type == 'cuda' and data_dev.type == 'cuda':
+                grads = KernelMmvFnFull.run_gpu_gpu(X1, X2, v, outputs, ctx.kernel, ctx.opt, True)
+            elif comp_dev_type == 'cuda' and data_dev.type == 'cpu':
+                grads = KernelMmvFnFull.run_cpu_gpu(X1, X2, v, outputs, ctx.kernel, ctx.opt, True)
+            else:
+                raise RuntimeError("Requested CPU computations with CUDA data. This should not happen.")
+            return tuple([None, None, None] + grads)
 
 
 def fdmmv(X1: Union[torch.Tensor, SparseTensor], X2: Union[torch.Tensor, SparseTensor],
