@@ -163,11 +163,8 @@ def sparse_mm_run_thread(m1: SparseTensor, m2: SparseTensor, out: torch.Tensor,
                 else:
                     c_dev_out = out[i: i + leni, j: j + lenj]
                 c_dev_out.fill_(0.0)
-
-                c_dev_out = kernel.compute_sparse(c_m1, c_m2, c_dev_out)
-                ddd = kernel._prepare_sparse(c_m1, c_m2)
-                c_dev_out = kernel._apply_sparse(c_dev_m1, c_dev_m2, c_dev_out)
-                c_dev_out = kernel._finalize(c_dev_out, ddd)
+                c_dev_out = kernel.compute_sparse(c_dev_m1, c_dev_m2, c_dev_out,
+                                                  X1_csr=c_m1, X2_csr=c_m2)
 
                 # Copy back to host
                 if has_gpu_bufs:
@@ -342,8 +339,14 @@ class KernelMmFnFull(torch.autograd.Function):
             comp_dtype = torch.float64
 
         with torch.inference_mode():
-            X1d = X1.detach()
-            X2d = X2.detach()
+            if not isinstance(X1, SparseTensor) and X1.requires_grad:
+                X1d = X1.detach()
+            else:
+                X1d = X1
+            if not isinstance(X2, SparseTensor) and X2.requires_grad:
+                X2d = X2.detach()
+            else:
+                X2d = X2
             kerneld = kernel.detach()
             if comp_dev_type == 'cpu' and data_dev.type == 'cpu':
                 out = KernelMmFnFull.run_cpu_cpu(X1d, X2d, out, kerneld, comp_dtype, opt, False)

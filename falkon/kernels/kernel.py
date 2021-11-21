@@ -2,8 +2,11 @@ import dataclasses
 from abc import ABC, abstractmethod
 from typing import Optional, Any, Dict
 
+import torch
+from falkon.sparse import SparseTensor
+
 from falkon.mmv_ops.fmm import KernelMmFnFull
-from falkon.mmv_ops.fmmv import fdmmv, KernelMmvFnFull, fmmv
+from falkon.mmv_ops.fmmv import fdmmv, fmmv
 from falkon.utils.helpers import check_same_dtype, check_sparse, check_same_device
 from falkon.options import FalkonOptions
 
@@ -167,8 +170,8 @@ class Kernel(ABC):
         if opt is not None:
             params = dataclasses.replace(self.params, **dataclasses.asdict(opt))
         mm_impl = self._decide_mm_impl(X1, X2, params)
-        # diff = any([t.requires_grad for t in [X1, X2] + list(self.kernel_tensor_params.values())])
-        return mm_impl(self, params, out, X1, X2, *self.kernel_tensor_params.values())
+        # diff = any([t.requires_grad for t in [X1, X2] + list(self.diff_params.values())])
+        return mm_impl(self, params, out, X1, X2, *self.diff_params.values())
         # return mm_impl(X1, X2, self, out, diff, params)
 
     def _decide_mm_impl(self, X1, X2, opt: FalkonOptions):
@@ -240,7 +243,6 @@ class Kernel(ABC):
         torch.Size([100, 1])
         """
         X1, X2, v, out = self._check_mmv_dimensions(X1, X2, v, out)
-        #self._check_device_properties(X1, X2, v, out, fn_name="mmv", opt=opt)
 
         params = self.params
         if opt is not None:
@@ -328,7 +330,6 @@ class Kernel(ABC):
         torch.Size([150, 1])
         """
         X1, X2, v, w, out = self._check_dmmv_dimensions(X1, X2, v, w, out)
-        #self._check_device_properties(X1, X2, v, w, out, fn_name="dmmv", opt=opt)
         params = self.params
         if opt is not None:
             params = dataclasses.replace(self.params, **dataclasses.asdict(opt))
@@ -336,7 +337,7 @@ class Kernel(ABC):
         sparsity = check_sparse(X1, X2)
         diff = False
         if not any(sparsity):
-            diff = any([t.requires_grad for t in [X1, X2, v, w] + list(self.kernel_tensor_params.values()) if t is not None])
+            diff = any([t.requires_grad for t in [X1, X2, v, w] + list(self.diff_params.values()) if t is not None])
         return dmmv_impl(X1, X2, v, w, self, out, diff, params)
 
     def _decide_dmmv_impl(self, X1, X2, v, w, opt: FalkonOptions):
@@ -494,6 +495,28 @@ class Kernel(ABC):
 
     @abstractmethod
     def compute(self, X1, X2, out):
+        pass
+
+    @abstractmethod
+    def compute_diff(self, X1, X2):
+        pass
+
+    @property
+    @abstractmethod
+    def diff_params(self) -> Dict[str, torch.Tensor]:
+        pass
+
+    @property
+    @abstractmethod
+    def nondiff_params(self) -> Dict[str, Any]:
+        pass
+
+    @abstractmethod
+    def detach(self) -> 'Kernel':
+        pass
+
+    @abstractmethod
+    def compute_sparse(self, X1: SparseTensor, X2: SparseTensor, out: torch.Tensor, **kwargs) -> torch.Tensor:
         pass
 
     def extra_mem(self) -> Dict[str, float]:

@@ -1,6 +1,6 @@
 from contextlib import ExitStack
 from dataclasses import dataclass
-from typing import Optional, Union, Tuple, Dict, Sequence
+from typing import Optional, Union, Tuple, Dict
 
 import numpy as np
 import torch
@@ -20,7 +20,7 @@ from falkon.utils.helpers import (
 )
 from falkon.utils.tensor_helpers import (
     create_same_stride,
-    extract_fortran, create_fortran,
+    extract_fortran,
 )
 
 
@@ -175,9 +175,8 @@ def sparse_mmv_run_thread(m1: SparseTensor, m2: SparseTensor, v: torch.Tensor,
                     c_dev_v = copy(v[j: j + lenj], dev_v[:lenj], s=s2)
                 c_dev_ker = ker_gpu[:leni, :lenj].fill_(0.0)
 
-                ddd = kernel._prepare_sparse(c_m1, c_m2)
-                kernel._apply_sparse(c_dev_m1, c_dev_m2, c_dev_ker)
-                c_dev_ker = kernel._finalize(c_dev_ker, ddd)
+                c_dev_ker = kernel.compute_sparse(c_dev_m1, c_dev_m2, c_dev_ker,
+                                                  X1_csr=c_m1, X2_csr=c_m2)
                 if not incore:
                     s2.synchronize()
                 c_dev_out.addmm_(c_dev_ker, c_dev_v)
@@ -271,7 +270,7 @@ def mmv_diff_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Te
     N, D = m1.shape
     M, T = v.shape
 
-    kernel_params = kernel.kernel_tensor_params.values()
+    kernel_params = kernel.diff_params.values()
     inputs = [m1, m2, v] + list(kernel_params)
     grads = []
     for ipt in inputs:
@@ -476,9 +475,8 @@ def sparse_dmmv_run_thread(m1: SparseTensor, m2: SparseTensor, v: torch.Tensor,
                 c_dev_w = copy(w[i: i + leni, :], dev_w[:leni, :], s=s1)
 
             c_dev_ker = ker_gpu[:leni].fill_(0.0)
-            ddd = kernel._prepare_sparse(c_m1, m2)
-            kernel._apply_sparse(c_dev_m1, dev_m2, c_dev_ker)
-            c_dev_ker = kernel._finalize(c_dev_ker, ddd)
+            c_dev_ker = kernel.compute_sparse(c_dev_m1, dev_m2, c_dev_ker,
+                                              X1_csr=c_m1, X2_csr=m2)
 
             c_dev_w.addmm_(c_dev_ker, dev_v)
             dev_out.addmm_(c_dev_ker.T, c_dev_w)
@@ -494,7 +492,6 @@ def dmmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor,
     # data(CUDA), dev(CUDA) or data(CPU), dev(CPU)
     m1_ic, m2_ic, v_ic, out_ic = (_is_incore(dev, m1.device), _is_incore(dev, m2.device),
                                   _is_incore(dev, v.device), _is_incore(dev, out.device))
-    w_ic = _is_incore(dev, w.device) if w is not None else True
     N, D = m1.shape
     M, T = v.shape
 
@@ -632,8 +629,14 @@ class KernelMmvFnFull(torch.autograd.Function):
                                 comp_dev_type=comp_dev_type, other_mat=X1)
 
         with torch.inference_mode():
-            X1d = X1.detach()
-            X2d = X2.detach()
+            if not isinstance(X1, SparseTensor) and X1.requires_grad:
+                X1d = X1.detach()
+            else:
+                X1d = X1
+            if not isinstance(X2, SparseTensor) and X2.requires_grad:
+                X2d = X2.detach()
+            else:
+                X2d = X2
             vd = v.detach()
             kerneld = kernel.detach()
             if comp_dev_type == 'cpu' and all([ddev.type == 'cpu' for ddev in data_devs]):
@@ -679,7 +682,7 @@ def fmmv(X1: Union[torch.Tensor, SparseTensor],
          kernel: 'falkon.kernels.Kernel',
          out: Optional[torch.Tensor] = None,
          opt: Optional[BaseOptions] = None):
-    return KernelMmvFnFull.apply(kernel, opt, out, X1, X2, v, *kernel.kernel_tensor_params.values())
+    return KernelMmvFnFull.apply(kernel, opt, out, X1, X2, v, *kernel.diff_params.values())
 
 
 def fdmmv(X1: Union[torch.Tensor, SparseTensor], X2: Union[torch.Tensor, SparseTensor],
