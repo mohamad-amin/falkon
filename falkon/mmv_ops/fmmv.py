@@ -310,7 +310,7 @@ def mmv_diff_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Te
                 c_dev_grads_old = [c_dev_m1_g, c_dev_m2_g, c_dev_v_g] + grads[3:]
                 c_dev_grads = torch.autograd.grad(
                     c_dev_mmv, [c_inputs[idx] for idx in input_idxs], grad_outputs=c_dev_out)
-                print("Computed grad devices", [g.device for g in c_dev_grads if g is not None])
+                #print("Computed grad devices", [g.device for g in c_dev_grads if g is not None])
                 for c_grad, c_idx in zip(c_dev_grads, input_idxs):
                     c_dev_grads_old[c_idx].add_(c_grad)
                 if grads[1] is not None:
@@ -592,7 +592,9 @@ class KernelMmvFnFull(torch.autograd.Function):
         # Need to rejoin the gradient with respect to X1
         fin_outputs = []
         for i in range(len(outputs[0])):
-            if i == 0:
+            if outputs[0][i] is None:
+                fin_outputs.append(None)
+            elif i == 0:
                 fin_outputs.append(torch.cat([o[i] for o in outputs], dim=0))
             else:
                 fin_outputs.append(sum(o[i] for o in outputs))
