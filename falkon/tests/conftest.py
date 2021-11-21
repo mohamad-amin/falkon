@@ -94,7 +94,10 @@ def fix_mats(*mats, order, device, dtype):
     device = make_tuple(device, len(mats))
     dtype = make_tuple(dtype, len(mats))
     for i, m in enumerate(mats):
-        yield fix_mat(m, order=order[i], device=device[i], dtype=dtype[i])
+        if isinstance(m, SparseTensor):
+            yield fix_sparse_mat(m, dtype=dtype[i], device=device[i])
+        else:
+            yield fix_mat(m, order=order[i], device=device[i], dtype=dtype[i])
 
 
 def fix_sparse_mat(t, dtype, device="cpu"):
