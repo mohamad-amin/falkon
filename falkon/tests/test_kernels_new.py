@@ -7,7 +7,7 @@ import torch
 from falkon.kernels import *
 from falkon.options import FalkonOptions
 from falkon.tests.conftest import memory_checker, fix_mats
-from falkon.tests.gen_random import gen_random, gen_sparse_matrix
+from falkon.tests.gen_random import gen_random
 from falkon.tests.naive_kernels import *
 from falkon.utils import decide_cuda
 from falkon.utils.switches import decide_keops
@@ -25,11 +25,6 @@ n = 20
 m = 5
 d = 3
 t = 2
-# Sparse data dimensions
-s_n = 500
-s_m = 550
-s_d = 20000
-density = 1e-5
 
 max_mem = 2 * 2 ** 20
 basic_options = FalkonOptions(debug=True, compute_arch_speed=False,
@@ -54,30 +49,6 @@ def v() -> torch.Tensor:
 @pytest.fixture(scope="module")
 def w() -> torch.Tensor:
     return torch.from_numpy(gen_random(n, t, 'float32', False, seed=95))
-
-
-@pytest.fixture(scope="module")
-def s_A():
-    A = gen_sparse_matrix(s_n, s_d, np.float64, density=density, seed=14)
-    Ad = torch.from_numpy(A.to_scipy().todense())
-    return A, Ad
-
-
-@pytest.fixture(scope="module")
-def s_B():
-    B = gen_sparse_matrix(s_m, s_d, np.float64, density=density, seed=14)
-    Bd = torch.from_numpy(B.to_scipy().todense())
-    return B, Bd
-
-
-@pytest.fixture(scope="module")
-def s_v() -> torch.Tensor:
-    return torch.from_numpy(gen_random(s_m, t, 'float32', False, seed=94))
-
-
-@pytest.fixture(scope="module")
-def s_w() -> torch.Tensor:
-    return torch.from_numpy(gen_random(s_n, t, 'float32', False, seed=95))
 
 
 @pytest.fixture(scope="module")
@@ -106,52 +77,6 @@ def sigma(request) -> torch.Tensor:
         return torch.Tensor([3.0])
     elif request.param == "vec-sigma":
         return torch.Tensor([3.0] * d)
-
-
-def run_sparse_test(k_cls, naive_fn, s_m1, s_m2, m1, m2, v, w, rtol, atol, opt, **kernel_params):
-    kernel = k_cls(**kernel_params)
-
-    # 1. MM
-    mm_out = torch.empty(s_m1.shape[0], s_m2.shape[0], dtype=s_m1.dtype, device=s_m1.device)
-    with memory_checker(opt) as new_opt:
-        actual = kernel(s_m1, s_m2, out=mm_out, opt=new_opt)
-    with memory_checker(opt,
-                        extra_mem=m1.shape[0] * m2.shape[0] * sizeof_dtype(m1.dtype)) as new_opt:
-        actual_noout = kernel(s_m1, s_m2, opt=new_opt)
-    assert mm_out.data_ptr() == actual.data_ptr(), "sparse MM Output data tensor was not used"
-    torch.testing.assert_allclose(actual_noout, actual, rtol=rtol, atol=atol,
-                                  msg="sparse MM with out and without return different stuff")
-    expected_mm = naive_fn(m1, m2, **kernel_params)
-    torch.testing.assert_allclose(expected_mm, actual, rtol=rtol, atol=atol,
-                                  msg="sparse MM result is incorrect")
-
-    # 2. MMV
-    mmv_out = torch.empty(s_m1.shape[0], v.shape[1], dtype=s_m1.dtype, device=s_m1.device)
-    with memory_checker(opt) as new_opt:
-        actual = kernel.mmv(s_m1, s_m2, v, out=mmv_out, opt=new_opt)
-    with memory_checker(opt,
-                        extra_mem=m1.shape[0] * v.shape[1] * sizeof_dtype(m1.dtype)) as new_opt:
-        actual_noout = kernel.mmv(s_m1, s_m2, v, opt=new_opt)
-    assert mmv_out.data_ptr() == actual.data_ptr(), "sparse MMV Output data tensor was not used"
-    torch.testing.assert_allclose(actual_noout, actual, rtol=rtol, atol=atol,
-                                  msg="sparse MMV with out and without return different stuff")
-    expected_mmv = expected_mm @ v
-    torch.testing.assert_allclose(expected_mmv, actual, rtol=rtol, atol=atol,
-                                  msg="sparse MMV result is incorrect")
-
-    # 3. dMMV
-    dmmv_out = torch.empty(s_m2.shape[0], v.shape[1], dtype=s_m2.dtype, device=s_m2.device)
-    with memory_checker(opt) as new_opt:
-        actual = kernel.dmmv(s_m1, s_m2, v, w, out=dmmv_out, opt=new_opt)
-    with memory_checker(opt,
-                        extra_mem=m2.shape[0] * v.shape[1] * sizeof_dtype(m1.dtype)) as new_opt:
-        actual_noout = kernel.dmmv(s_m1, s_m2, v, w, opt=new_opt)
-    assert dmmv_out.data_ptr() == actual.data_ptr(), "sparse D-MMV Output data tensor was not used"
-    torch.testing.assert_allclose(actual_noout, actual, rtol=rtol, atol=atol,
-                                  msg="sparse D-MMV with out and without return different stuff")
-    expected_dmmv = expected_mm.T @ (expected_mmv + w)
-    torch.testing.assert_allclose(expected_dmmv, actual, rtol=rtol, atol=atol,
-                                  msg="sparse D-MMV result is incorrect")
 
 
 def run_dense_test(k_cls, naive_fn, m1, m2, v, w, rtol, atol, opt,
@@ -187,6 +112,8 @@ def run_dense_test(k_cls, naive_fn, m1, m2, v, w, rtol, atol, opt,
             actual_noout = kernel(m1, m2, opt=new_opt)
         with memory_checker(opt) as new_opt:
             actual_wgrad = kernel_wgrad(m1_wgrad, m2_wgrad, out=mm_out_wgrad, opt=new_opt)
+            torch.autograd.grad(
+                actual_wgrad.sum(), [m1_wgrad, m2_wgrad] + list(kernel_params_wgrad.values()))
 
         assert mm_out.data_ptr() == actual.data_ptr(), "MM Output data tensor was not used"
         assert mm_out_wgrad.data_ptr() == actual_wgrad.data_ptr(), "MM Output data tensor was not used"
@@ -215,6 +142,8 @@ def run_dense_test(k_cls, naive_fn, m1, m2, v, w, rtol, atol, opt,
         actual_noout = kernel.mmv(m1, m2, v, opt=new_opt)
     with memory_checker(opt) as new_opt:
         actual_wgrad = kernel_wgrad.mmv(m1_wgrad, m2_wgrad, v_wgrad, out=mmv_out_wgrad, opt=new_opt)
+        torch.autograd.grad(
+            actual_wgrad.sum(), [m1_wgrad, m2_wgrad, v_wgrad] + list(kernel_params_wgrad.values()))
     assert mmv_out.data_ptr() == actual.data_ptr(), "MMV Output data tensor was not used"
     assert mmv_out_wgrad.data_ptr() == actual_wgrad.data_ptr(), "MMV Output data tensor was not used"
     torch.testing.assert_allclose(actual_wgrad, actual, rtol=rtol, atol=atol,
@@ -231,7 +160,7 @@ def run_dense_test(k_cls, naive_fn, m1, m2, v, w, rtol, atol, opt,
             return k_cls(*_kernel_params, **kernel.nondiff_params, opt=opt).mmv(_m1, _m2, _v)
 
         torch.autograd.gradcheck(autogradcheck_mmv, inputs=(
-        m1_wgrad, m2_wgrad, v_wgrad, *kernel_params_wgrad.values()))
+            m1_wgrad, m2_wgrad, v_wgrad, *kernel_params_wgrad.values()))
 
     # 5. Double MMV (doesn't exist for gradients)
     dmmv_grad_allowed = True
@@ -265,7 +194,7 @@ def run_dense_test(k_cls, naive_fn, m1, m2, v, w, rtol, atol, opt,
             return k_cls(*_kernel_params, **kernel.nondiff_params, opt=opt).dmmv(_m1, _m2, _v, _w)
 
         torch.autograd.gradcheck(autogradcheck_dmmv, inputs=(
-        m1_wgrad, m2_wgrad, v_wgrad, w_wgrad, *kernel_params_wgrad.values()))
+            m1_wgrad, m2_wgrad, v_wgrad, w_wgrad, *kernel_params_wgrad.values()))
 
 
 @pytest.mark.parametrize("input_dev,comp_dev", device_marks)
@@ -288,26 +217,6 @@ class TestLaplacianKernel():
         run_dense_test(TestLaplacianKernel.k_class, TestLaplacianKernel.naive_fn, m1=A, m2=B,
                        v=v, w=w, rtol=rtol[A.dtype], atol=atol[A.dtype], opt=opt, sigma=sigma,
                        grad_check=True)
-
-    def test_sparse_kernel(self, s_A, s_B, s_v, s_w, sigma, rtol, atol, input_dev, comp_dev):
-        s_A, d_A = s_A
-        s_B, d_B = s_B
-        s_A, A, s_B, B, s_v, s_w, sigma = fix_mats(
-            s_A, d_A, s_B, d_B, s_v, s_w, sigma, order="C", device=input_dev, dtype=np.float32)
-        opt = dataclasses.replace(basic_options, use_cpu=comp_dev == "cpu", keops_active="no")
-        exc = None
-        try:
-            run_sparse_test(TestLaplacianKernel.k_class, TestLaplacianKernel.naive_fn,
-                            s_m1=s_A, s_m2=s_B, m1=A, m2=B, v=s_v, w=s_w, rtol=rtol[A.dtype],
-                            atol=atol[A.dtype], opt=opt, sigma=sigma)
-        except Exception as e:
-            exc = e
-        if exc is None:
-            assert len(sigma) == 1, "Sparse kernel worked unexpectedly with non-scalar sigma"
-        elif isinstance(exc, NotImplementedError) or (
-                hasattr(exc, '__cause__') and isinstance(exc.__cause__, NotImplementedError)):
-            assert len(sigma) > 1 or (input_dev == "cuda" and comp_dev == "cuda"), \
-                    "NotImplementedError thrown with scalar sigma"
 
     def test_not_all_grads(self, A, B, v, w, sigma, rtol, atol, input_dev, comp_dev):
         m1, m2, v, w, sigma = fix_mats(A, B, v, w, sigma, order="F", device=input_dev,
@@ -361,21 +270,6 @@ class TestGaussianKernel():
         run_dense_test(TestGaussianKernel.k_class, TestGaussianKernel.naive_fn, m1=A, m2=B, v=v,
                        w=w, rtol=rtol[A.dtype], atol=atol[A.dtype], opt=opt, sigma=sigma)
 
-    def test_sparse_kernel(self, s_A, s_B, s_v, s_w, sigma, rtol, atol, input_dev, comp_dev):
-        s_A, d_A = s_A
-        s_B, d_B = s_B
-        s_A, A, s_B, B, s_v, s_w, sigma = fix_mats(
-            s_A, d_A, s_B, d_B, s_v, s_w, sigma, order="C", device=input_dev, dtype=np.float32)
-        opt = dataclasses.replace(basic_options, use_cpu=comp_dev == "cpu", keops_active="no")
-        try:
-            run_sparse_test(TestGaussianKernel.k_class, TestGaussianKernel.naive_fn,
-                            s_m1=s_A, s_m2=s_B, m1=A, m2=B, v=s_v, w=s_w, rtol=rtol[A.dtype],
-                            atol=atol[A.dtype], opt=opt, sigma=sigma)
-        except NotImplementedError:
-            assert len(sigma) > 1, "NotImplementedError thrown with scalar sigma"
-        else:
-            assert len(sigma) == 1, "Sparse kernel worked unexpectedly with non-scalar sigma"
-
     @keops_mark
     def test_keops_kernel(self, A, B, v, w, sigma, rtol, atol, input_dev, comp_dev):
         A, B, v, w, sigma = fix_mats(A, B, v, w, sigma, order="F", device=input_dev,
@@ -416,21 +310,6 @@ class TestMaternKernel():
         opt = dataclasses.replace(basic_options, use_cpu=comp_dev == "cpu", keops_active="no")
         run_dense_test(TestMaternKernel.k_class, TestMaternKernel.naive_fn, m1=A, m2=B, v=v, w=w,
                        rtol=rtol[A.dtype], atol=atol[A.dtype], opt=opt, sigma=sigma, nu=nu)
-
-    def test_sparse_kernel(self, s_A, s_B, s_v, s_w, nu, sigma, rtol, atol, input_dev, comp_dev):
-        s_A, d_A = s_A
-        s_B, d_B = s_B
-        s_A, A, s_B, B, s_v, s_w, sigma = fix_mats(
-            s_A, d_A, s_B, d_B, s_v, s_w, sigma, order="C", device=input_dev, dtype=np.float32)
-        opt = dataclasses.replace(basic_options, use_cpu=comp_dev == "cpu", keops_active="no")
-        try:
-            run_sparse_test(TestMaternKernel.k_class, TestMaternKernel.naive_fn,
-                            s_m1=s_A, s_m2=s_B, m1=A, m2=B, v=s_v, w=s_w, rtol=rtol[A.dtype],
-                            atol=atol[A.dtype], opt=opt, sigma=sigma, nu=nu)
-        except NotImplementedError:
-            assert len(sigma) > 1, "NotImplementedError thrown with scalar sigma"
-        else:
-            assert len(sigma) == 1, "Sparse kernel worked unexpectedly with non-scalar sigma"
 
     @keops_mark
     def test_keops_kernel(self, A, B, v, w, nu, sigma, rtol, atol, input_dev, comp_dev):
