@@ -295,14 +295,19 @@ class TestLaplacianKernel():
         s_A, A, s_B, B, s_v, s_w, sigma = fix_mats(
             s_A, d_A, s_B, d_B, s_v, s_w, sigma, order="C", device=input_dev, dtype=np.float32)
         opt = dataclasses.replace(basic_options, use_cpu=comp_dev == "cpu", keops_active="no")
+        exc = None
         try:
             run_sparse_test(TestLaplacianKernel.k_class, TestLaplacianKernel.naive_fn,
                             s_m1=s_A, s_m2=s_B, m1=A, m2=B, v=s_v, w=s_w, rtol=rtol[A.dtype],
                             atol=atol[A.dtype], opt=opt, sigma=sigma)
-        except NotImplementedError:
-            assert len(sigma) > 1, "NotImplementedError thrown with scalar sigma"
-        else:
+        except Exception as e:
+            exc = e
+        if exc is None:
             assert len(sigma) == 1, "Sparse kernel worked unexpectedly with non-scalar sigma"
+        elif isinstance(exc, NotImplementedError) or (
+                hasattr(exc, '__cause__') and isinstance(exc.__cause__, NotImplementedError)):
+            assert len(sigma) > 1 or (input_dev == "cuda" and comp_dev == "cuda"), \
+                    "NotImplementedError thrown with scalar sigma"
 
     def test_not_all_grads(self, A, B, v, w, sigma, rtol, atol, input_dev, comp_dev):
         m1, m2, v, w, sigma = fix_mats(A, B, v, w, sigma, order="F", device=input_dev,

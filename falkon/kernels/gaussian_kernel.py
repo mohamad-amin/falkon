@@ -5,7 +5,7 @@ from typing import Union, Optional, Dict, Any
 
 import torch
 
-import sparse
+from falkon import sparse
 from falkon.sparse import SparseTensor
 
 from falkon.kernels import KeopsKernelMixin, Kernel
