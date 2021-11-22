@@ -122,11 +122,11 @@ class LinearKernel(DiffKernel):
             'Y = Vj(%d)' % (X2.shape[1]),
             'v = Vj(%d)' % (v.shape[1]),
             'gamma = Pm(1)',
-            'beta = Pm(1)'
+            'beta = Pm(1)',
         ]
         other_vars = [
-            torch.tensor([self.gamma]).to(dtype=X1.dtype, device=X1.device),
-            torch.tensor([self.beta]).to(dtype=X1.dtype, device=X1.device)
+            self.gamma.reshape(1, 1).to(dtype=X1.dtype, device=X1.device),
+            self.beta.reshape(1, 1).to(dtype=X1.dtype, device=X1.device),
         ]
         return self.keops_mmv(X1, X2, v, out, formula, aliases, other_vars, opt)
 
@@ -187,19 +187,19 @@ class PolynomialKernel(DiffKernel):
                          degree=self.degree)
 
     def _keops_mmv_impl(self, X1, X2, v, kernel, out, opt):
-        formula = 'Powf((alpha * (X | Y) + beta), degree) * v'
+        formula = 'Powf((gamma * (X | Y) + beta), degree) * v'
         aliases = [
             'X = Vi(%d)' % (X1.shape[1]),
             'Y = Vj(%d)' % (X2.shape[1]),
             'v = Vj(%d)' % (v.shape[1]),
-            'alpha = Pm(1)',
+            'gamma = Pm(1)',
             'beta = Pm(1)',
             'degree = Pm(1)',
         ]
         other_vars = [
-            torch.tensor([self.gamma]).to(dtype=X1.dtype, device=X1.device),
-            torch.tensor([self.beta]).to(dtype=X1.dtype, device=X1.device),
-            torch.tensor([self.degree]).to(dtype=X1.dtype, device=X1.device)
+            self.gamma.reshape(1, 1).to(dtype=X1.dtype, device=X1.device),
+            self.beta.reshape(1, 1).to(dtype=X1.dtype, device=X1.device),
+            self.degree.reshape(1, 1).to(dtype=X1.dtype, device=X1.device),
         ]
 
         return self.keops_mmv(X1, X2, v, out, formula, aliases, other_vars, opt)
