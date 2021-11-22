@@ -98,7 +98,7 @@ def mmv_run_starter(proc_idx, queue, device_id):
     n, d = X1.shape
     m, t = v.shape
     if differentiable:
-        diff_coef_nm = 10
+        diff_coef_nm = 4
         assert not is_sparse, "Sparse + differentiable mmvs are not supported"
         blk_n, blk_m = select_dim_over_nm_v2(
             max_n=n, max_m=m, max_mem=avail_mem,

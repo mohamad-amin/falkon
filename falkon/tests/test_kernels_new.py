@@ -112,8 +112,8 @@ def run_dense_test(k_cls, naive_fn, m1, m2, v, w, rtol, atol, opt,
             actual_noout = kernel(m1, m2, opt=new_opt)
         with memory_checker(opt) as new_opt:
             actual_wgrad = kernel_wgrad(m1_wgrad, m2_wgrad, out=mm_out_wgrad, opt=new_opt)
-            torch.autograd.grad(
-                actual_wgrad.sum(), [m1_wgrad, m2_wgrad] + list(kernel_params_wgrad.values()))
+            #torch.autograd.grad(
+            #    actual_wgrad.sum(), [m1_wgrad, m2_wgrad] + list(kernel_params_wgrad.values()))
 
         assert mm_out.data_ptr() == actual.data_ptr(), "MM Output data tensor was not used"
         assert mm_out_wgrad.data_ptr() == actual_wgrad.data_ptr(), "MM Output data tensor was not used"
