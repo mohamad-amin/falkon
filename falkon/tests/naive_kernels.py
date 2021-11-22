@@ -20,18 +20,18 @@ def naive_diff_laplacian_kernel(X1, X2, sigma):
     return torch.exp(-pairwise_dists)
 
 
-def naive_diff_linear_kernel(X1, X2, beta, sigma):
-    return naive_linear_kernel(X1, X2, beta, sigma)
+def naive_diff_linear_kernel(X1, X2, beta, gamma):
+    return naive_linear_kernel(X1, X2, beta, gamma)
 
 
-def naive_diff_sigmoid_kernel(X1, X2, alpha, beta):
+def naive_diff_sigmoid_kernel(X1, X2, gamma, beta):
     out = X1 @ X2.T
-    return torch.tanh(out * alpha + beta)
+    return torch.tanh(out * gamma + beta)
 
 
-def naive_diff_polynomial_kernel(X1, X2, alpha, beta, degree):
+def naive_diff_polynomial_kernel(X1, X2, gamma, beta, degree):
     out = X1 @ X2.T
-    return torch.pow(out * alpha + beta, degree)
+    return torch.pow(out * gamma + beta, degree)
 
 
 def naive_diff_matern_kernel(X1, X2, sigma, nu):
@@ -60,8 +60,8 @@ def naive_laplacian_kernel(X1, X2, sigma):
     return np.exp(-pairwise_dists / sigma)
 
 
-def naive_linear_kernel(X1, X2, beta, sigma):
-    return beta + (1 / sigma ** 2) * X1 @ X2.T
+def naive_linear_kernel(X1, X2, beta, gamma):
+    return beta + gamma * X1 @ X2.T
 
 
 def naive_sigmoid_kernel(X1, X2, alpha, beta):

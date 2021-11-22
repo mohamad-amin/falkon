@@ -619,7 +619,7 @@ class KernelMmvFnFull(torch.autograd.Function):
             differentiable = False
         else:
             _check_contiguity((X1, 'X1'), (X2, 'X2'), (v, 'v'), (out, 'out'))
-            differentiable = any([t.requires_grad for t in [X1, X2, v] + list(*kernel_params)])
+            differentiable = any([t.requires_grad for t in [X1, X2, v] + [*kernel_params]])
         data_devs = (X1.device, X2.device, v.device)
         comp_dev_type = 'cpu' if opt.use_cpu or not torch.cuda.is_available() else 'cuda'
         N, D = X1.shape

@@ -56,6 +56,26 @@ def w() -> torch.Tensor:
     return torch.from_numpy(gen_random(n, t, 'float32', False, seed=95))
 
 
+@pytest.fixture(scope="module")
+def rtol():
+    return {
+        np.float64: 1e-12,
+        torch.float64: 1e-12,
+        np.float32: 1e-4,
+        torch.float32: 1e-4
+    }
+
+
+@pytest.fixture(scope="module")
+def atol():
+    return {
+        np.float64: 1e-12,
+        torch.float64: 1e-12,
+        np.float32: 1e-4,
+        torch.float32: 1e-4
+    }
+
+
 def run_sparse_test(k_cls, naive_fn, s_m1, s_m2, m1, m2, v, w, rtol, atol, opt, **kernel_params):
     kernel = k_cls(**kernel_params)
 
@@ -169,3 +189,23 @@ class TestMaternKernel():
         run_sparse_test_wsigma(TestMaternKernel.k_class, TestMaternKernel.naive_fn,
                                s_m1=s_A, s_m2=s_B, m1=A, m2=B, v=v, w=w, rtol=rtol[A.dtype],
                                atol=atol[A.dtype], opt=opt, comp_dev=comp_dev, sigma=sigma, nu=nu)
+
+
+@pytest.mark.parametrize("input_dev,comp_dev", device_marks)
+class TestPolynomialKernel():
+    naive_fn = naive_diff_polynomial_kernel
+    k_class = PolynomialKernel
+    beta = torch.tensor(1.0)
+    gamma = torch.tensor(2.0)
+    degree = torch.tensor(1.5)
+
+    def test_sparse_kernel(self, s_A, s_B, v, w, rtol, atol, input_dev, comp_dev):
+        s_A, d_A = s_A
+        s_B, d_B = s_B
+        s_A, A, s_B, B, v, w, beta, gamma, degree = fix_mats(
+            s_A, d_A, s_B, d_B, v, w, self.beta, self.gamma, self.degree, order="C",
+            device=input_dev, dtype=np.float32)
+        opt = dataclasses.replace(basic_options, use_cpu=comp_dev == "cpu", keops_active="no")
+        run_sparse_test(TestPolynomialKernel.k_class, TestPolynomialKernel.naive_fn,
+                        s_m1=s_A, s_m2=s_B, m1=A, m2=B, v=v, w=w, rtol=rtol[A.dtype],
+                        atol=atol[A.dtype], opt=opt, beta=beta, gamma=gamma, degree=degree)

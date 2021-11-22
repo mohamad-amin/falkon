@@ -320,7 +320,7 @@ class KernelMmFnFull(torch.autograd.Function):
             differentiable = False
         else:
             _check_contiguity((X1, 'X1'), (X2, 'X2'), (out, 'out'))
-            differentiable = any([t.requires_grad for t in [X1, X2] + list(*kernel_params)])
+            differentiable = any([t.requires_grad for t in [X1, X2] + [*kernel_params]])
 
         N = X1.shape[0]
         M = X2.shape[0]
