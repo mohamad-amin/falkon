@@ -13,10 +13,14 @@ __all__ = (
 
 
 def _fcontig_strides(sizes) -> Tuple[int, ...]:
+    if len(sizes) == 0:
+        return tuple()
     return tuple([1] + np.cumprod(sizes)[:-1].tolist())
 
 
 def _ccontig_strides(sizes) -> Tuple[int, ...]:
+    if len(sizes) == 0:
+        return tuple()
     return tuple(np.cumprod(sizes[1:][::-1])[::-1].tolist() + [1])
 
 
@@ -168,6 +172,8 @@ def is_f_contig(tensor: torch.Tensor, strict: bool = False) -> bool:
     # noinspection PyArgumentList
     strides = tensor.stride()
     sizes = tensor.shape
+    if len(sizes) == 0:
+        return True
     if len(sizes) == 1:
         return strides[0] == 1
     # 2 checks for 1D tensors which look 2D
