@@ -291,7 +291,7 @@ def _runner_str(fname_X, fname_Y, fname_out, num_centers, num_rep, max_iter, gpu
 
 @pytest.mark.skipif(not decide_cuda(), reason="No GPU found.")
 class TestStressInCore:
-    def test_multiple_falkons(self):
+    def _test_multiple_falkons(self):
         num_processes = 6
         num_rep = 5
         max_iter = 15
@@ -321,7 +321,7 @@ class TestStressInCore:
                                          'fname_out': out_files[i],
                                          'num_rep': num_rep,
                                          'max_iter': max_iter,
-                                         'gpu_num': num_gpus % i
+                                         'gpu_num': num_gpus % (i + 1)
                                      },
                                      daemon=False)
                 threads.append(t)

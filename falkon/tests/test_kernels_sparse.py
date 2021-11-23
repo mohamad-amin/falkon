@@ -56,6 +56,16 @@ def w() -> torch.Tensor:
     return torch.from_numpy(gen_random(n, t, 'float32', False, seed=95))
 
 
+
+@pytest.fixture(params=["single-sigma", "vec-sigma"], scope="class")
+def sigma(request) -> torch.Tensor:
+    if request.param == "single-sigma":
+        return torch.Tensor([3.0])
+    elif request.param == "vec-sigma":
+        return torch.Tensor([3.0] * d)
+
+
+
 @pytest.fixture(scope="module")
 def rtol():
     return {
@@ -80,7 +90,7 @@ def run_sparse_test(k_cls, naive_fn, s_m1, s_m2, m1, m2, v, w, rtol, atol, opt, 
     kernel = k_cls(**kernel_params)
 
     # 1. MM
-    mm_out = torch.empty(s_m1.shape[0], s_m2.shape[0], dtype=s_m1.dtype, device=s_m1.device)
+    mm_out = torch.empty(s_m2.shape[0], s_m1.shape[0], dtype=s_m1.dtype, device=s_m1.device).T
     with memory_checker(opt) as new_opt:
         actual = kernel(s_m1, s_m2, out=mm_out, opt=new_opt)
     with memory_checker(opt,
@@ -137,6 +147,8 @@ def run_sparse_test_wsigma(k_cls, naive_fn, s_m1, s_m2, m1, m2, v, w, rtol, atol
             hasattr(exc, '__cause__') and isinstance(exc.__cause__, NotImplementedError)):
         assert len(sigma) > 1 or (m1.device.type == "cuda" and comp_dev == "cuda"), \
                 "NotImplementedError thrown with scalar sigma"
+    else:
+        raise exc
 
 
 @pytest.mark.parametrize("input_dev,comp_dev", device_marks)
@@ -206,6 +218,16 @@ class TestPolynomialKernel():
             s_A, d_A, s_B, d_B, v, w, self.beta, self.gamma, self.degree, order="C",
             device=input_dev, dtype=np.float32)
         opt = dataclasses.replace(basic_options, use_cpu=comp_dev == "cpu", keops_active="no")
-        run_sparse_test(TestPolynomialKernel.k_class, TestPolynomialKernel.naive_fn,
-                        s_m1=s_A, s_m2=s_B, m1=A, m2=B, v=v, w=w, rtol=rtol[A.dtype],
-                        atol=atol[A.dtype], opt=opt, beta=beta, gamma=gamma, degree=degree)
+        exc = None
+        try:
+            run_sparse_test(TestPolynomialKernel.k_class, TestPolynomialKernel.naive_fn,
+                            s_m1=s_A, s_m2=s_B, m1=A, m2=B, v=v, w=w, rtol=rtol[A.dtype],
+                            atol=atol[A.dtype], opt=opt, beta=beta, gamma=gamma, degree=degree)
+        except Exception as e:
+            exc = e
+        if isinstance(exc, NotImplementedError) or (
+                hasattr(exc, '__cause__') and isinstance(exc.__cause__, NotImplementedError)):
+            assert (m1.device.type == "cuda" and comp_dev == "cuda"), \
+                    "NotImplementedError thrown not in a in-core situation"
+        else:
+            raise exc

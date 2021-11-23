@@ -81,6 +81,8 @@ class TestNormSquare():
         exp = torch.norm(mat, p=2, dim=0, keepdim=True).pow(2)
         act = square_norm_diff(mat, 0, True)
         torch.testing.assert_allclose(exp, act)
+        if dtype == np.float32:
+            return
         torch.autograd.gradcheck(lambda m: square_norm_diff(m, 0, True), inputs=[mat])
         torch.autograd.gradcheck(lambda m: square_norm_diff(m, 1, True), inputs=[mat])
 
@@ -96,6 +98,8 @@ class TestNormSquare():
         exp = torch.norm(mat, p=2, dim=-1, keepdim=False).pow(2)
         act = square_norm_diff(mat, dim=-1, keepdim=False)
         torch.testing.assert_allclose(exp, act)
+        if dtype == np.float32:
+            return
         torch.autograd.gradcheck(lambda m: square_norm_diff(m, dim=-1, keepdim=False), inputs=[mat])
         torch.autograd.gradcheck(lambda m: square_norm_diff(m, dim=-2, keepdim=False), inputs=[mat])
 
@@ -111,6 +115,8 @@ class TestNormSquare():
         exp = torch.norm(mat, p=2, dim=0, keepdim=False).pow(2)
         act = square_norm_diff(mat, dim=0, keepdim=False)
         torch.testing.assert_allclose(exp, act)
+        if dtype == np.float32:
+            return
         torch.autograd.gradcheck(lambda m: square_norm_diff(m, dim=0, keepdim=False), inputs=[mat])
         torch.autograd.gradcheck(lambda m: square_norm_diff(m, dim=1, keepdim=False), inputs=[mat])
 
@@ -399,7 +405,6 @@ class TestVecMulTriangSimple:
 
 
 
-@pytest.mark.parametrize("device", ["cpu", "cuda:0"])
 class TestVecMulTriang:
     t = 120
 
