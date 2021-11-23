@@ -18,7 +18,7 @@ from falkon.kernels import Kernel
 from falkon.utils.tensor_helpers import (
     extract_fortran, extract_same_stride, is_f_contig
 )
-from utils.device_copy import copy
+from falkon.utils.device_copy import copy
 
 
 @dataclass(frozen=True)

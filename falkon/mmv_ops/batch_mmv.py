@@ -15,7 +15,7 @@ from falkon.utils.helpers import (
 from falkon.utils.tensor_helpers import (
     create_same_stride,
 )
-from mmv_ops.fmmv import ArgsFmmv
+from falkon.mmv_ops.fmmv import ArgsFmmv
 
 
 def mmv_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: torch.Tensor, vout: torch.Tensor,

@@ -6,6 +6,7 @@ from typing import List
 import numpy as np
 import torch
 
+from falkon.utils.stream_utils import sync_current_stream
 from falkon.cuda.cublas_gpu import *
 from falkon.cuda.cudart_gpu import cuda_memcpy2d_async
 from falkon.utils.helpers import choose_fn, sizeof_dtype
@@ -63,7 +64,10 @@ def par_lauum_f_lower(A: torch.Tensor,
     max_block_size = max(ba.length for ba in block_allocs)
     my_rows = sorted(my_rows)
 
-    with torch.cuda.device(tc_device), torch.cuda.stream(s1), cublas_stream(cublas_handle, s1._as_parameter_):
+    sync_current_stream(tc_device)
+    with torch.cuda.device(tc_device), \
+         torch.cuda.stream(s1), \
+         cublas_stream(cublas_handle, s1._as_parameter_):
         # Pre allocate b-col, syrk-out, lauum-out
         mem_needed = N * max_block_size + 2 * (max_block_size ** 2)
         if not is_cuda:
@@ -77,7 +81,7 @@ def par_lauum_f_lower(A: torch.Tensor,
         if not is_cuda:
             temp_bb = create_fortran((max_block_size, max_block_size), A.dtype, 'cpu', pin_memory=True)
             whole_col_r, f_offset = _extract_flat(f_gpu, (N, max_block_size), other=A, offset=f_offset)
-        syrk_out.fill_(0.0)
+        syrk_out.fill_(0.0)  # Only needed at the start, since SYRK always only touches one triangle.
 
         for b in range(len(block_allocs)):
             bb = block_allocs[b]
@@ -87,16 +91,7 @@ def par_lauum_f_lower(A: torch.Tensor,
             try:
                 min_row = min([r for r in my_rows if r >= b])
                 b_start = block_allocs[min_row].start
-                if is_cuda:
-                    col_b = whole_col_b[b_start:, :bb.length]
-                    col_b.copy_(A[b_start:N, bb.start:bb.end])
-                else:
-                    col_b: torch.Tensor = copy(A[b_start:, bb.start: bb.end], whole_col_b[b_start:, :bb.length], s=s1)
-                    # TODO: This used to be
-                    # copy_to_device(
-                    #    N - b_start, bb.length, A, b_start, bb.start, whole_col_b, 0, 0, s1)
-                    # which is different (whole_col_b used from row 0).
-                    # TODO: The two code-paths can be merged
+                col_b = copy(A[b_start: N, bb.start: bb.end], whole_col_b[b_start: , :bb.length], s=s1)
             except ValueError:
                 pass  # No column here
             if not independent_output:
@@ -128,7 +123,8 @@ def par_lauum_f_lower(A: torch.Tensor,
                             # In normal case we need triu(Abb) to be preserved in the upper triangle of lauum_out
                             cur_lauum_out.copy_(col_b[:bb.length, :bb.length])
 
-                        # LAUUM on col_b[:bb.length, :bb.length], into lauum_out[:bb.length, :bb.length]
+                        # LAUUM on col_b[:bb.length, :bb.length], into cur_lauum_out[:bb.length, :bb.length]
+                        # Here the lower-part of cur_lauum_out is over-written
                         lauum_cuda(n=bb.length, A=col_b[:bb.length, :bb.length], lda=col_b.stride(1),
                                    B=cur_lauum_out, ldb=max_block_size, lower=True)
                     s1.wait_stream(s3)  # all subsequent work will need cur_lauum_out
@@ -143,7 +139,7 @@ def par_lauum_f_lower(A: torch.Tensor,
                     if independent_output:
                         # cuda and non-cuda cases, since we have different orderings (this will require extra buffer)
                         Abb.copy_(cur_lauum_out.T)
-                    elif is_cuda:
+                    else:
                         copy(cur_lauum_out, Abb, s=s1)
                 elif r > b:
                     br = block_allocs[r]
@@ -152,7 +148,7 @@ def par_lauum_f_lower(A: torch.Tensor,
                     if is_cuda:  # If col_r is already in GPU no copy needed.
                         col_r = A[br.start:N, br.start:br.end]
                     else:
-                        col_r = copy(A[br.start:, br.start: br.end], whole_col_r[:N - br.start, :br.length], s=s1)
+                        col_r = copy(A[br.start:N, br.start: br.end], whole_col_r[:N - br.start, :br.length], s=s1)
                     # Restrict column b to only the last 'r' rows
                     ccb = col_b[br.start - b_start:, :]
 
@@ -175,9 +171,9 @@ def par_lauum_f_lower(A: torch.Tensor,
                         gemm_fn(handle=cublas_handle,
                                 transa='T', transb='N',
                                 m=br.length, n=bb.length, k=col_r.shape[0] - br.length,
-                                alpha=1.0, A=col_r[br.length:, :].data_ptr(), lda=col_r.stride(1),
-                                B=ccb[br.length:, :].data_ptr(), ldb=ccb.stride(1),
-                                beta=1.0, C=ccb.data_ptr(), ldc=ccb.stride(1))
+                                alpha=1.0, A=col_r[br.length:, :].data_ptr(), lda=col_r.stride(1),  # A is k * m
+                                B=ccb[br.length:, :].data_ptr(), ldb=ccb.stride(1),                 # B is k * n
+                                beta=1.0, C=ccb.data_ptr(), ldc=ccb.stride(1))                # C is m * n
                     # Copy back to A[r, b]
                     if independent_output:
                         if is_cuda:
@@ -214,6 +210,7 @@ def par_lauum_c_lower(A: torch.Tensor,
     max_block_size = max(ba.length for ba in block_allocs)
     my_rows = sorted(my_rows)
 
+    sync_current_stream(tc_device)
     with torch.cuda.device(tc_device), torch.cuda.stream(s1), cublas_stream(cublas_handle, s1_cuda):
         if not is_cuda:
             temp_bb = create_fortran((max_block_size, max_block_size), A.dtype, 'cpu', pin_memory=True).T
