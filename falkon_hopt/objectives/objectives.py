@@ -35,6 +35,8 @@ class FakeTorchModelMixin(abc.ABC):
 
 
 class HyperoptObjective(FakeTorchModelMixin, abc.ABC):
+    losses_are_grads = False
+
     @abc.abstractmethod
     def predict(self, X):
         pass

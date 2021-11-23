@@ -3,12 +3,12 @@ from typing import Dict, Optional
 import torch
 from falkon import FalkonOptions
 
-from objectives.exact_objectives import (
+from falkon_hopt.objectives.exact_objectives import (
     SGPR, NystromGCV, NystromLOOCV, NystromHoldOut, CregNoTrace,
     DeffPenFitTr
 )
-from objectives.stoch_objectives.stoch_new_compreg import StochasticDeffPenFitTr
-from objectives.stoch_objectives.svgp import SVGP
+from falkon_hopt.objectives.stoch_objectives.stoch_new_compreg import StochasticDeffPenFitTr
+from falkon_hopt.objectives.stoch_objectives.svgp import SVGP
 
 
 def init_model(model_type: str,

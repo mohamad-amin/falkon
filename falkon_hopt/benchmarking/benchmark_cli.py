@@ -246,7 +246,7 @@ if __name__ == "__main__":
                    help="Number of Nystrom centers for Falkon")
     p.add_argument('--val-pct', type=float, default=0,
                    help="Fraction of validation data (hgrad experiments)")
-    p.add_argument('--per-iter-split', action='sotre_true',
+    p.add_argument('--per-iter-split', action='store_true',
                    help="For validation-split based objectives, determines whether the split is "
                         "changed at each iteration or not.")
     p.add_argument('--optimizer', type=str, default='adam')
