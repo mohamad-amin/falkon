@@ -170,6 +170,7 @@ def run_optimization(
         minibatch: int,
         loss_every: int,
         early_stop_epochs: int,
+        cgtol_decrease_epochs: Optional[int],
 ):
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -205,7 +206,8 @@ def run_optimization(
                                     model=model, err_fn=partial(err_fns[0], **metadata),
                                     learning_rate=learning_rate, num_epochs=num_epochs,
                                     cuda=cuda, verbose=False, loss_every=loss_every,
-                                    optimizer=optimizer, early_stop_epochs=early_stop_epochs)
+                                    optimizer=optimizer, early_stop_epochs=early_stop_epochs,
+                                    cgtol_decrease_epochs=cgtol_decrease_epochs)
     else:
         logs = train_complexity_reg_mb(Xtr=Xtr, Ytr=Ytr,
                                        Xts=Xts, Yts=Yts,
@@ -213,7 +215,8 @@ def run_optimization(
                                        learning_rate=learning_rate, num_epochs=num_epochs,
                                        cuda=cuda, verbose=False, loss_every=loss_every,
                                        optimizer=optimizer, minibatch=minibatch,
-                                       early_stop_epochs=early_stop_epochs)
+                                       early_stop_epochs=early_stop_epochs,
+                                       cgtol_decrease_epochs=cgtol_decrease_epochs)
     save_logs(logs, exp_name=exp_name)
 
 
@@ -263,6 +266,8 @@ if __name__ == "__main__":
     p.add_argument('--early-stop-every', type=int, default=201,
                    help="How many epochs without training loss improvements before stopping the "
                         "optimization.")
+    p.add_argument('--cgtol_decrease_every', type=int, default=999,
+                   help="Every how many epochs to decrease the convergence tolerance.")
     p.add_argument('--cuda', action='store_true')
     p.add_argument('--fetch-loss', action='store_true')
     args = p.parse_args()
@@ -298,4 +303,5 @@ if __name__ == "__main__":
                          optimizer=args.optimizer,
                          num_trace_vecs=args.num_t, flk_maxiter=args.flk_maxiter,
                          minibatch=args.mb, loss_every=args.loss_every,
-                         early_stop_epochs=args.early_stop_every)
+                         early_stop_epochs=args.early_stop_every,
+                         cgtol_decrease_epochs=args.cgtol_decrease_every,)
