@@ -76,7 +76,7 @@ def run_simple_hopt(sigma_init: Union[float, str],
         f"--num-t {num_trace_vecs}",
         f"--flk-maxiter {flk_maxiter}",
         f"--cuda",
-        f"--loss-every 11",
+        f"--loss-every 2",
         f"--early-stop-every 201",
         f"--name {exp_name_final}",
     ]
@@ -157,25 +157,25 @@ def run():
                 "energy", "covtype", "ho-higgs", "ijcnn1",
                 "road3d", "buzz", "houseelectric", "mnist-small", "svhn",
                 "fashionmnist"]
-    datasets = ["ho-higgs"]
+    datasets = ["flights"]
     num_epochs = 200
     learning_rate = 0.05
-    M = 100
-    opt_m = False
+    M = 5000
+    opt_m = True
     val_pct = 0.6
     optim = "adam"
     sigma = "diag"
-    extra_exp_name = "large_stoch_auto1"
-    sigma_init = "auto"
+    extra_exp_name = "reb_v3"
+    sigma_init = 1
     penalty_init = "auto"
     # Stochastic stuff
-    flk_maxiter = 100
+    flk_maxiter = 30
     num_trace_vecs = 20
     cg_tol = 1e-3
     # Models to use for training
     models = ["sgpr", "holdout", "gcv", "creg-notrace", "creg-penfit-special", "creg-penfit-divtr"]
-    models = ["stoch-creg-penfit"]
     models = ["creg-notrace", "holdout", "creg-penfit", "sgpr", "gcv"]#, "loocv"]
+    models = ["stoch-creg-penfit"]
 
     for dset in datasets:
         run_for_models(
