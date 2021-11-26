@@ -40,6 +40,8 @@ class StopOptimizationException(Exception):
 
 
 class Optimizer(object):
+    """Base class for optimizers. This is an empty shell at the moment.
+    """
     def __init__(self):
         pass
 
