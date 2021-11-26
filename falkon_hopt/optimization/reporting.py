@@ -1,3 +1,4 @@
+import dataclasses
 from typing import Optional, Dict
 import os
 
@@ -107,7 +108,8 @@ def pred_reporting(model: HyperoptObjective,
     sigma, penalty, centers = model.sigma, model.penalty, model.centers
 
     if resolve_model:
-        flk_opt = FalkonOptions(use_cpu=not torch.cuda.is_available(), cg_tolerance=1e-4, cg_epsilon_32=1e-6)
+        flk_opt = FalkonOptions(use_cpu=not torch.cuda.is_available(), cg_tolerance=1e-4,
+                                cg_epsilon_32=1e-6)
         from falkon.kernels import GaussianKernel
         from falkon.center_selection import FixedSelector
         kernel = GaussianKernel(sigma.detach().flatten(), flk_opt)
@@ -122,7 +124,7 @@ def pred_reporting(model: HyperoptObjective,
         warm_start = None
         if hasattr(model, "last_beta") and model.last_beta is not None:
             warm_start = model.last_beta.to(Xtr_full.device)
-        flk_model.fit(Xtr_full, Ytr_full, warm_start=warm_start)#, Xts, Yts)
+        flk_model.fit(Xtr_full, Ytr_full, warm_start=warm_start)  # , Xts, Yts)
         model = flk_model
 
     # Predict in mini-batches
@@ -169,6 +171,7 @@ def epoch_bookkeeping(
         losses,
         loss_every: int,
         early_stop_patience: Optional[int],
+        accuracy_increase_patience: Optional[int],
         schedule,
         minibatch: Optional[int],
         logs: list,
@@ -204,3 +207,19 @@ def epoch_bookkeeping(
                     past_errs.append(abs(plog['train_error']))
             if np.argmin(past_errs) == 0:  # The minimal error in the oldest log
                 raise EarlyStop(f"Early stopped at epoch {epoch} with past errors: {past_errs}.")
+    from falkon_hopt.objectives.stoch_objectives.stoch_new_compreg import StochasticDeffPenFitTr
+    if (accuracy_increase_patience is not None and
+            len(logs) >= accuracy_increase_patience and
+            isinstance(model, StochasticDeffPenFitTr)):
+        if "train_error" in logs[-1]:
+            past_errs = []
+            past_logs = logs[-accuracy_increase_patience:]  # Last n logs from most oldest to most recent
+            for plog in past_logs:
+                if 'train_error' in plog:
+                    past_errs.append(abs(plog['train_error']))
+            if np.argmin(past_errs) == 0:  # The minimal error in the oldest log
+                cur_acc = model.flk_opt.cg_tolerance
+                new_acc = cur_acc / 10
+                print("INFO: Changing tolerance to %e" % (new_acc))
+                new_opt = dataclasses.replace(model.flk_opt, cg_tolerance=new_acc)
+                model.flk_opt = new_opt

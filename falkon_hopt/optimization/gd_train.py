@@ -1,6 +1,6 @@
 import time
 from functools import reduce
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 import numpy as np
 import torch
@@ -89,6 +89,7 @@ def train_complexity_reg(
         verbose: bool,
         loss_every: int,
         early_stop_epochs: int,
+        cgtol_decrease_epochs: Optional[int],
         optimizer: str,
         retrain_nkrr: bool = False,
 ) -> List[Dict[str, float]]:
@@ -127,7 +128,8 @@ def train_complexity_reg(
                 epoch_bookkeeping(epoch=epoch, model=model, data={'Xtr': Xtr, 'Ytr': Ytr, 'Xts': Xts, 'Yts': Yts},
                                   err_fn=err_fn, grads=grads, losses=losses, loss_every=loss_every,
                                   early_stop_patience=early_stop_epochs, schedule=schedule, minibatch=None,
-                                  logs=logs, cum_time=cum_time, verbose=verbose)
+                                  logs=logs, cum_time=cum_time, verbose=verbose,
+                                  accuracy_increase_patience=cgtol_decrease_epochs)
             except EarlyStop as e:
                 print(e)
                 break
@@ -160,6 +162,7 @@ def train_complexity_reg_mb(
         verbose: bool,
         loss_every: int,
         early_stop_epochs: int,
+        cgtol_decrease_epochs: Optional[int],
         optimizer: str,
         minibatch: int,
         retrain_nkrr: bool = False,
@@ -194,7 +197,8 @@ def train_complexity_reg_mb(
             epoch_bookkeeping(epoch=epoch, model=model, data={'Xtr': Xtrc, 'Ytr': Ytrc, 'Xts': Xtsc, 'Yts': Ytsc},
                               err_fn=err_fn, grads=None, losses=None, loss_every=loss_every,
                               early_stop_patience=early_stop_epochs, schedule=schedule, minibatch=minibatch,
-                              logs=logs, cum_time=cum_time, verbose=verbose)
+                              logs=logs, cum_time=cum_time, verbose=verbose,
+                              accuracy_increase_patience=cgtol_decrease_epochs)
         except EarlyStop as e:
             print(e)
             break
