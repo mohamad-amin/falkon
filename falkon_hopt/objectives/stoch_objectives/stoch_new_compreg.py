@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, Optional
 
 import numpy as np
 import torch
@@ -53,12 +53,14 @@ class StochasticDeffPenFitTr(NKRRHyperoptObjective):
         self.deterministic_ste = True
         self.gaussian_ste = True
         self.warm_start = True
+        self.trace_type = "fast"
 
     def hp_loss(self, X, Y):
         loss = creg_penfit(kernel_args=self.sigma, penalty=self.penalty, centers=self.centers,
                            X=X, Y=Y, num_estimators=self.num_trace_est, deterministic=self.deterministic_ste,
                            solve_options=self.flk_opt, solve_maxiter=self.flk_maxiter,
-                           gaussian_random=self.gaussian_ste, warm_start=self.warm_start)
+                           gaussian_random=self.gaussian_ste, warm_start=self.warm_start,
+                           trace_type=self.trace_type)
         return [loss]
 
     def predict(self, X):
@@ -90,38 +92,68 @@ class StochasticDeffPenFitTr(NKRRHyperoptObjective):
                f"cg_tolerance={self.flk_opt.cg_tolerance})"
 
 
-def calc_trace_fwd(init_val, k_mn, k_mn_zy, kmm_chol, use_stoch_trace, t):
+def calc_trace_fwd(init_val: torch.Tensor,
+                   k_mn: Optional[torch.Tensor],
+                   k_mn_zy: Optional[torch.Tensor],
+                   kmm_chol: torch.Tensor,
+                   X: Optional[torch.Tensor],
+                   t: Optional[int],
+                   trace_type: str):
     """ Nystrom kernel trace forward """
-    if use_stoch_trace:
+    if trace_type == "ste":
+        assert k_mn_zy is not None and t is not None, "Incorrect arguments to trace_fwd"
         solve1 = torch.triangular_solve(k_mn_zy[:, :t], kmm_chol, upper=False,
                                         transpose=False).solution  # m * t
         solve2 = torch.triangular_solve(solve1, kmm_chol, upper=False,
                                         transpose=True).solution.contiguous()  # m * t
         init_val -= solve1.square_().sum(0).mean()
-    else:
+    elif trace_type == "direct":
+        assert k_mn is not None, "Incorrect arguments to trace_fwd"
         solve1 = trsm(k_mn, kmm_chol, 1.0, lower=True, transpose=False)  # (M*N)
         solve2 = trsm(solve1, kmm_chol, 1.0, lower=True, transpose=True)  # (M*N)
         init_val -= solve1.square_().sum()
+    elif trace_type == "fast":
+        assert k_mn_zy is not None and t is not None, "Incorrect arguments to trace_fwd"
+        k_subs = k_mn_zy
+        assert k_subs.shape == (kmm_chol.shape[0], t), "Shape incorrect"  # m * t
+        solve1 = torch.triangular_solve(
+            k_subs, kmm_chol, upper=False, transpose=False).solution  # m * t
+        solve2 = torch.triangular_solve(
+            solve1, kmm_chol, upper=False, transpose=True).solution.contiguous()  # m * t
+        norm = X.shape[0] / t
+        init_val -= solve1.square_().sum() * norm
+    else:
+        raise ValueError("Trace-type %s unknown" % (trace_type))
     return init_val, solve2
 
 
-def calc_trace_bwd(k_mn, k_mn_zy, solve2, kmm, use_stoch_trace, t):
+def calc_trace_bwd(k_mn: Optional[torch.Tensor],
+                   k_mn_zy: Optional[torch.Tensor],
+                   solve2: torch.Tensor,
+                   kmm: torch.Tensor,
+                   X: Optional[torch.Tensor],
+                   t: Optional[int],
+                   trace_type: str):
     """Nystrom kernel trace backward pass"""
-    if use_stoch_trace:
-        if k_mn_zy is None or t is None or t <= 0:
-            raise ValueError("Using stochastic trace but k_mn_zy is None.")
-    else:
-        if k_mn is None:
-            raise ValueError("Not using stochastic trace but k_mn is None.")
-    if use_stoch_trace:
+    if trace_type == "ste":
+        assert k_mn_zy is not None and t is not None, "Incorrect arguments to trace_bwd"
         return -(
                 2 * (k_mn_zy[:, :t].mul(solve2)).sum(0).mean() -
                 (solve2 * (kmm @ solve2)).sum(0).mean()
         )
-    else:
+    elif trace_type == "direct":
+        assert k_mn is not None, "Incorrect arguments to trace_bwd"
         return -(
                 2 * (k_mn.mul(solve2)).sum() -
                 (solve2 * (kmm @ solve2)).sum()
+        )
+    elif trace_type == "fast":
+        assert k_mn_zy is not None and t is not None and X is not None, "Incorrect arguments to trace_bwd"
+        k_subs = k_mn_zy
+        norm = X.shape[0] / t
+        return -norm * (
+            2 * k_subs.mul(solve2).sum() -
+            (solve2 * (kmm @ solve2)).sum()
         )
 
 
@@ -180,10 +212,15 @@ class RegLossAndDeffv2(torch.autograd.Function):
 
     @staticmethod
     def direct_nosplit(X, M, Y, penalty, kmm, kmm_chol, zy, solve_zy, zy_solve_kmm_solve_zy, kernel,
-                       t):
+                       t, trace_type: str):
+        k_subs = None
         with Timer(RegLossAndDeffv2.iter_prep_times), torch.autograd.enable_grad():
             k_mn_zy = kernel.mmv(M, X, zy)  # M x (T+P)
             zy_knm_solve_zy = k_mn_zy.mul(solve_zy).sum(0)  # T+P
+            if trace_type == "fast":
+                rnd_pts = np.random.choice(X.shape[0], size=t, replace=False)
+                x_subs = X[rnd_pts, :]
+                k_subs = kernel(M, x_subs)
 
         # Forward
         dfit_fwd = Y.square().sum().to(M.device)
@@ -191,9 +228,16 @@ class RegLossAndDeffv2(torch.autograd.Function):
         trace_fwd = torch.tensor(X.shape[0], dtype=X.dtype, device=M.device)
         with Timer(RegLossAndDeffv2.fwd_times), torch.autograd.no_grad():
             pen_n = penalty * X.shape[0]
-            _trace_fwd, solve2 = calc_trace_fwd(
-                trace_fwd, k_mn=None, k_mn_zy=k_mn_zy, kmm_chol=kmm_chol,
-                use_stoch_trace=True, t=t)
+            if trace_type == "fast":
+                _trace_fwd, solve2 = calc_trace_fwd(
+                    init_val=trace_fwd, k_mn=None, k_mn_zy=k_subs, kmm_chol=kmm_chol,
+                    t=t, trace_type=trace_type, X=X)
+            elif trace_type == "ste":
+                _trace_fwd, solve2 = calc_trace_fwd(
+                    init_val=trace_fwd, k_mn=None, k_mn_zy=k_mn_zy, kmm_chol=kmm_chol,
+                    t=t, trace_type=trace_type, X=None)
+            else:
+                raise NotImplementedError("trace-type %s not implemented." % (trace_type))
             # Nystrom effective dimension forward
             deff_fwd += zy_knm_solve_zy[:t].mean()
             # Data-fit forward
@@ -212,8 +256,14 @@ class RegLossAndDeffv2(torch.autograd.Function):
                 zy_knm_solve_zy, zy_solve_knm_knm_solve_zy, zy_solve_kmm_solve_zy, pen_n, t,
                 include_kmm_term=True)
             # Nystrom kernel trace backward
-            trace_bwd = calc_trace_bwd(
-                k_mn=None, k_mn_zy=k_mn_zy, solve2=solve2, kmm=kmm, use_stoch_trace=True, t=t)
+            if trace_type == "fast":
+                trace_bwd = calc_trace_bwd(k_mn=None, k_mn_zy=k_subs, kmm=kmm, X=X, solve2=solve2,
+                                           t=t, trace_type=trace_type)
+            elif trace_type == "ste":
+                trace_bwd = calc_trace_bwd(k_mn=None, k_mn_zy=k_mn_zy, kmm=kmm, X=X, solve2=solve2,
+                                           t=t, trace_type=trace_type)
+            else:
+                raise NotImplementedError("trace-type %s not implemented." % (trace_type))
             trace_fwd_num = (_trace_fwd * dfit_fwd).detach()
             trace_bwd_num = trace_bwd * dfit_fwd.detach() + _trace_fwd.detach() * dfit_bwd
             trace_den = pen_n * X.shape[0]
@@ -280,9 +330,9 @@ class RegLossAndDeffv2(torch.autograd.Function):
             solve_options: FalkonOptions,
             solve_maxiter: int,
             gaussian_random: bool,
-            warm_start: bool
+            warm_start: bool,
+            trace_type: str,
     ):
-        use_direct_for_stoch = RegLossAndDeffv2.use_direct_for_stoch
         if RegLossAndDeffv2._last_t is not None and RegLossAndDeffv2._last_t != t:
             RegLossAndDeffv2._last_solve_y = None
             RegLossAndDeffv2._last_solve_z = None
@@ -329,7 +379,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
             fwd, bwd = RegLossAndDeffv2.direct_nosplit(
                 X=X, M=M_dev, Y=Y, penalty=penalty_dev, kmm=kmm, kmm_chol=kmm_chol,
                 zy=ZY, solve_zy=solve_zy_dev, zy_solve_kmm_solve_zy=zy_solve_kmm_solve_zy,
-                kernel=kernel, t=t)
+                kernel=kernel, t=t, trace_type=trace_type)
             with Timer(RegLossAndDeffv2.grad_times):
                 grads_ = calc_grads_tensors(inputs=(kernel_args_dev, penalty_dev, M_dev),
                                             inputs_need_grad=ctx.needs_input_grad, backward=bwd,
@@ -380,9 +430,8 @@ class RegLossAndDeffv2(torch.autograd.Function):
 
 
 def creg_penfit(kernel_args, penalty, centers, X, Y, num_estimators, deterministic, solve_options,
-                solve_maxiter, gaussian_random, warm_start=True):
+                solve_maxiter, gaussian_random, warm_start=True, trace_type="ste",):
     return RegLossAndDeffv2.apply(
         kernel_args, penalty, centers, X, Y, num_estimators, deterministic, solve_options,
-        solve_maxiter, gaussian_random, warm_start
+        solve_maxiter, gaussian_random, warm_start, trace_type
     )
-
