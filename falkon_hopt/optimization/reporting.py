@@ -159,6 +159,7 @@ def pred_reporting(model: HyperoptObjective,
         f"test_{err_name}": test_err,
         "train_error": train_err,
         "test_error": test_err,
+        "cum_time": cum_time,
     }
 
 
@@ -213,13 +214,16 @@ def epoch_bookkeeping(
             isinstance(model, StochasticDeffPenFitTr)):
         if "train_error" in logs[-1]:
             past_errs = []
-            past_logs = logs[-accuracy_increase_patience:]  # Last n logs from most oldest to most recent
-            for plog in past_logs:
+            for plog in logs[::-1]:  # Traverse logs in reverse order
                 if 'train_error' in plog:
                     past_errs.append(abs(plog['train_error']))
-            if np.argmin(past_errs) == 0:  # The minimal error in the oldest log
-                cur_acc = model.flk_opt.cg_tolerance
-                new_acc = cur_acc / 10
-                print("INFO: Changing tolerance to %e" % (new_acc))
-                new_opt = dataclasses.replace(model.flk_opt, cg_tolerance=new_acc)
-                model.flk_opt = new_opt
+                if len(past_errs) >= accuracy_increase_patience:
+                    break
+            print("Past errors: ", past_errs)
+            if len(past_errs) >= accuracy_increase_patience:
+                if np.argmin(past_errs) == (len(past_errs) - 1):  # The minimal error in the oldest log
+                    cur_acc = model.flk_opt.cg_tolerance
+                    new_acc = cur_acc / 10
+                    print("INFO: Changing tolerance to %e" % (new_acc))
+                    new_opt = dataclasses.replace(model.flk_opt, cg_tolerance=new_acc)
+                    model.flk_opt = new_opt

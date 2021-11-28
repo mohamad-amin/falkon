@@ -78,6 +78,7 @@ def run_simple_hopt(sigma_init: Union[float, str],
         f"--cuda",
         f"--loss-every 2",
         f"--early-stop-every 201",
+        f"--cgtol-decrease-every 10",
         f"--name {exp_name_final}",
     ]
     if model == "svgp":
@@ -157,18 +158,18 @@ def run():
                 "road3d", "buzz", "houseelectric", "mnist-small", "svhn",
                 "fashionmnist"]
     datasets = ["flights"]
-    num_epochs = 200
+    num_epochs = 75
     learning_rate = 0.05
     M = 5000
     opt_m = True
     val_pct = 0.6
     optim = "adam"
-    sigma = "diag"
-    extra_exp_name = "reb_v3"
+    sigma = "single"
+    extra_exp_name = "reb_fast-tr_v6"
     sigma_init = 1
     penalty_init = "auto"
     # Stochastic stuff
-    flk_maxiter = 30
+    flk_maxiter = 100
     num_trace_vecs = 20
     cg_tol = 1e-3
     # Models to use for training

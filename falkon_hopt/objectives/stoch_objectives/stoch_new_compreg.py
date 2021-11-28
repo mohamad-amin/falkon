@@ -89,7 +89,7 @@ class StochasticDeffPenFitTr(NKRRHyperoptObjective):
                f"opt_penalty={self.opt_penalty}, t={self.num_trace_est}, " \
                f"flk_iter={self.flk_maxiter}, det_ste={self.deterministic_ste}, " \
                f"gauss_ste={self.gaussian_ste}, warm={self.warm_start}, " \
-               f"cg_tolerance={self.flk_opt.cg_tolerance})"
+               f"cg_tolerance={self.flk_opt.cg_tolerance}, trace_type={self.trace_type})"
 
 
 def calc_trace_fwd(init_val: torch.Tensor,
@@ -218,7 +218,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
             k_mn_zy = kernel.mmv(M, X, zy)  # M x (T+P)
             zy_knm_solve_zy = k_mn_zy.mul(solve_zy).sum(0)  # T+P
             if trace_type == "fast":
-                rnd_pts = np.random.choice(X.shape[0], size=t, replace=False)
+                rnd_pts = np.random.choice(X.shape[0], size=M.shape[0], replace=False)
                 x_subs = X[rnd_pts, :]
                 k_subs = kernel(M, x_subs)
 
@@ -231,7 +231,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
             if trace_type == "fast":
                 _trace_fwd, solve2 = calc_trace_fwd(
                     init_val=trace_fwd, k_mn=None, k_mn_zy=k_subs, kmm_chol=kmm_chol,
-                    t=t, trace_type=trace_type, X=X)
+                    t=M.shape[0], trace_type=trace_type, X=X)
             elif trace_type == "ste":
                 _trace_fwd, solve2 = calc_trace_fwd(
                     init_val=trace_fwd, k_mn=None, k_mn_zy=k_mn_zy, kmm_chol=kmm_chol,
@@ -258,7 +258,7 @@ class RegLossAndDeffv2(torch.autograd.Function):
             # Nystrom kernel trace backward
             if trace_type == "fast":
                 trace_bwd = calc_trace_bwd(k_mn=None, k_mn_zy=k_subs, kmm=kmm, X=X, solve2=solve2,
-                                           t=t, trace_type=trace_type)
+                                           t=M.shape[0], trace_type=trace_type)
             elif trace_type == "ste":
                 trace_bwd = calc_trace_bwd(k_mn=None, k_mn_zy=k_mn_zy, kmm=kmm, X=X, solve2=solve2,
                                            t=t, trace_type=trace_type)

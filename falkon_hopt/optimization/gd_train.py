@@ -60,7 +60,8 @@ def create_optimizer(opt_type: str, model: HyperoptObjective, learning_rate: flo
                     "params": named_params['centers'], 'lr': learning_rate / center_lr_div})
         opt_hp = torch.optim.Adam(opt_modules)
         # schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_hp, factor=0.5, patience=1)
-        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, step_size=200, gamma=0.3)
+        # schedule = torch.optim.lr_scheduler.MultiStepLR(opt_hp, [2, 10, 40], gamma=0.5)
+        schedule = torch.optim.lr_scheduler.StepLR(opt_hp, 200, gamma=0.1)
     elif opt_type == "sgd":
         opt_hp = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)
     elif opt_type == "lbfgs":
