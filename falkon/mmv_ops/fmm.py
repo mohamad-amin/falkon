@@ -114,7 +114,36 @@ def mm_run_starter(proc_idx, queue, device_id):
 
 
 def sparse_mm_run_thread(m1: SparseTensor, m2: SparseTensor, out: torch.Tensor,
-                         kernel, n: int, m: int, comp_dt: torch.dtype, dev: torch.device):
+                         kernel: 'falkon.kernels.Kernel', n: int, m: int, comp_dt: torch.dtype,
+                         dev: torch.device):
+    """Inner loop to compute (part of) a kernel matrix for two sparse input tensors
+
+    Parameters
+    ----------
+    m1
+        Left input tensor for computing the kernel
+    m2
+        Right input tensor for computing the kernel
+    out
+        Output dense matrix in which to store the result
+    kernel
+        Kernel object, used for computing the kernel. This must implement the
+        :meth:`falkon.kernels.kernel.Kernel.compute_sparse` method.
+    n
+        Block size for the first axis of `m1`
+    m
+        Block size for the first ais of `m2`
+    comp_dt
+        Data-type in which to run the actual calculations (may be different from the data-type
+        of `m1` or `m2`).
+    dev
+        Device on which to run the calculations
+
+    Returns
+    -------
+    out : torch.Tensor
+        The kernel matrix. Should use the same underlying storage as the parameter `out`.
+    """
     is_ooc = dev.type != m1.device.type
     change_dtype = comp_dt != m1.dtype
     N, D = m1.shape
@@ -406,3 +435,11 @@ class KernelMmFnFull(torch.autograd.Function):
             else:
                 results.append(None)
         return tuple(results)
+
+
+def fmm(kernel: 'falkon.kernels.Kernel',
+        opt: Optional[BaseOptions],
+        out: Optional[torch.Tensor],
+        X1: Union[torch.Tensor, SparseTensor],
+        X2: Union[torch.Tensor, SparseTensor]):
+    return KernelMmFnFull.apply(kernel, opt, out, X1, X2, kernel.diff_params.values())

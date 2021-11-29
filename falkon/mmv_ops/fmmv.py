@@ -123,8 +123,37 @@ def mmv_run_starter(proc_idx, queue, device_id):
 
 def sparse_mmv_run_thread(m1: SparseTensor, m2: SparseTensor, v: torch.Tensor,
                           out: torch.Tensor, kernel: 'falkon.kernels.Kernel', blk_n: int,
-                          blk_m: int,
-                          mem_needed: int, dev: torch.device):
+                          blk_m: int, mem_needed: int, dev: torch.device):
+    """Inner loop to compute (part of) a kernel-vector product for sparse input matrices.
+
+    Parameters
+    ----------
+    m1
+        Left input tensor for computing the kernel
+    m2
+        Right input tensor for computing the kernel
+    v
+        Dense vector to be multiplied by the kernel matrix
+    out
+        Dense output vector which should store the result of the kernel vector product on exit
+        from this function.
+    kernel
+        Kernel object, used for computing the kernel. This must implement the
+        :meth:`falkon.kernels.kernel.Kernel.compute_sparse` method.
+    blk_n
+        Block size for the first axis of `m1`
+    blk_m
+        Block size for the first ais of `m2`
+    mem_needed
+        Memory needed for pre-allocations
+    dev
+        Device on which to run the calculations
+
+    Returns
+    -------
+    out : torch.Tensor
+        The kernel matrix. Should use the same underlying storage as the parameter `out`.
+    """
     incore = _is_incore(dev, m1.device)
     N, D = m1.shape
     M, T = v.shape
@@ -309,7 +338,6 @@ def mmv_diff_run_thread(m1: torch.Tensor, m2: torch.Tensor, v: Optional[torch.Te
                 c_dev_grads_old = [c_dev_m1_g, c_dev_m2_g, c_dev_v_g] + grads[3:]
                 c_dev_grads = torch.autograd.grad(
                     c_dev_mmv, [c_inputs[idx] for idx in input_idxs], grad_outputs=c_dev_out)
-                #print("Computed grad devices", [g.device for g in c_dev_grads if g is not None])
                 for c_grad, c_idx in zip(c_dev_grads, input_idxs):
                     c_dev_grads_old[c_idx].add_(c_grad)
                 if grads[1] is not None:

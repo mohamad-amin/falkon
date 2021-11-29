@@ -11,7 +11,7 @@ Kernel
 
 .. autoclass:: falkon.kernels.kernel.Kernel
     :members:
-    :private-members: _prepare, _apply, _finalize, _prepare_sparse, _apply_sparse, _decide_mm_impl, _decide_mmv_impl, _decide_dmmv_impl
+    :private-members: _decide_mm_impl, _decide_mmv_impl, _decide_dmmv_impl
     :special-members: __call__
 
 .. autoclass:: falkon.kernels.keops_helpers.KeopsKernelMixin
