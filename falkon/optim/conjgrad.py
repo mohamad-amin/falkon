@@ -151,6 +151,7 @@ class ConjugateGradient(Optimizer):
                     col_idx_notconverged = col_idx_notconverged[~converged]
                     P = P[:, ~converged]
                     R = R[:, ~converged]
+                    B = B[:, ~converged]
                     X = X[:, ~converged]  # These are all copies
                     Rsnew = Rsnew[~converged]
                     Rsold = Rsold[~converged]
