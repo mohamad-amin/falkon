@@ -266,7 +266,7 @@ if __name__ == "__main__":
     p.add_argument('--early-stop-every', type=int, default=201,
                    help="How many epochs without training loss improvements before stopping the "
                         "optimization.")
-    p.add_argument('--cgtol_decrease_every', type=int, default=999,
+    p.add_argument('--cgtol-decrease-every', type=int, default=999,
                    help="Every how many epochs to decrease the convergence tolerance.")
     p.add_argument('--cuda', action='store_true')
     p.add_argument('--fetch-loss', action='store_true')
