@@ -25,6 +25,5 @@ def jittering_cholesky(mat, upper=False):
             out = cholesky(mat + eye * eps, upper=upper, check_errors=True)
             return out
         except RuntimeError as e:
-            print("Matrix has NaNs", (~torch.isfinite(mat)).sum())
             last_exception = e
     raise last_exception

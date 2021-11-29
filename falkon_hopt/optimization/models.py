@@ -27,7 +27,8 @@ def init_model(model_type: str,
                flk_maxiter: Optional[int],
                ):
     flk_opt = FalkonOptions(cg_tolerance=cg_tol, use_cpu=not torch.cuda.is_available(),
-                            cg_full_gradient_every=10, cg_epsilon_32=1e-6)
+                            cg_full_gradient_every=10, cg_epsilon_32=1e-6,
+                            cg_differential_convergence=True)
 
     if model_type == "sgpr":
         model = SGPR(sigma_init=sigma_init, penalty_init=penalty_init, centers_init=centers_init,
