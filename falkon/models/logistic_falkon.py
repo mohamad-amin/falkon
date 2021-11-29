@@ -17,7 +17,7 @@ class LogisticFalkon(FalkonBase):
     """Falkon Logistic regression solver.
 
     This estimator object solves approximate logistic regression problems with Nystroem
-    projections and a fast optimization algorithm as described in [1]_, [2]_.
+    projections and a fast optimization algorithm as described in  :ref:`[1] <flk_1>`, :ref:`[3] <log_flk>`.
 
     This model can handle logistic regression, so it may be used in place of
     :class:`falkon.models.Falkon` (which uses the squared loss) when tackling binary
@@ -86,11 +86,11 @@ class LogisticFalkon(FalkonBase):
 
     References
     ----------
-    .. [1] Ulysse Marteau-Ferey, Francis Bach, Alessandro Rudi, "Globally Convergent Newton Methods
-        for Ill-conditioned Generalized Self-concordant Losses," NeurIPS 32, 2019.
-    .. [2] Giacomo Meanti, Luigi Carratino, Lorenzo Rosasco, Alessandro Rudi,
+     - Ulysse Marteau-Ferey, Francis Bach, Alessandro Rudi, "Globally Convergent Newton Methods
+       for Ill-conditioned Generalized Self-concordant Losses," NeurIPS 32, 2019.
+     - Giacomo Meanti, Luigi Carratino, Lorenzo Rosasco, Alessandro Rudi,
        "Kernel methods through the roof: handling billions of points efficiently,"
-       arXiv:2006.10350, 2020.
+       Advancs in Neural Information Processing Systems, 2020.
 
     Notes
     -----

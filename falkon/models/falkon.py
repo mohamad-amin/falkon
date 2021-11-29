@@ -31,7 +31,7 @@ class Falkon(FalkonBase):
     """Falkon Kernel Ridge Regression solver.
 
     This estimator object solves approximate kernel ridge regression problems with Nystroem
-    projections and a fast optimization algorithm as described in [flk_1]_, [flk_2]_.
+    projections and a fast optimization algorithm as described in :ref:`[1] <flk_1>`, :ref:`[2] <flk_2>`.
 
     Multiclass and multiple regression problems can all be tackled
     with this same object, for example by encoding multiple classes
@@ -96,13 +96,19 @@ class Falkon(FalkonBase):
     >>> model.fit(X, Y)
     >>> preds = model.predict(X)
 
+    Warm restarts: run for 5 iterations, then use `warm_start` to run for 5 more iterations.
+
+    >>> model = Falkon(kernel=kernel, penalty=1e-6, M=500, maxiter=5)
+    >>> model.fit(X, Y)
+    >>> model.fit(X, Y, warm_start=model.beta_)
+
     References
     ----------
-    .. [flk_1] Alessandro Rudi, Luigi Carratino, Lorenzo Rosasco, "FALKON: An optimal large
+     - Alessandro Rudi, Luigi Carratino, Lorenzo Rosasco, "FALKON: An optimal large
        scale kernel method," Advances in Neural Information Processing Systems 29, 2017.
-    .. [flk_2] Giacomo Meanti, Luigi Carratino, Lorenzo Rosasco, Alessandro Rudi,
+     - Giacomo Meanti, Luigi Carratino, Lorenzo Rosasco, Alessandro Rudi,
        "Kernel methods through the roof: handling billions of points efficiently,"
-       arXiv:2006.10350, 2020.
+       Advancs in Neural Information Processing Systems, 2020.
 
     """
 
@@ -159,6 +165,12 @@ class Falkon(FalkonBase):
             during the optimization iterations.
             If Yts is in Fortran order (i.e. column-contiguous) then we can avoid an
             extra copy of the data.
+        warm_start : torch.Tensor or None
+            Specify a starting point for the conjugate gradient optimizer. If not specified, the
+            initial point will be a tensor filled with zeros.
+            Be aware that the starting point should not be in the parameter space, but in the
+            preconditioner space (i.e. if initializing from a previous Falkon object, use the
+            `beta_` field, not `alpha_`).
 
         Returns
         --------

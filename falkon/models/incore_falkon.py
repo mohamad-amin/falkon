@@ -17,7 +17,7 @@ class InCoreFalkon(FalkonBase):
     """In GPU core Falkon Kernel Ridge Regression solver.
 
     This estimator object solves approximate kernel ridge regression problems with Nystroem
-    projections and a fast optimization algorithm as described in [flkk_1]_, [flkk_2]_.
+    projections and a fast optimization algorithm as described in :ref:`[1] <flk_1>`, :ref:`[2] <flk_2>`.
 
     Multiclass and multiple regression problems can all be tackled
     with this same object, for example by encoding multiple classes
@@ -83,7 +83,7 @@ class InCoreFalkon(FalkonBase):
 
     Examples
     --------
-    Running Falkon on a random dataset
+    Running :class:`InCoreFalkon` on a randomly generated dataset
 
     >>> X = torch.randn(1000, 10).cuda()
     >>> Y = torch.randn(1000, 1).cuda()
@@ -96,11 +96,11 @@ class InCoreFalkon(FalkonBase):
 
     References
     ----------
-    .. [flkk_1] Alessandro Rudi, Luigi Carratino, Lorenzo Rosasco, "FALKON: An optimal large
+     - Alessandro Rudi, Luigi Carratino, Lorenzo Rosasco, "FALKON: An optimal large
        scale kernel method," Advances in Neural Information Processing Systems 29, 2017.
-    .. [flkk_2] Giacomo Meanti, Luigi Carratino, Lorenzo Rosasco, Alessandro Rudi,
+     - Giacomo Meanti, Luigi Carratino, Lorenzo Rosasco, Alessandro Rudi,
        "Kernel methods through the roof: handling billions of points efficiently,"
-       arXiv:2006.10350, 2020.
+       Advancs in Neural Information Processing Systems, 2020.
     """
 
     def __init__(self,
@@ -173,11 +173,18 @@ class InCoreFalkon(FalkonBase):
             during the optimization iterations.
             If Yts is in Fortran order (i.e. column-contiguous) then we can avoid an
             extra copy of the data. Must be a CUDA tensor.
+        warm_start : torch.Tensor or None
+            Specify a starting point for the conjugate gradient optimizer. If not specified, the
+            initial point will be a tensor filled with zeros.
+            Be aware that the starting point should not be in the parameter space, but in the
+            preconditioner space (i.e. if initializing from a previous Falkon object, use the
+            `beta_` field, not `alpha_`).
 
         Returns
         --------
         model: InCoreFalkon
             The fitted model
+
         """
         # Fix a synchronization bug which occurs when re-using center selector.
         torch.cuda.synchronize()
