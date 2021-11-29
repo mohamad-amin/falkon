@@ -442,4 +442,4 @@ def fmm(kernel: 'falkon.kernels.Kernel',
         out: Optional[torch.Tensor],
         X1: Union[torch.Tensor, SparseTensor],
         X2: Union[torch.Tensor, SparseTensor]):
-    return KernelMmFnFull.apply(kernel, opt, out, X1, X2, kernel.diff_params.values())
+    return KernelMmFnFull.apply(kernel, opt, out, X1, X2, *kernel.diff_params.values())

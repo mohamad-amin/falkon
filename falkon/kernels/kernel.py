@@ -183,7 +183,7 @@ class Kernel(ABC):
         if opt is not None:
             params = dataclasses.replace(self.params, **dataclasses.asdict(opt))
         mm_impl = self._decide_mm_impl(X1, X2, params)
-        return mm_impl(self, params, out, X1, X2, *self.diff_params.values())
+        return mm_impl(self, params, out, X1, X2)
 
     def _decide_mm_impl(self, X1, X2, opt: FalkonOptions):
         """Choose which `mm` function to use for this data.
