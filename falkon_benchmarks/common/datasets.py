@@ -972,8 +972,8 @@ class HouseEelectricDataset(RandomSplitDataset, Hdf5Dataset):
 
     def preprocess_y(self, Ytr: np.ndarray, Yts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, dict]:
         # Weird preprocessing from AGW
-        Ytr = np.log(Ytr)
-        Yts = np.log(Yts)
+        #Ytr = np.log(Ytr)
+        #Yts = np.log(Yts)
         return standardize_y(Ytr, Yts)
 
 
