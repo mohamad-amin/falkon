@@ -30,4 +30,7 @@ Xtrain /= train_std
 Xtest -= train_mean
 Xtest /= train_std
 
+from kernel.eye_kernel import EyeKernel
+
+options = falkon.FalkonOptions(keops_active=False)
 import IPython; IPython.embed()

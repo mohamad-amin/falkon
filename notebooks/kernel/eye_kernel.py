@@ -1,3 +1,4 @@
+import warnings
 from typing import Union, Optional, Dict
 
 import torch
@@ -41,3 +42,25 @@ class EyeKernel(DiffKernel):
     def __init__(self, opt: Optional[FalkonOptions] = None):
         super().__init__(self.kernel_name, opt, core_fn=EyeKernel.core_fn)
 
+    def _keops_mmv_impl(self, X1, X2, v, kernel, out, opt: FalkonOptions):
+        return RuntimeError("SigmoidKernel is not implemented in KeOps")
+
+    def _decide_mmv_impl(self, X1, X2, v, opt):
+        if self.keops_can_handle_mmv(X1, X2, v, opt):
+            warnings.warn("KeOps MMV implementation for %s kernel is not available. "
+                          "Falling back to matrix-multiplication based implementation."
+                          % (self.name))
+        return super()._decide_mmv_impl(X1, X2, v, opt)
+
+    def _decide_dmmv_impl(self, X1, X2, v, w, opt):
+        if self.keops_can_handle_dmmv(X1, X2, v, w, opt):
+            warnings.warn("KeOps dMMV implementation for %s kernel is not available. "
+                          "Falling back to matrix-multiplication based implementation."
+                          % (self.name))
+        return super()._decide_dmmv_impl(X1, X2, v, w, opt)
+
+    def compute_sparse(self, X1: SparseTensor, X2: SparseTensor, out: torch.Tensor, **kwargs) -> torch.Tensor:
+        raise NotImplementedError('This kernel doesn\'t support sparse computations')
+
+    def detach(self):
+        raise NotImplementedError('No parameter in this kernel')
