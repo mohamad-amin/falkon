@@ -85,9 +85,6 @@ def rbf_core(mat1, mat2, out: Optional[torch.Tensor], sigma):
 
     """
 
-    print('Inside rbf_core')
-    import IPython; IPython.embed()
-
     mat1_div_sig = mat1 / sigma
     mat2_div_sig = mat2 / sigma
     norm_sq_mat1 = square_norm_diff(mat1_div_sig, -1, True)  # b*n*1 or n*1
