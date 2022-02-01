@@ -63,4 +63,4 @@ class EyeKernel(DiffKernel):
         raise NotImplementedError('This kernel doesn\'t support sparse computations')
 
     def detach(self):
-        raise NotImplementedError('No parameter in this kernel')
+        return self
