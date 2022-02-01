@@ -32,5 +32,5 @@ Xtest /= train_std
 
 from kernel.eye_kernel import EyeKernel
 
-options = falkon.FalkonOptions(keops_active=False)
+options = falkon.FalkonOptions(keops_active='no')
 import IPython; IPython.embed()
