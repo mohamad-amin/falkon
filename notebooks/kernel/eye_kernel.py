@@ -28,9 +28,9 @@ def eye_core(mat1, mat2, out: Optional[torch.Tensor]):
     """
     n1, n2 = mat1.shape[0], mat2.shape[0]
     if n1 == n2:
-        out = torch.eye(n1)
+        out = torch.eye(n1, dtype=mat1.dtype)
     else:
-        out = torch.rand(n1, n2)
+        out = torch.rand(n1, n2, dtype=mat1.dtype)
     print('Called with shapes', n1, n2)
     return out
 
